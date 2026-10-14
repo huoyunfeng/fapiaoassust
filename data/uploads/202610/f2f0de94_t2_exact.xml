@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Invoice>
+  <Header>
+    <InvoiceNo>251000000001</InvoiceNo>
+    <InvoiceCode></InvoiceCode>
+    <InvoiceDate>2026-09-05</InvoiceDate>
+  </Header>
+  <Buyer><BuyerName>北京示例科技有限公司</BuyerName><BuyerTaxID>91110108MA01AAAA1A</BuyerTaxID></Buyer>
+  <Seller><SellerName>上海供应商有限公司</SellerName><SellerTaxID>91310000MA01BBBB2B</SellerTaxID></Seller>
+  <Items><Item><ItemName>*信息技术服务*软件服务费</ItemName><Amount>88.50</Amount><TaxRate>13%</TaxRate><TaxAmount>11.51</TaxAmount></Item></Items>
+  <Settlement><TotalTaxInclAmount>100.01</TotalTaxInclAmount></Settlement>
+</Invoice>

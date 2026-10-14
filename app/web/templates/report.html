@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% block content %}
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+  <h1 style="font-size:20px;">差异报告</h1>
+  <a class="btn" href="/api/report/export">导出 Excel</a>
+</div>
+
+<div class="grid g4">
+  <div class="stat"><div class="label">发票总数</div><div class="num">{{ r.inv_counts.values()|sum }}</div></div>
+  <div class="stat"><div class="label">报销单总数</div><div class="num">{{ r.reb_total }}</div></div>
+  <div class="stat"><div class="label">生效匹配</div><div class="num">{{ r.active_matches }}</div></div>
+  <div class="stat"><div class="label">待处理</div><div class="num">{{ r.match_counts.get('SUSPICIOUS',0) + r.match_counts.get('CONFLICT',0) }}</div></div>
+</div>
+
+<div class="card">
+  <h2>匹配明细</h2>
+  {% if r.details %}
+  <table>
+    <tr><th>匹配</th><th>状态</th><th>类型</th><th>分数</th><th>报销单号</th><th>报销金额</th>
+        <th>发票号</th><th>价税合计</th><th>金额差异</th><th>差异说明</th></tr>
+    {% for d in r.details %}
+    <tr>
+      <td>#{{ d.match.id }}</td>
+      <td><span class="badge {{ d.match.status|badge }}">{{ d.match.status }}</span></td>
+      <td class="muted">{{ d.match.match_type }}</td>
+      <td>{{ '%.2f'|format(d.match.match_score) }}</td>
+      <td>{{ d.reimburse.reimburse_no if d.reimburse else '—' }}</td>
+      <td>{{ d.reimburse_amount if d.reimburse_amount is not none else '—' }}</td>
+      <td>{{ d.match.invoice_no or '—' }}</td>
+      <td>{{ d.invoice_total if d.invoice_total is not none else '—' }}</td>
+      <td>{{ d.amount_diff if d.amount_diff is not none else '—' }}</td>
+      <td class="wrap muted">{{ d.match.message }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}<p class="muted">暂无匹配数据，请先执行匹配</p>{% endif %}
+</div>
+
+<div class="grid g2">
+  <div class="card">
+    <h2>未匹配报销单 ({{ r.unmatched_reimburses|length }})</h2>
+    {% if r.unmatched_reimburses %}
+    <table><tr><th>ID</th><th>单号</th><th>金额</th><th>提交人</th><th>登记发票号</th></tr>
+    {% for i in r.unmatched_reimburses %}
+      <tr><td>#{{ i.id }}</td><td>{{ i.reimburse_no }}</td><td>{{ i.amount }}</td>
+          <td>{{ i.submitter }}</td><td>{{ i.invoice_no or '—' }}</td></tr>
+    {% endfor %}</table>
+    {% else %}<p class="muted">无</p>{% endif %}
+  </div>
+  <div class="card">
+    <h2>未匹配发票 ({{ r.unmatched_invoices|length }})</h2>
+    {% if r.unmatched_invoices %}
+    <table><tr><th>ID</th><th>发票号</th><th>价税合计</th><th>开票日期</th></tr>
+    {% for i in r.unmatched_invoices %}
+      <tr><td>#{{ i.id }}</td><td>{{ i.invoice_no or '—' }}</td>
+          <td>{{ i.total_amount or '—' }}</td><td>{{ i.invoice_date or '—' }}</td></tr>
+    {% endfor %}</table>
+    {% else %}<p class="muted">无</p>{% endif %}
+  </div>
+</div>
+
+<div class="grid g2">
+  <div class="card">
+    <h2>异常发票 ({{ r.abnormal|length }})</h2>
+    {% if r.abnormal %}
+    <table><tr><th>ID</th><th>发票号</th><th>状态</th></tr>
+    {% for i in r.abnormal %}
+      <tr><td><a class="link" href="/invoices/{{ i.id }}">#{{ i.id }}</a></td>
+          <td>{{ i.invoice_no or '—' }}</td><td><span class="badge {{ i.status|badge }}">{{ i.status }}</span></td></tr>
+    {% endfor %}</table>
+    {% else %}<p class="muted">无</p>{% endif %}
+  </div>
+  <div class="card">
+    <h2>重复发票 ({{ r.duplicates|length }})</h2>
+    {% if r.duplicates %}
+    <table><tr><th>ID</th><th>发票号</th><th>状态</th></tr>
+    {% for i in r.duplicates %}
+      <tr><td><a class="link" href="/invoices/{{ i.id }}">#{{ i.id }}</a></td>
+          <td>{{ i.invoice_no or '—' }}</td><td><span class="badge {{ i.status|badge }}">{{ i.status }}</span></td></tr>
+    {% endfor %}</table>
+    {% else %}<p class="muted">无</p>{% endif %}
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Invoice>
+  <Header>
+    <InvoiceNo>251000000006</InvoiceNo>
+    <InvoiceCode></InvoiceCode>
+    <InvoiceDate>2026-09-23</InvoiceDate>
+  </Header>
+  <Buyer><BuyerName>北京示例科技有限公司</BuyerName><BuyerTaxID>91110108MA01AAAA1A</BuyerTaxID></Buyer>
+  <Seller><SellerName>深圳检测公司</SellerName><SellerTaxID>91440300MA01EEEE5E</SellerTaxID></Seller>
+  <Items><Item><ItemName>*检测服务*检测费</ItemName><Amount>100.00</Amount><TaxRate>6%</TaxRate><TaxAmount>6.00</TaxAmount></Item></Items>
+  <Settlement><TotalTaxInclAmount>999.00</TotalTaxInclAmount></Settlement>
+</Invoice>

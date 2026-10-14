@@ -1,0 +1,111 @@
+{% extends "base.html" %}
+{% block content %}
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+  <h1 style="font-size:20px;">发票 #{{ inv.id }}
+    <span class="badge {{ inv.status|badge }}" style="vertical-align:middle;">{{ inv.status }}</span>
+    {% if inv.is_red_flush %}<span class="badge badge-red">红冲</span>{% endif %}
+  </h1>
+  <div>
+    {% if inv.status == 'ABNORMAL' %}<button class="btn" onclick="openFix()">人工修正</button>{% endif %}
+    {% if inv.status == 'DUPLICATE' %}<button class="btn btn-green" onclick="confirmDup()">确认非重复</button>{% endif %}
+    <button class="btn btn-danger" onclick="delInv()">删除</button>
+    <a class="btn btn-outline" href="/invoices">返回列表</a>
+  </div>
+</div>
+
+<div class="grid g2">
+  <div class="card">
+    <h2>字段信息</h2>
+    <div class="kv">
+      <span class="k">发票号</span><span>{{ inv.invoice_no or '—' }}</span>
+      <span class="k">发票代码</span><span>{{ inv.invoice_code or '—' }}</span>
+      <span class="k">开票日期</span><span>{{ inv.invoice_date or '—' }}</span>
+      <span class="k">购买方</span><span>{{ inv.buyer_name or '—' }}（{{ inv.buyer_tax_no or '—' }}）</span>
+      <span class="k">销售方</span><span>{{ inv.seller_name or '—' }}（{{ inv.seller_tax_no or '—' }}）</span>
+      <span class="k">金额</span><span>{{ inv.amount or '—' }}</span>
+      <span class="k">税额</span><span>{{ inv.tax_amount or '—' }}</span>
+      <span class="k">价税合计</span><span><b>{{ inv.total_amount or '—' }}</b></span>
+      <span class="k">税率</span><span>{{ inv.tax_rate or '—' }}</span>
+      <span class="k">项目摘要</span><span>{{ inv.item_summary or '—' }}</span>
+      <span class="k">创建时间</span><span>{{ inv.created_at }}</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>解析信息</h2>
+    <div class="kv">
+      <span class="k">解析引擎</span><span>{{ inv.parse_engine }}（置信度 {{ '%.2f'|format(inv.parse_confidence) }}）</span>
+      <span class="k">源文件</span><span class="wrap">{{ inv.source_path or '人工录入' }}</span>
+    </div>
+    <h2 class="mt">降级链 / 解析详情</h2>
+    <pre>{{ (inv.raw|fromjson)|tojson(indent=2) }}</pre>
+  </div>
+</div>
+
+<div class="card">
+  <h2>状态日志（invoice_status_log）</h2>
+  <table>
+    <tr><th>时间</th><th>从</th><th>到</th><th>原因</th><th>操作人</th></tr>
+    {% for l in inv.status_log %}
+    <tr><td>{{ l.created_at }}</td>
+        <td><span class="badge {{ (l.from_status or '')|badge }}">{{ l.from_status or '—' }}</span></td>
+        <td><span class="badge {{ l.to_status|badge }}">{{ l.to_status }}</span></td>
+        <td class="wrap muted">{{ l.reason }}</td><td>{{ l.operator }}</td></tr>
+    {% else %}<tr><td colspan="5" class="muted">暂无日志</td></tr>{% endfor %}
+  </table>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+const INV_ID = {{ inv.id }};
+async function delInv(){
+  if(!await confirmDlg('确认删除该发票？关联匹配记录将级联删除（I8）。'))return;
+  post(`/api/invoices/${INV_ID}/delete`).then(()=>location.href='/invoices');
+}
+async function confirmDup(){
+  const reason = await promptDlg('确认非重复的原因：','经人工核对为不同发票');
+  if(reason===null)return;
+  const fd=new FormData();fd.set('reason',reason);fd.set('operator','admin');
+  post(`/api/invoices/${INV_ID}/confirm-not-duplicate`,fd).then(()=>location.reload());
+}
+function openFix(){
+  document.getElementById('modal').innerHTML = `
+  <h2 style="margin-bottom:14px;">人工修正（ABNORMAL → NORMAL）</h2>
+  <form onsubmit="submitForm(event,\`/api/invoices/${INV_ID}/fix\`)">
+    <input type="hidden" name="operator" value="admin">
+    <div class="grid g2" style="gap:10px;">
+      <input name="f_invoice_no" placeholder="发票号" value="{{ inv.invoice_no }}">
+      <input name="f_invoice_code" placeholder="发票代码" value="{{ inv.invoice_code }}">
+      <input name="f_invoice_date" placeholder="开票日期 YYYY-MM-DD" value="{{ inv.invoice_date or '' }}">
+      <input name="f_total_amount" placeholder="价税合计" value="{{ inv.total_amount or '' }}">
+      <input name="f_amount" placeholder="金额" value="{{ inv.amount or '' }}">
+      <input name="f_tax_amount" placeholder="税额" value="{{ inv.tax_amount or '' }}">
+      <input name="f_buyer_name" placeholder="购买方名称" value="{{ inv.buyer_name }}">
+      <input name="f_buyer_tax_no" placeholder="购买方税号" value="{{ inv.buyer_tax_no }}">
+      <input name="f_seller_name" placeholder="销售方名称" value="{{ inv.seller_name }}">
+      <input name="f_seller_tax_no" placeholder="销售方税号" value="{{ inv.seller_tax_no }}">
+    </div>
+    <input class="mt" name="reason" placeholder="修正原因（记录到日志）" style="width:100%;">
+    <div class="mt"><button class="btn">提交修正</button>
+    <button type="button" class="btn btn-outline" onclick="closeModal()">取消</button></div>
+  </form>`;
+  openModal();
+}
+// 将表单字段转成 payload JSON 传给 fix 接口
+document.addEventListener('submit', e=>{
+  if(e.target && e.target.querySelector && e.target.querySelector('[name="f_invoice_no"]')){
+    e.preventDefault();
+    const fd=new FormData(e.target);
+    const payload={};
+    for(const [k,v] of fd.entries()){ if(k.startsWith('f_')) payload[k.slice(2)]=v; }
+    const out=new FormData();
+    out.set('payload', JSON.stringify(payload));
+    out.set('reason', fd.get('reason')||'');
+    out.set('operator', fd.get('operator')||'admin');
+    post(`/api/invoices/${INV_ID}/fix`, out).then(j=>{ if(j.data&&j.data.ok!==false) location.reload(); });
+  }
+}, true);
+</script>
+{% endblock %}

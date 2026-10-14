@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block content %}
+<h1 style="font-size:20px;margin-bottom:16px;">设置</h1>
+
+<div class="grid g2">
+  <div class="card">
+    <h2>公司抬头（用于匹配抬头校验与税号规则）</h2>
+    <form class="inline mb" onsubmit="submitForm(event,'/api/companies')">
+      <input name="name" placeholder="公司名称" required>
+      <input name="tax_no" placeholder="税号" required>
+      <label class="muted"><input type="checkbox" name="is_default" value="1"> 默认</label>
+      <button class="btn btn-sm">添加</button>
+    </form>
+    {% if companies %}
+    <table><tr><th>ID</th><th>名称</th><th>税号</th><th>默认</th><th>操作</th></tr>
+    {% for c in companies %}
+      <tr><td>#{{ c.id }}</td><td class="wrap">{{ c.name }}</td><td>{{ c.tax_no }}</td>
+          <td>{% if c.is_default %}<span class="badge badge-green">默认</span>{% endif %}</td>
+          <td><button class="btn btn-sm btn-danger" onclick="delCompany({{ c.id }})">删除</button></td></tr>
+    {% endfor %}</table>
+    {% else %}<p class="muted">未配置。未配置时匹配的抬头维度按中性处理。</p>{% endif %}
+  </div>
+
+  <div class="card">
+    <h2>业务规则（按优先级升序执行）</h2>
+    <form class="inline mb" onsubmit="submitForm(event,'/api/rules')" style="align-items:flex-start;">
+      <input name="name" placeholder="规则名称" required>
+      <select name="rule_type">
+        <option value="buyer_tax_no">buyer_tax_no 购买方税号白名单</option>
+        <option value="period">period 开票日期期间</option>
+        <option value="amount">amount 金额上下限</option>
+        <option value="dedup">dedup 红冲限制</option>
+        <option value="custom">custom 预留</option>
+      </select>
+      <input name="priority" type="number" value="100" style="width:80px;" title="优先级">
+      <label class="muted"><input type="checkbox" name="stop_on_fail" value="1"> 失败短路</label>
+      <input name="config" placeholder='config JSON，如 {"tax_nos":["91..."]}' style="width:260px;" required>
+      <button class="btn btn-sm">添加</button>
+    </form>
+    <p class="muted mb">示例 config：
+      buyer_tax_no → <code>{"tax_nos":["91110000XXXX..."]}</code> ·
+      period → <code>{"start":"2026-01-01","end":"2026-12-31"}</code> ·
+      amount → <code>{"min":0,"max":100000}</code> ·
+      dedup → <code>{"disallow_red_flush":true}</code></p>
+    {% if rules %}
+    <table><tr><th>ID</th><th>名称</th><th>类型</th><th>优先级</th><th>短路</th><th>config</th><th>启用</th><th>操作</th></tr>
+    {% for r in rules %}
+      <tr><td>#{{ r.id }}</td><td>{{ r.name }}</td><td class="muted">{{ r.rule_type }}</td>
+          <td>{{ r.priority }}</td><td>{{ '是' if r.stop_on_fail else '否' }}</td>
+          <td class="wrap muted">{{ r.config }}</td>
+          <td><span class="badge {{ 'badge-green' if r.enabled else 'badge-gray' }}">{{ '启用' if r.enabled else '停用' }}</span></td>
+          <td>
+            <button class="btn btn-sm btn-outline" onclick="toggleRule({{ r.id }})">{{ '停用' if r.enabled else '启用' }}</button>
+            <button class="btn btn-sm btn-danger" onclick="delRule({{ r.id }})">删除</button>
+          </td></tr>
+    {% endfor %}</table>
+    {% else %}<p class="muted">暂无自定义规则（内置校验 C1-C5 始终生效）。</p>{% endif %}
+  </div>
+</div>
+
+<div class="card">
+  <h2>系统信息</h2>
+  <div class="kv">
+    <span class="k">数据库</span><span>data/fapiao.db（SQLite）</span>
+    <span class="k">匹配阈值</span><span>自动通过 ≥ 0.95 · 待人工 0.70~0.95 · 无候选 &lt; 0.70</span>
+    <span class="k">金额容差</span><span>±0.01（不变量 I5）</span>
+    <span class="k">OCR</span><span>未配置（解析链中 OCR 环节自动跳过；图片/扫描件请人工录入）</span>
+    <span class="k">日志</span><span>data/logs/app.log</span>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function delCompany(id){if(await confirmDlg('确认删除该公司抬头？'))post(`/api/companies/${id}/delete`).then(()=>location.reload());}
+async function delRule(id){if(await confirmDlg('确认删除该规则？'))post(`/api/rules/${id}/delete`).then(()=>location.reload());}
+function toggleRule(id){post(`/api/rules/${id}/toggle`).then(()=>location.reload());}
+</script>
+{% endblock %}

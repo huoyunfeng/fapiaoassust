@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block content %}
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
+  <h1 style="font-size:20px;">报销单管理</h1>
+  <button class="btn" onclick="openModal()">导入报销单 Excel</button>
+</div>
+
+{% if batches %}
+<div class="card">
+  <h2>批次</h2>
+  <table>
+    <tr><th>批次号</th><th>行数</th><th>导入时间</th><th>操作</th></tr>
+    {% for b in batches %}
+    <tr><td><a class="link" href="/reimburses?batch_id={{ b.batch_id }}">{{ b.batch_id }}</a></td>
+        <td>{{ b.row_count }}</td><td>{{ b.created_at }}</td>
+        <td><button class="btn btn-sm btn-danger" onclick="delBatch('{{ b.batch_id }}')">删除批次</button></td></tr>
+    {% endfor %}
+  </table>
+</div>
+{% endif %}
+
+<div class="card">
+  <form class="inline" method="get">
+    <select name="batch_id">
+      <option value="">全部批次</option>
+      {% for b in batches %}<option value="{{ b.batch_id }}" {% if batch_id==b.batch_id %}selected{% endif %}>{{ b.batch_id }}</option>{% endfor %}
+    </select>
+    <input name="q" value="{{ q }}" placeholder="单号/提交人/费用类型">
+    <button class="btn btn-sm">筛选</button>
+  </form>
+</div>
+
+<div class="card">
+  {% if rows %}
+  <table>
+    <tr><th>ID</th><th>单号</th><th>提交人</th><th>报销日期</th><th>期间</th><th>费用类型</th>
+        <th>金额</th><th>登记发票号</th><th>状态</th><th>备注</th><th>操作</th></tr>
+    {% for r in rows %}
+    <tr>
+      <td>#{{ r.id }}</td><td>{{ r.reimburse_no }}</td><td>{{ r.submitter }}</td>
+      <td>{{ r.reimburse_date or '—' }}</td>
+      <td class="muted">{{ r.period_start or '' }} ~ {{ r.period_end or '' }}</td>
+      <td>{{ r.expense_type or '—' }}</td>
+      <td><b>{{ r.amount }}</b></td><td>{{ r.invoice_no or '—' }}</td>
+      <td>{% if r.matched %}<span class="badge badge-purple">已匹配</span>{% else %}<span class="badge badge-gray">未匹配</span>{% endif %}</td>
+      <td class="wrap muted">{{ r.remark }}</td>
+      <td><button class="btn btn-sm btn-danger" onclick="delReimburse({{ r.id }})">删除</button></td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}<p class="muted">暂无报销单，点击右上角导入 Excel（表头需含: 报销单号、金额）</p>{% endif %}
+</div>
+{% endblock %}
+
+{% block modal %}
+<h2 style="margin-bottom:14px;">导入报销单 Excel</h2>
+<p class="muted mb">首行表头支持：报销单号 / 提交人 / 报销日期 / 期间起 / 期间止 / 费用类型 / 金额 / 发票号 / 发票日期 / 备注</p>
+<form onsubmit="submitForm(event,'/api/reimburses/import')">
+  <input type="file" name="file" accept=".xlsx,.xls" required style="width:100%;">
+  <div class="mt"><button class="btn">导入</button> <button type="button" class="btn btn-outline" onclick="closeModal()">取消</button></div>
+</form>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function delReimburse(id){
+  if(!await confirmDlg('确认删除该报销单？关联匹配将级联删除，已匹配发票回到 NORMAL。'))return;
+  post(`/api/reimburses/${id}/delete`).then(()=>location.reload());
+}
+async function delBatch(bid){
+  if(!await confirmDlg(`确认删除批次 ${bid} 的全部报销单？`))return;
+  post(`/api/reimburses/batch/${bid}/delete`).then(()=>location.reload());
+}
+</script>
+{% endblock %}
