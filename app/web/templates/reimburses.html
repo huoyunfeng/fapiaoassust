@@ -1,19 +1,42 @@
 {% extends "base.html" %}
 {% block content %}
+<style>
+.wiz-steps{display:flex;gap:8px;margin-bottom:18px;}
+.wiz-step{flex:1;text-align:center;padding:8px;border-radius:8px;background:#f3f4f6;color:var(--muted);font-size:13px;}
+.wiz-step.active{background:#eff6ff;color:var(--primary);font-weight:600;}
+.mode-card{flex:1;border:1px solid var(--border);border-radius:8px;padding:12px;cursor:pointer;display:block;}
+.mode-card.on{border-color:var(--primary);background:#eff6ff;}
+.guide{border:1px solid #bfdbfe;background:#eff6ff;border-radius:8px;padding:12px 14px;margin-bottom:12px;font-size:13px;}
+.guide ol{margin:8px 0 0 18px;line-height:1.9;}
+.alert{border-radius:8px;padding:10px 14px;font-size:13px;margin-bottom:12px;}
+.alert-red{background:#fee2e2;color:#991b1b;border:1px solid #fecaca;}
+.alert-green{background:#dcfce7;color:#166534;border:1px solid #bbf7d0;}
+.err-list{max-height:180px;overflow:auto;background:#fff7f7;border:1px solid #fee2e2;border-radius:8px;padding:8px 12px;margin-bottom:12px;font-size:12px;line-height:1.8;}
+.hint{border:1px dashed var(--border);border-radius:8px;padding:8px 12px;font-size:12px;color:var(--muted);margin-top:10px;}
+</style>
+
 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
   <h1 style="font-size:20px;">报销单管理</h1>
-  <button class="btn" onclick="openModal()">导入报销单 Excel</button>
+  <div style="display:flex;gap:8px;">
+    <button class="btn btn-outline" onclick="openTemplateManager()">模板管理</button>
+    <button class="btn btn-outline" onclick="openManualEntry()">手动录入</button>
+    <button class="btn" onclick="openImportWizard()">导入报销单 Excel</button>
+  </div>
 </div>
 
 {% if batches %}
 <div class="card">
   <h2>批次</h2>
   <table>
-    <tr><th>批次号</th><th>行数</th><th>导入时间</th><th>操作</th></tr>
+    <tr><th>批次号</th><th>模板</th><th>行数</th><th>导入时间</th><th>操作</th></tr>
     {% for b in batches %}
-    <tr><td><a class="link" href="/reimburses?batch_id={{ b.batch_id }}">{{ b.batch_id }}</a></td>
-        <td>{{ b.row_count }}</td><td>{{ b.created_at }}</td>
-        <td><button class="btn btn-sm btn-danger" onclick="delBatch('{{ b.batch_id }}')">删除批次</button></td></tr>
+    <tr>
+      <td><a class="link" href="/reimburses?batch_id={{ b.batch_id }}">{{ b.batch_id }}</a></td>
+      <td class="muted">{{ b.template_name or '—' }}</td>
+      <td>{{ b.row_count }}</td>
+      <td>{{ b.created_at }}</td>
+      <td><button class="btn btn-sm btn-danger" onclick="delBatch('{{ b.batch_id }}')">删除批次</button></td>
+    </tr>
     {% endfor %}
   </table>
 </div>
@@ -33,43 +56,636 @@
 <div class="card">
   {% if rows %}
   <table>
-    <tr><th>ID</th><th>单号</th><th>提交人</th><th>报销日期</th><th>期间</th><th>费用类型</th>
-        <th>金额</th><th>登记发票号</th><th>状态</th><th>备注</th><th>操作</th></tr>
+    <tr>
+      <th>ID</th><th>单号</th><th>提交人</th><th>报销日期</th><th>期间</th>
+      <th>费用类型</th><th>金额</th><th>发票号</th><th>状态</th><th>备注</th>
+      {% if extra_cols %}{% for c in extra_cols %}<th>{{ c }}</th>{% endfor %}{% endif %}
+      <th>操作</th>
+    </tr>
     {% for r in rows %}
     <tr>
-      <td>#{{ r.id }}</td><td>{{ r.reimburse_no }}</td><td>{{ r.submitter }}</td>
+      <td>#{{ r.id }}</td>
+      <td>{{ r.reimburse_no }}</td>
+      <td>{{ r.submitter }}</td>
       <td>{{ r.reimburse_date or '—' }}</td>
       <td class="muted">{{ r.period_start or '' }} ~ {{ r.period_end or '' }}</td>
       <td>{{ r.expense_type or '—' }}</td>
-      <td><b>{{ r.amount }}</b></td><td>{{ r.invoice_no or '—' }}</td>
+      <td class="num"><b>{{ r.amount }}</b></td>
+      <td>{{ r.invoice_no or '—' }}</td>
       <td>{% if r.matched %}<span class="badge badge-purple">已匹配</span>{% else %}<span class="badge badge-gray">未匹配</span>{% endif %}</td>
       <td class="wrap muted">{{ r.remark }}</td>
+      {% if extra_cols %}{% for c in extra_cols %}<td class="wrap muted">{{ r.extra_data.get(c, '') }}</td>{% endfor %}{% endif %}
       <td><button class="btn btn-sm btn-danger" onclick="delReimburse({{ r.id }})">删除</button></td>
     </tr>
     {% endfor %}
   </table>
-  {% else %}<p class="muted">暂无报销单，点击右上角导入 Excel（表头需含: 报销单号、金额）</p>{% endif %}
+  {% else %}<p class="muted">暂无报销单，点击右上角「导入报销单 Excel」开始。</p>{% endif %}
 </div>
-{% endblock %}
 
-{% block modal %}
-<h2 style="margin-bottom:14px;">导入报销单 Excel</h2>
-<p class="muted mb">首行表头支持：报销单号 / 提交人 / 报销日期 / 期间起 / 期间止 / 费用类型 / 金额 / 发票号 / 发票日期 / 备注</p>
-<form onsubmit="submitForm(event,'/api/reimburses/import')">
-  <input type="file" name="file" accept=".xlsx,.xls" required style="width:100%;">
-  <div class="mt"><button class="btn">导入</button> <button type="button" class="btn btn-outline" onclick="closeModal()">取消</button></div>
-</form>
+<!-- ===================== 导入向导 ===================== -->
+<div id="importWizard" class="modal" style="width:780px;">
+  <h2 style="margin-bottom:12px;">导入报销单 Excel</h2>
+  <div class="wiz-steps">
+    <span class="wiz-step active" id="wizTag1">1 选择方式</span>
+    <span class="wiz-step" id="wizTag2">2 确认</span>
+    <span class="wiz-step" id="wizTag3">3 完成</span>
+  </div>
+
+  <!-- 步骤 1 -->
+  <div id="wizStep1">
+    <div class="alert alert-red" id="wizAlert" style="display:none;"></div>
+    <p class="muted mb">选择导入方式：</p>
+    <div style="display:flex;gap:12px;margin-bottom:14px;">
+      <label class="mode-card" id="modeCardTemplate">
+        <input type="radio" name="wizMode" value="template" checked onchange="switchWizMode()"> <b>使用模板</b>
+        <div class="muted" style="margin-top:4px;">从已有模板中选择，按模板列名自动匹配</div>
+      </label>
+      <label class="mode-card" id="modeCardCustom">
+        <input type="radio" name="wizMode" value="custom" onchange="switchWizMode()"> <b>自定义映射</b>
+        <div class="muted" style="margin-top:4px;">上传 Excel，逐列指定对应字段</div>
+      </label>
+    </div>
+
+    <!-- 模板模式 -->
+    <div id="wizTemplateMode">
+      <label class="muted">选择模板：</label>
+      <select id="wizTemplateId" style="width:100%;margin:6px 0 12px;"></select>
+      <label class="muted">上传 Excel 文件：</label>
+      <input type="file" id="wizTplFile" accept=".xlsx,.xls" style="width:100%;margin-top:6px;">
+      <div class="hint">提示：系统会自动在前 15 行内寻找表头行，首行的「XX明细表」合并标题不影响导入。</div>
+    </div>
+
+    <!-- 自定义映射模式 -->
+    <div id="wizCustomMode" style="display:none;">
+      <div class="guide" id="wizGuide" style="display:none;">
+        <b>首次使用自定义导入，请按 3 步操作：</b>
+        <ol>
+          <li>第 1 步：上传您的 Excel</li>
+          <li>第 2 步：告诉我们每一列代表什么</li>
+          <li>第 3 步：系统会记住您的格式，下次自动识别</li>
+        </ol>
+        <div style="margin-top:8px;"><button class="btn btn-sm" onclick="dismissGuide()">我知道了</button></div>
+      </div>
+      <label class="muted">上传 Excel 文件：</label>
+      <input type="file" id="wizFile" accept=".xlsx,.xls" style="width:100%;margin-top:6px;" onchange="onWizFileChange()">
+      <div id="wizHost" class="muted" style="margin-top:6px;"></div>
+      <div id="wizMappingArea" style="margin-top:12px;"></div>
+    </div>
+
+    <div class="mt" style="text-align:right;">
+      <button class="btn btn-outline" onclick="closeWizard()">取消</button>
+      <button class="btn" onclick="wizNext()">下一步</button>
+    </div>
+  </div>
+
+  <!-- 步骤 2 -->
+  <div id="wizStep2" style="display:none;">
+    <p class="muted mb">确认导入信息：</p>
+    <div id="wizSummary" class="kv" style="margin-bottom:12px;"></div>
+    <div class="mt" style="text-align:right;">
+      <button class="btn btn-outline" onclick="wizPrev()">上一步</button>
+      <button class="btn" id="wizConfirmBtn" onclick="wizConfirm()">确认导入</button>
+    </div>
+  </div>
+
+  <!-- 步骤 3：结果 / 降级策略 -->
+  <div id="wizStep3" style="display:none;">
+    <div id="wizResult"></div>
+    <div class="mt" style="text-align:right;">
+      <button class="btn btn-outline" onclick="closeWizard()">关闭</button>
+      <button class="btn" id="wizDoneBtn" onclick="location.reload()" style="display:none;">查看结果</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===================== 手动录入 ===================== -->
+<div id="manualEntry" class="modal" style="width:560px;">
+  <h2 style="margin-bottom:12px;">手动录入报销单</h2>
+  <div class="kv" style="margin-bottom:12px;">
+    <div class="k">报销单号 *</div><div><input id="mNo" style="width:100%;"></div>
+    <div class="k">提交人</div><div><input id="mSubmitter" style="width:100%;"></div>
+    <div class="k">报销日期</div><div><input id="mDate" placeholder="YYYY-MM-DD" style="width:100%;"></div>
+    <div class="k">费用类型</div><div><input id="mType" style="width:100%;"></div>
+    <div class="k">金额 *</div><div><input id="mAmount" style="width:100%;"></div>
+    <div class="k">发票号</div><div><input id="mInvoiceNo" style="width:100%;"></div>
+    <div class="k">备注</div><div><input id="mRemark" style="width:100%;"></div>
+  </div>
+  <div style="text-align:right;">
+    <button class="btn btn-outline" onclick="closeManualEntry()">取消</button>
+    <button class="btn" onclick="saveManualEntry()">保存</button>
+  </div>
+</div>
+
+<!-- ===================== 模板管理 ===================== -->
+<div id="templateManager" class="modal" style="width:760px;">
+  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+    <h2>模板管理</h2>
+    <button class="btn btn-sm" onclick="openTemplateEditor()">新建模板</button>
+  </div>
+  <div id="templateList"></div>
+</div>
+
+<div id="templateEditor" class="modal" style="width:820px;">
+  <h2 id="tplEditorTitle">新建模板</h2>
+  <div class="kv" style="margin-bottom:12px;">
+    <div class="k">模板名称</div><div><input id="tplName" style="width:100%;"></div>
+    <div class="k">描述</div><div><input id="tplDesc" style="width:100%;"></div>
+  </div>
+  <table style="margin-bottom:12px;">
+    <thead>
+      <tr><th>Excel 列名</th><th>系统字段</th><th>必填</th><th>类型</th><th>操作</th></tr>
+    </thead>
+    <tbody id="tplFieldsBody"></tbody>
+  </table>
+  <button class="btn btn-outline btn-sm" onclick="addTplField()">+ 添加字段</button>
+  <div class="hint">系统会自动在 Excel 前 15 行内定位与「Excel 列名」匹配的表头行。</div>
+  <div class="mt" style="text-align:right;">
+    <button class="btn btn-outline" onclick="closeTemplateEditor()">取消</button>
+    <button class="btn" onclick="saveTemplate()">保存</button>
+  </div>
+</div>
 {% endblock %}
 
 {% block scripts %}
 <script>
+// ============================================================
+// 通用
+// ============================================================
+const SYSTEM_FIELDS = [
+  ['reimburse_no','报销单号'], ['submitter','提交人'], ['reimburse_date','报销日期'],
+  ['period_start','期间起'], ['period_end','期间止'], ['expense_type','费用类型'],
+  ['amount','金额（锚点·必选）'], ['invoice_no','发票号'], ['invoice_date','发票日期'],
+  ['remark','备注'],
+];
+const SYSTEM_LABEL = Object.fromEntries(SYSTEM_FIELDS);
+const CUSTOM_OPT = '__custom__';
+
+let currentTemplates = [];
+let wizState = { mode:'template', templateId:null, file:null, headerRow:1,
+                 headers:[], mapping:{}, fromCache:false, lastErrors:[] };
+
+function esc(s){ return String(s ?? '').replace(/[&<>"']/g, c =>
+  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+
+function showBg(){ document.getElementById('modalBg').style.display='block'; }
+function hideBg(){ document.getElementById('modalBg').style.display='none'; }
+function showEl(id){ document.getElementById(id).style.display='block'; showBg(); }
+function hideEl(id){ document.getElementById(id).style.display='none'; }
+
+// 向导内常驻提示（比 3.5 秒自动消失的 toast 更可靠，用户不会再「看不到任何提示」）
+function wizAlert(msg){
+  const el = document.getElementById('wizAlert');
+  if(!msg){ el.style.display='none'; el.textContent=''; return; }
+  el.textContent = msg;
+  el.style.display = 'block';
+  el.scrollIntoView({block:'nearest'});
+}
+function clearWizAlert(){ wizAlert(''); }
+
+// ============================================================
+// 模板加载 / 列表
+// ============================================================
+async function loadTemplates(){
+  try{
+    const r = await fetch('/api/reimburses/templates');
+    const j = await r.json();
+    currentTemplates = j.data || [];
+  }catch(e){ currentTemplates = []; }
+  const sel = document.getElementById('wizTemplateId');
+  sel.innerHTML = currentTemplates.length
+    ? currentTemplates.map(t => `<option value="${t.id}">${esc(t.name)}${t.is_default?'（默认）':''}</option>`).join('')
+    : '<option value="">（暂无模板）</option>';
+  // 默认选中经典模板
+  const classic = currentTemplates.find(t => t.is_system);
+  if(classic) sel.value = classic.id;
+  renderTemplateList();
+}
+
+function renderTemplateList(){
+  const el = document.getElementById('templateList');
+  if(!currentTemplates.length){ el.innerHTML = '<p class="muted">暂无模板</p>'; return; }
+  el.innerHTML = '<table><tr><th>名称</th><th>类型</th><th>默认</th><th>字段数</th><th>使用</th><th>操作</th></tr>' +
+    currentTemplates.map(t => `<tr>
+      <td>${esc(t.name)}</td>
+      <td>${t.is_system ? '<span class="badge badge-blue">系统内置</span>' : '<span class="badge badge-gray">自定义</span>'}</td>
+      <td>${t.is_default ? '<span class="badge badge-green">是</span>' : '—'}</td>
+      <td>${(t.fields_config?.fields || []).length}</td>
+      <td>${t.usage_count || 0}</td>
+      <td>
+        ${t.is_system ? '' : `<button class="btn btn-sm btn-outline" onclick="editTemplate(${t.id})">编辑</button> `}
+        <button class="btn btn-sm btn-outline" onclick="copyTemplate(${t.id})">复制</button>
+        ${t.is_default ? '' : `<button class="btn btn-sm" onclick="setDefaultTemplate(${t.id})">设默认</button> `}
+        ${t.is_system ? '' : `<button class="btn btn-sm btn-danger" onclick="delTemplate(${t.id})">删除</button>`}
+      </td></tr>`).join('') + '</table>';
+}
+
+// ============================================================
+// 导入向导
+// ============================================================
+function setStep(n){
+  document.getElementById('wizStep1').style.display = n===1?'block':'none';
+  document.getElementById('wizStep2').style.display = n===2?'block':'none';
+  document.getElementById('wizStep3').style.display = n===3?'block':'none';
+  [1,2,3].forEach(i => document.getElementById('wizTag'+i).classList.toggle('active', i<=n));
+}
+
+function openImportWizard(){
+  wizState = { mode:'template', templateId:null, file:null, headerRow:1,
+               headers:[], mapping:{}, fromCache:false, lastErrors:[] };
+  document.getElementById('wizTplFile').value = '';
+  document.getElementById('wizFile').value = '';
+  document.getElementById('wizMappingArea').innerHTML = '';
+  document.getElementById('wizHost').textContent = '';
+  document.getElementById('wizResult').innerHTML = '';
+  clearWizAlert();
+  document.querySelector('input[name="wizMode"][value="template"]').checked = true;
+  switchWizMode();
+  setStep(1);
+  showEl('importWizard');
+  loadTemplates();
+}
+function closeWizard(){ hideEl('importWizard'); hideBg(); }
+
+function switchWizMode(){
+  const mode = document.querySelector('input[name="wizMode"]:checked').value;
+  wizState.mode = mode;
+  clearWizAlert();
+  document.getElementById('wizTemplateMode').style.display = mode==='template'?'block':'none';
+  document.getElementById('wizCustomMode').style.display = mode==='custom'?'block':'none';
+  document.getElementById('modeCardTemplate').classList.toggle('on', mode==='template');
+  document.getElementById('modeCardCustom').classList.toggle('on', mode==='custom');
+  // §12.5 首次使用自定义导入时展示引导
+  if(mode==='custom' && !localStorage.getItem('reimburse_guide_done')){
+    document.getElementById('wizGuide').style.display='block';
+  }
+}
+function dismissGuide(){
+  localStorage.setItem('reimburse_guide_done','1');
+  document.getElementById('wizGuide').style.display='none';
+}
+
+// ---------- 自定义映射：上传 + 检测 ----------
+async function onWizFileChange(){
+  const f = document.getElementById('wizFile').files[0];
+  if(!f) return;
+  wizState.file = f;
+  document.getElementById('wizHost').textContent = '正在解析表头…';
+  const fd = new FormData(); fd.append('file', f);
+  let j;
+  try{
+    const r = await fetch('/api/reimburses/mapping/detect', { method:'POST', body:fd });
+    j = await r.json();
+  }catch(e){
+    document.getElementById('wizHost').textContent = '';
+    toast('表头解析失败：' + e, false); return;
+  }
+  if(j.ok === false){
+    document.getElementById('wizHost').textContent = '';
+    wizAlert(j.message || '表头解析失败');
+    toast(j.message || '表头解析失败', false); return;
+  }
+  const d = j.data || {};
+  wizState.headers  = d.headers || [];
+  wizState.headerRow = d.header_row || 1;
+  wizState.fromCache = !!d.from_cache;
+  // 自动映射：未命中的列默认按「自定义字段（保留原名）」处理
+  const mp = {};
+  wizState.headers.forEach(h => { mp[h] = d.mapping?.[h] || ('custom_' + h); });
+  wizState.mapping = mp;
+  document.getElementById('wizHost').textContent =
+    `表头在第 ${wizState.headerRow} 行，共 ${wizState.headers.length} 列`
+    + (wizState.fromCache ? '（已命中历史映射，自动套用）' : '');
+  clearWizAlert();
+  renderMappingArea();
+}
+
+function renderMappingArea(){
+  const el = document.getElementById('wizMappingArea');
+  if(!wizState.headers.length){ el.innerHTML = '<p class="muted">未识别到表头</p>'; return; }
+  let html = '<table><tr><th style="width:45%;">Excel 列名</th><th>映射到</th></tr>';
+  wizState.headers.forEach((h, i) => {
+    const cur = wizState.mapping[h] || '';
+    const isCustom = cur.startsWith('custom_');
+    html += `<tr>
+      <td>${esc(h)}</td>
+      <td><select data-idx="${i}" onchange="setMap(this)" style="width:100%;">
+        <option value="">— 不导入 —</option>
+        ${SYSTEM_FIELDS.map(([k,label]) =>
+          `<option value="${k}" ${cur===k?'selected':''}>${esc(label)}</option>`).join('')}
+        <option value="${CUSTOM_OPT}" ${isCustom?'selected':''}>自定义字段（保留原名）</option>
+      </select></td>
+    </tr>`;
+  });
+  html += '</table>';
+  el.innerHTML = html;
+}
+
+// 修复：原 onchange 内联 JSON.stringify 会截断 HTML 属性，导致用户改的映射不生效
+function setMap(sel){
+  const h = wizState.headers[parseInt(sel.dataset.idx, 10)];
+  const v = sel.value;
+  if(v === CUSTOM_OPT) wizState.mapping[h] = 'custom_' + h;
+  else if(v === '') delete wizState.mapping[h];
+  else wizState.mapping[h] = v;
+}
+
+// ---------- 步骤流转 ----------
+function wizNext(){
+  if(wizState.mode === 'template'){
+    const f = document.getElementById('wizTplFile').files[0];
+    if(!f){ wizAlert('请先选择要导入的 Excel 文件'); toast('请先选择要导入的 Excel 文件', false); return; }
+    const tid = parseInt(document.getElementById('wizTemplateId').value);
+    if(!tid){ wizAlert('请选择模板'); toast('请选择模板', false); return; }
+    wizState.file = f; wizState.templateId = tid;
+    const tpl = currentTemplates.find(t => t.id === tid);
+    document.getElementById('wizSummary').innerHTML =
+      `<div class="k">导入方式</div><div>使用模板</div>
+       <div class="k">模板名称</div><div>${esc(tpl?.name || '')}</div>
+       <div class="k">字段数</div><div>${(tpl?.fields_config?.fields || []).length}</div>
+       <div class="k">文件名</div><div>${esc(f.name)}</div>`;
+  }else{
+    if(!wizState.file){ wizAlert('请先上传 Excel 文件'); toast('请先上传 Excel 文件', false); return; }
+    if(!wizState.headers.length){ wizAlert('未识别到表头，请检查文件是否为有效的报销单 Excel'); toast('未识别到表头', false); return; }
+    const mapped = Object.values(wizState.mapping).filter(v => v && !v.startsWith('custom_')).length;
+    if(!Object.values(wizState.mapping).includes('amount')){
+      wizAlert('必须把某一列映射为「金额」——金额是匹配引擎的锚点字段');
+      toast('必须映射「金额」字段（锚点）', false); return;
+    }
+    const customs = Object.values(wizState.mapping).filter(v => v.startsWith('custom_')).length;
+    document.getElementById('wizSummary').innerHTML =
+      `<div class="k">导入方式</div><div>自定义映射</div>
+       <div class="k">文件名</div><div>${esc(wizState.file.name)}</div>
+       <div class="k">表头行</div><div>第 ${wizState.headerRow} 行</div>
+       <div class="k">识别列数</div><div>${wizState.headers.length}</div>
+       <div class="k">系统字段</div><div>${mapped} 列</div>
+       <div class="k">自定义字段</div><div>${customs} 列（存入附加信息）</div>`;
+  }
+  clearWizAlert();
+  setStep(2);
+}
+
+function wizPrev(){ setStep(1); }
+
+async function buildFieldsConfig(headers, mapping, headerRow){
+  const fd = new FormData();
+  fd.append('headers', JSON.stringify(headers));
+  fd.append('mapping', JSON.stringify(mapping));
+  fd.append('header_row', headerRow || 1);
+  const r = await fetch('/api/reimburses/mapping/build-fields', { method:'POST', body:fd });
+  const j = await r.json();
+  return j.data || {};
+}
+
+async function wizConfirm(){
+  const btn = document.getElementById('wizConfirmBtn');
+  btn.disabled = true; btn.textContent = '导入中…';
+  try{
+    const fd = new FormData();
+    fd.append('file', wizState.file);
+    if(wizState.mode === 'template'){
+      fd.append('template_id', wizState.templateId);
+    }else{
+      const fc = await buildFieldsConfig(wizState.headers, wizState.mapping, wizState.headerRow);
+      fd.append('fields_config', JSON.stringify(fc));
+    }
+    const r = await fetch('/api/reimburses/import', { method:'POST', body:fd });
+    let j;
+    try{ j = await r.json(); }
+    catch(e){ throw new Error('服务返回非 JSON（HTTP ' + r.status + '），请检查文件格式'); }
+
+    const d = j.data || j;
+    if(d.ok){ renderSuccess(d); }
+    else{ renderFailure(d.message || '导入失败', d.errors || []); }
+  }catch(e){
+    renderFailure('导入过程出错：' + e.message, []);
+  }finally{
+    btn.disabled = false; btn.textContent = '确认导入';
+  }
+}
+
+function renderSuccess(d){
+  clearWizAlert();
+  let html = `<div class="alert alert-green"><b>导入成功</b>，共 ${d.imported} 行。</div>`;
+  if(d.errors && d.errors.length){
+    html += `<p class="muted mb">以下 ${d.errors.length} 行被跳过：</p>
+             <div class="err-list">` + d.errors.map(e =>
+             `第 ${e.row_index} 行：${esc(e.message)}`).join('<br>') + '</div>';
+  }
+  document.getElementById('wizResult').innerHTML = html;
+  const done = document.getElementById('wizDoneBtn');
+  done.style.display = 'inline-block';
+  setStep(3);
+  toast(`导入成功：${d.imported} 行`);
+}
+
+// §12.4 降级策略：自定义导入失败 → 提示 → 经典模板重导 → 仍失败 → 手动录入
+function renderFailure(msg, errors){
+  clearWizAlert();
+  wizState.lastErrors = errors || [];
+  let html = `<div class="alert alert-red"><b>导入失败</b><br>${esc(msg)}</div>`;
+  if(errors && errors.length){
+    html += `<div class="err-list">` + errors.map(e =>
+            `第 ${e.row_index} 行：${esc(e.message)}`).join('<br>') + '</div>';
+  }
+  html += `<p class="muted mb">您可以尝试以下任一方式继续：</p>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+      <button class="btn btn-outline" onclick="fallbackAdjustMapping()">返回并调整映射</button>
+      <button class="btn btn-outline" onclick="fallbackClassic()">使用经典模板重新导入</button>
+      <button class="btn" onclick="closeWizard(); openManualEntry();">手动录入</button>
+    </div>`;
+  document.getElementById('wizResult').innerHTML = html;
+  document.getElementById('wizDoneBtn').style.display = 'none';
+  setStep(3);
+  toast('导入失败，请查看提示', false);
+  if(wizState.mode === 'custom') localStorage.removeItem('reimburse_guide_done');
+}
+
+function fallbackAdjustMapping(){ clearWizAlert(); setStep(1); }
+
+// 使用经典模板重新导入（同一文件直接重试）
+async function fallbackClassic(){
+  const classic = currentTemplates.find(t => t.is_system);
+  if(!classic){ toast('未找到内置经典模板', false); return; }
+  if(!wizState.file){ toast('原文件已丢失，请重新上传', false); setStep(1); return; }
+  const btn = document.getElementById('wizConfirmBtn');
+  try{
+    const fd = new FormData();
+    fd.append('file', wizState.file);
+    fd.append('template_id', classic.id);
+    const r = await fetch('/api/reimburses/import', { method:'POST', body:fd });
+    const j = await r.json();
+    const d = j.data || j;
+    if(d.ok){ wizState.mode = 'template'; renderSuccess(d); }
+    else{
+      // 经典模板仍无法解析 → 只剩手动录入
+      document.getElementById('wizResult').innerHTML =
+        `<div class="alert alert-red"><b>经典模板仍无法解析该文件</b><br>${esc(d.message || '')}</div>
+         <p class="muted mb">请改用「手动录入」逐条录入：</p>
+         <div style="display:flex;gap:8px;flex-wrap:wrap;">
+           <button class="btn" onclick="closeWizard(); openManualEntry();">手动录入</button>
+           <button class="btn btn-outline" onclick="setStep(1)">返回</button>
+         </div>`;
+      setStep(3);
+      toast('经典模板仍无法解析', false);
+    }
+  }catch(e){ toast('重试失败：' + e.message, false); }
+}
+
+// ============================================================
+// 手动录入
+// ============================================================
+function openManualEntry(){
+  ['mNo','mSubmitter','mDate','mType','mAmount','mInvoiceNo','mRemark']
+    .forEach(id => document.getElementById(id).value = '');
+  showEl('manualEntry');
+}
+function closeManualEntry(){ hideEl('manualEntry'); hideBg(); }
+
+async function saveManualEntry(){
+  const fd = new FormData();
+  fd.append('reimburse_no', document.getElementById('mNo').value.trim());
+  fd.append('submitter', document.getElementById('mSubmitter').value.trim());
+  fd.append('reimburse_date', document.getElementById('mDate').value.trim());
+  fd.append('expense_type', document.getElementById('mType').value.trim());
+  fd.append('amount', document.getElementById('mAmount').value.trim());
+  fd.append('invoice_no', document.getElementById('mInvoiceNo').value.trim());
+  fd.append('remark', document.getElementById('mRemark').value.trim());
+  const r = await fetch('/api/reimburses/manual', { method:'POST', body:fd });
+  const j = await r.json();
+  const d = j.data || j;
+  if(d.ok){ toast(d.message || '已录入'); setTimeout(()=>location.reload(), 700); }
+  else toast(d.message || '录入失败', false);
+}
+
+// ============================================================
+// 模板管理
+// ============================================================
+function openTemplateManager(){ showEl('templateManager'); loadTemplates(); }
+
+let editingTemplateId = null;
+function openTemplateEditor(){
+  editingTemplateId = null;
+  document.getElementById('tplEditorTitle').textContent = '新建模板';
+  document.getElementById('tplName').value = '';
+  document.getElementById('tplDesc').value = '';
+  document.getElementById('tplFieldsBody').innerHTML = '';
+  addTplField('报销单号','reimburse_no',true);
+  addTplField('金额','amount',true);
+  addTplField('提交人','submitter',false);
+  addTplField('备注','remark',false);
+  showEl('templateEditor');
+}
+
+function editTemplate(id){
+  const tpl = currentTemplates.find(t => t.id === id);
+  if(!tpl) return;
+  editingTemplateId = id;
+  document.getElementById('tplEditorTitle').textContent = '编辑模板：' + tpl.name;
+  document.getElementById('tplName').value = tpl.name;
+  document.getElementById('tplDesc').value = tpl.description || '';
+  document.getElementById('tplFieldsBody').innerHTML = '';
+  (tpl.fields_config?.fields || []).forEach(f =>
+    addTplField(f.excel_header, f.is_custom ? 'custom' : f.system_key, f.required, f.type, f.is_custom));
+  showEl('templateEditor');
+}
+function closeTemplateEditor(){ hideEl('templateEditor'); hideBg(); }
+
+function addTplField(excel_header='', system_key='', required=false, type='string', is_custom=false){
+  const tr = document.createElement('tr');
+  tr.innerHTML = `
+    <td><input class="tpl-excel" value="${esc(excel_header)}" style="width:100%;"></td>
+    <td><select class="tpl-sys" style="width:100%;">
+      ${SYSTEM_FIELDS.map(([k,label]) =>
+        `<option value="${k}" ${system_key===k?'selected':''}>${esc(label)}</option>`).join('')}
+      <option value="custom" ${is_custom?'selected':''}>自定义字段</option>
+    </select></td>
+    <td><input type="checkbox" class="tpl-req" ${required?'checked':''}></td>
+    <td><select class="tpl-type" style="width:100%;">
+      <option value="string" ${type==='string'?'selected':''}>string</option>
+      <option value="decimal" ${type==='decimal'?'selected':''}>decimal</option>
+      <option value="date" ${type==='date'?'selected':''}>date</option>
+    </select></td>
+    <td><button class="btn btn-sm btn-outline" onclick="this.closest('tr').remove()">删除</button></td>`;
+  document.getElementById('tplFieldsBody').appendChild(tr);
+}
+
+async function saveTemplate(){
+  const name = document.getElementById('tplName').value.trim();
+  if(!name){ toast('请输入模板名称', false); return; }
+  const fields = [];
+  const seen = new Set();
+  document.querySelectorAll('#tplFieldsBody tr').forEach(tr => {
+    const eh = tr.querySelector('.tpl-excel').value.trim();
+    const sk = tr.querySelector('.tpl-sys').value;
+    if(!eh || !sk) return;
+    if(seen.has(eh)) return;              // 表头列名去重
+    seen.add(eh);
+    const custom = sk === 'custom';
+    fields.push({
+      excel_header: eh,
+      system_key: custom ? `custom_${eh}` : sk,
+      required: tr.querySelector('.tpl-req').checked,
+      type: tr.querySelector('.tpl-type').value,
+      is_custom: custom,
+      display_name: eh,
+    });
+  });
+  if(!fields.some(f => f.system_key === 'amount')){
+    toast('必须包含「金额」字段（锚点）', false); return;
+  }
+  const fields_config = { fields, options:{ header_row:1, data_start_row:2,
+    multi_invoice_separator:',', invoice_mode:'one_to_one' } };
+  const fd = new FormData();
+  fd.append('name', name);
+  fd.append('description', document.getElementById('tplDesc').value);
+  fd.append('fields_config', JSON.stringify(fields_config));
+  const url = editingTemplateId ? `/api/reimburses/templates/${editingTemplateId}` : '/api/reimburses/templates';
+  const r = await fetch(url, { method: editingTemplateId ? 'PUT' : 'POST', body: fd });
+  const j = await r.json();
+  const d = j.data || j;
+  if(d.ok){ toast('保存成功'); closeTemplateEditor(); loadTemplates(); }
+  else toast(d.message || '保存失败', false);
+}
+
+async function copyTemplate(id){
+  const name = await promptDlg('请输入新模板名称', '副本');
+  if(!name) return;
+  const fd = new FormData(); fd.append('new_name', name);
+  const r = await fetch(`/api/reimburses/templates/${id}/copy`, { method:'POST', body:fd });
+  const j = await r.json(); const d = j.data || j;
+  if(d.ok){ toast('复制成功'); loadTemplates(); } else toast(d.message || '复制失败', false);
+}
+
+async function setDefaultTemplate(id){
+  const r = await fetch(`/api/reimburses/templates/${id}/set-default`, { method:'POST' });
+  const j = await r.json(); const d = j.data || j;
+  if(d.ok){ toast('已设为默认'); loadTemplates(); } else toast(d.message || '操作失败', false);
+}
+
+async function delTemplate(id){
+  if(!await confirmDlg('确认删除该模板？已导入的数据不受影响。')) return;
+  const r = await fetch(`/api/reimburses/templates/${id}/delete`, { method:'POST' });
+  const j = await r.json(); const d = j.data || j;
+  if(d.ok){ toast('已删除'); loadTemplates(); } else toast(d.message || '删除失败', false);
+}
+
+// ============================================================
+// 删除
+// ============================================================
 async function delReimburse(id){
-  if(!await confirmDlg('确认删除该报销单？关联匹配将级联删除，已匹配发票回到 NORMAL。'))return;
-  post(`/api/reimburses/${id}/delete`).then(()=>location.reload());
+  if(!await confirmDlg('确认删除该报销单？关联匹配将级联删除，已匹配发票回到 NORMAL。')) return;
+  await post(`/api/reimburses/${id}/delete`);
+  location.reload();
 }
 async function delBatch(bid){
-  if(!await confirmDlg(`确认删除批次 ${bid} 的全部报销单？`))return;
-  post(`/api/reimburses/batch/${bid}/delete`).then(()=>location.reload());
+  if(!await confirmDlg(`确认删除批次 ${bid} 的全部报销单？`)) return;
+  await post(`/api/reimburses/batch/${bid}/delete`);
+  location.reload();
 }
+
+// 点击遮罩关闭面板（不干扰 base.html 的 closeModal）
+document.getElementById('modalBg').addEventListener('click', () => {
+  ['importWizard','manualEntry','templateManager','templateEditor'].forEach(hideEl);
+});
 </script>
 {% endblock %}

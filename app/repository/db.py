@@ -9,6 +9,7 @@ DDL 与设计文档 §5 一致，含两处已标注的最小调整：
 2. MATCHED -> NORMAL 转移（见 states.py 注释）：删除报销单级联删除
    生效匹配（I8）后，发票必须能回到 NORMAL，否则永久卡死。
 """
+import json
 import sqlite3
 from contextlib import contextmanager
 from typing import Iterator
@@ -62,6 +63,7 @@ CREATE INDEX IF NOT EXISTS idx_invoice_status    ON invoice(status);
 CREATE TABLE IF NOT EXISTS reimburse (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     batch_id       TEXT NOT NULL,
+    template_id    INTEGER,
     reimburse_no   TEXT NOT NULL,
     submitter      TEXT NOT NULL DEFAULT '',
     reimburse_date TEXT,
@@ -72,6 +74,10 @@ CREATE TABLE IF NOT EXISTS reimburse (
     invoice_no     TEXT NOT NULL DEFAULT '',
     invoice_date   TEXT,
     remark         TEXT NOT NULL DEFAULT '',
+    extra_data     TEXT NOT NULL DEFAULT '{}',
+    source_row     INTEGER,
+    parent_id      INTEGER,
+    split_type     TEXT NOT NULL DEFAULT 'none',
     raw_row        TEXT NOT NULL DEFAULT '{}',
     row_index      INTEGER NOT NULL,
     created_at     TEXT NOT NULL DEFAULT (datetime('now','localtime'))
@@ -82,6 +88,43 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_reimburse_batch_no
 
 CREATE INDEX IF NOT EXISTS idx_reimburse_no     ON reimburse(reimburse_no);
 CREATE INDEX IF NOT EXISTS idx_reimburse_amount ON reimburse(amount);
+
+-- 报销单模板表（设计 §4.2）
+CREATE TABLE IF NOT EXISTS reimburse_template (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    enterprise_id     INTEGER,
+    user_id           INTEGER,
+    name              TEXT NOT NULL,
+    description       TEXT NOT NULL DEFAULT '',
+    is_default        INTEGER NOT NULL DEFAULT 0,
+    is_system         INTEGER NOT NULL DEFAULT 0,
+    fields_config     TEXT NOT NULL DEFAULT '{}',
+    rules_config      TEXT NOT NULL DEFAULT '[]',
+    header_fingerprint TEXT,
+    usage_count       INTEGER NOT NULL DEFAULT 0,
+    deleted_at        TEXT,
+    created_at        TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    updated_at        TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_template_enterprise ON reimburse_template(enterprise_id);
+CREATE INDEX IF NOT EXISTS idx_template_fingerprint ON reimburse_template(header_fingerprint);
+
+-- 映射缓存表（设计 §4.6）：记住"表头 → 字段"的映射关系，下次自动套用
+CREATE TABLE IF NOT EXISTS mapping_cache (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    enterprise_id      INTEGER,
+    user_id            INTEGER,
+    header_fingerprint TEXT NOT NULL,
+    template_id        INTEGER NOT NULL,
+    headers            TEXT NOT NULL,
+    mapping            TEXT NOT NULL DEFAULT '{}',
+    last_used_at       TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    use_count          INTEGER NOT NULL DEFAULT 1,
+    UNIQUE(enterprise_id, header_fingerprint)
+);
+
+CREATE INDEX IF NOT EXISTS idx_mapping_fingerprint ON mapping_cache(header_fingerprint);
 
 CREATE TABLE IF NOT EXISTS match_result (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -199,4 +242,37 @@ def init_schema() -> None:
     """建表（幂等）。应用启动时调用。"""
     with tx() as conn:
         conn.executescript(SCHEMA_SQL)
+        _migrate(conn)
     logger.info("数据库 schema 初始化完成: %s", settings.db_path)
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """幂等迁移：为旧库补充 reimburse 新列与内置经典模板。"""
+    # 1. reimburse 表新增列（SQLite 不支持 ADD COLUMN IF NOT EXISTS，需手动检测）
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(reimburse)").fetchall()}
+    for col, ddl in [
+        ("template_id", "ALTER TABLE reimburse ADD COLUMN template_id INTEGER"),
+        ("extra_data",  "ALTER TABLE reimburse ADD COLUMN extra_data TEXT NOT NULL DEFAULT '{}'"),
+        ("source_row",  "ALTER TABLE reimburse ADD COLUMN source_row INTEGER"),
+        ("parent_id",   "ALTER TABLE reimburse ADD COLUMN parent_id INTEGER"),
+        ("split_type",  "ALTER TABLE reimburse ADD COLUMN split_type TEXT NOT NULL DEFAULT 'none'"),
+    ]:
+        if col not in cols:
+            conn.execute(ddl)
+            logger.info("迁移: reimburse 表新增列 %s", col)
+
+    # 2. 内置经典模板（个人版默认模板）
+    from app.domain.field_registry import default_fields_config
+    exists = conn.execute(
+        "SELECT id FROM reimburse_template WHERE is_system = 1 AND name = ? LIMIT 1",
+        ("经典模板",),
+    ).fetchone()
+    if not exists:
+        conn.execute(
+            """INSERT INTO reimburse_template
+               (name, description, is_default, is_system, fields_config, rules_config)
+               VALUES (?, ?, 1, 1, ?, '[]')""",
+            ("经典模板", "系统内置经典模板，兼容原有导入格式",
+             json.dumps(default_fields_config(), ensure_ascii=False)),
+        )
+        logger.info("迁移: 插入内置经典模板")

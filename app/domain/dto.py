@@ -59,6 +59,16 @@ class ReimburseDTO:
     invoice_date: Optional[str] = None
     remark: str = ""
     row_index: int = 0                          # 原始 Excel 行号，用于追溯
+    # ---- 模板引擎新增字段 ----
+    template_id: Optional[int] = None           # 来源模板
+    extra_data: dict = None                     # 自定义字段 JSON
+    source_row: Optional[int] = None            # 原始 Excel 行号（数据行，1-based）
+    parent_id: Optional[int] = None             # 拆行的父行 id（one_to_many / many_to_one）
+    split_type: str = "none"                    # none / one_to_many / many_to_one
+
+    def __post_init__(self):
+        if self.extra_data is None:
+            self.extra_data = {}
 
     @property
     def period_range(self) -> tuple[Optional[str], Optional[str]]:

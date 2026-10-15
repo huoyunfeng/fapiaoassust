@@ -105,9 +105,10 @@ class InvoiceRepo:
 # =====================================================================
 class ReimburseRepo:
     INSERT_FIELDS = [
-        "batch_id", "reimburse_no", "submitter", "reimburse_date", "period_start",
-        "period_end", "expense_type", "amount", "invoice_no", "invoice_date",
-        "remark", "raw_row", "row_index",
+        "batch_id", "template_id", "reimburse_no", "submitter", "reimburse_date",
+        "period_start", "period_end", "expense_type", "amount", "invoice_no",
+        "invoice_date", "remark", "extra_data", "source_row", "parent_id",
+        "split_type", "raw_row", "row_index",
     ]
 
     def insert(self, conn: sqlite3.Connection, data: dict) -> int:
@@ -116,14 +117,13 @@ class ReimburseRepo:
         marks = ", ".join("?" for _ in fields)
         cur = conn.execute(
             f"INSERT INTO reimburse ({cols}) VALUES ({marks})",
-            [data.get(f) if f != "raw_row" else json.dumps(data.get(f) or {}, ensure_ascii=False)
-             for f in fields],
+            [self._serialize(data.get(f), f) for f in fields],
         )
         return cur.lastrowid
 
     def get(self, conn: sqlite3.Connection, rid: int) -> Optional[dict]:
         row = conn.execute("SELECT * FROM reimburse WHERE id = ?", (rid,)).fetchone()
-        return _row_to_dict(row)
+        return self._to_dict(row)
 
     def list(self, conn: sqlite3.Connection, batch_id: str = None,
              keyword: str = None, limit: int = 500, offset: int = 0) -> List[dict]:
@@ -137,12 +137,15 @@ class ReimburseRepo:
             params += [kw, kw, kw, kw]
         sql += " ORDER BY id DESC LIMIT ? OFFSET ?"
         params += [limit, offset]
-        return _rows_to_dicts(conn.execute(sql, params))
+        return [self._to_dict(r) for r in conn.execute(sql, params)]
 
     def batches(self, conn: sqlite3.Connection) -> List[dict]:
         return _rows_to_dicts(conn.execute(
-            "SELECT batch_id, COUNT(*) AS row_count, MIN(created_at) AS created_at "
-            "FROM reimburse GROUP BY batch_id ORDER BY created_at DESC"
+            """SELECT r.batch_id, COUNT(*) AS row_count, MIN(r.created_at) AS created_at,
+                      t.name AS template_name
+               FROM reimburse r
+               LEFT JOIN reimburse_template t ON t.id = r.template_id
+               GROUP BY r.batch_id ORDER BY created_at DESC"""
         ))
 
     def delete(self, conn: sqlite3.Connection, rid: int) -> None:
@@ -154,6 +157,24 @@ class ReimburseRepo:
 
     def count(self, conn: sqlite3.Connection) -> int:
         return conn.execute("SELECT COUNT(*) AS n FROM reimburse").fetchone()["n"]
+
+    @staticmethod
+    def _serialize(v, field: str = ""):
+        if field in ("extra_data", "raw_row"):
+            return json.dumps(v or {}, ensure_ascii=False)
+        if isinstance(v, bool):
+            return 1 if v else 0
+        return v
+
+    @staticmethod
+    def _to_dict(row):
+        d = _row_to_dict(row)
+        if d:
+            try:
+                d["extra_data"] = json.loads(d.get("extra_data") or "{}")
+            except (json.JSONDecodeError, TypeError):
+                d["extra_data"] = {}
+        return d
 
 
 # =====================================================================
@@ -385,3 +406,151 @@ match_repo = MatchRepo()
 log_repo = LogRepo()
 rule_repo = RuleRepo()
 company_repo = CompanyRepo()
+
+
+# =====================================================================
+# 报销单模板（设计 §4.2 / §5）
+# =====================================================================
+class TemplateRepo:
+    INSERT_FIELDS = [
+        "enterprise_id", "user_id", "name", "description", "is_default",
+        "is_system", "fields_config", "rules_config", "header_fingerprint",
+    ]
+
+    def insert(self, conn, data: dict) -> int:
+        fields = [f for f in self.INSERT_FIELDS if f in data]
+        cols = ", ".join(fields)
+        marks = ", ".join("?" for _ in fields)
+        cur = conn.execute(
+            f"INSERT INTO reimburse_template ({cols}) VALUES ({marks})",
+            [self._serialize(data.get(f), f) for f in fields],
+        )
+        return cur.lastrowid
+
+    def update(self, conn, template_id: int, data: dict) -> None:
+        fields = [f for f in self.INSERT_FIELDS if f in data]
+        if not fields:
+            return
+        sets = ", ".join(f"{f} = ?" for f in fields)
+        params = [self._serialize(data.get(f), f) for f in fields]
+        params.append(template_id)
+        conn.execute(
+            f"UPDATE reimburse_template SET {sets}, updated_at = datetime('now','localtime') WHERE id = ?",
+            params,
+        )
+
+    def get(self, conn, template_id: int) -> Optional[dict]:
+        row = conn.execute(
+            "SELECT * FROM reimburse_template WHERE id = ? AND deleted_at IS NULL",
+            (template_id,),
+        ).fetchone()
+        return self._to_dict(row)
+
+    def get_default(self, conn, enterprise_id: int = None) -> Optional[dict]:
+        row = conn.execute(
+            """SELECT * FROM reimburse_template
+               WHERE deleted_at IS NULL AND is_default = 1
+                 AND (enterprise_id IS ? OR enterprise_id = ?)
+               ORDER BY is_system DESC LIMIT 1""",
+            (enterprise_id, enterprise_id),
+        ).fetchone()
+        return self._to_dict(row)
+
+    def list(self, conn, enterprise_id: int = None) -> List[dict]:
+        sql = "SELECT * FROM reimburse_template WHERE deleted_at IS NULL"
+        params: list = []
+        if enterprise_id is not None:
+            sql += " AND (enterprise_id IS NULL OR enterprise_id = ?)"
+            params.append(enterprise_id)
+        sql += " ORDER BY is_system DESC, is_default DESC, id ASC"
+        return [self._to_dict(r) for r in conn.execute(sql, params)]
+
+    def soft_delete(self, conn, template_id: int) -> None:
+        conn.execute(
+            "UPDATE reimburse_template SET deleted_at = datetime('now','localtime') WHERE id = ?",
+            (template_id,),
+        )
+
+    def clear_default(self, conn, enterprise_id: int = None) -> None:
+        if enterprise_id is None:
+            conn.execute("UPDATE reimburse_template SET is_default = 0 WHERE enterprise_id IS NULL")
+        else:
+            conn.execute("UPDATE reimburse_template SET is_default = 0 WHERE enterprise_id = ?", (enterprise_id,))
+
+    def set_default(self, conn, template_id: int) -> None:
+        conn.execute("UPDATE reimburse_template SET is_default = 1 WHERE id = ?", (template_id,))
+
+    def bump_usage(self, conn, template_id: int) -> None:
+        conn.execute(
+            "UPDATE reimburse_template SET usage_count = usage_count + 1 WHERE id = ?",
+            (template_id,),
+        )
+
+    @staticmethod
+    def _serialize(v, field: str = ""):
+        if field in ("fields_config", "rules_config"):
+            return json.dumps(v or {}, ensure_ascii=False) if field == "fields_config" else json.dumps(v or [], ensure_ascii=False)
+        if isinstance(v, bool):
+            return 1 if v else 0
+        return v
+
+    @staticmethod
+    def _to_dict(row):
+        d = _row_to_dict(row)
+        if d:
+            try:
+                d["fields_config"] = json.loads(d.get("fields_config") or "{}")
+            except (json.JSONDecodeError, TypeError):
+                d["fields_config"] = {}
+            try:
+                d["rules_config"] = json.loads(d.get("rules_config") or "[]")
+            except (json.JSONDecodeError, TypeError):
+                d["rules_config"] = []
+        return d
+
+
+# =====================================================================
+# 映射缓存（设计 §4.6）
+# =====================================================================
+class MappingCacheRepo:
+    def get(self, conn, fingerprint: str, enterprise_id: int = None) -> Optional[dict]:
+        row = conn.execute(
+            """SELECT * FROM mapping_cache
+               WHERE header_fingerprint = ? AND (enterprise_id IS ? OR enterprise_id = ?)
+               LIMIT 1""",
+            (fingerprint, enterprise_id, enterprise_id),
+        ).fetchone()
+        if row is None:
+            return None
+        d = _row_to_dict(row)
+        d["headers"] = json.loads(d.get("headers") or "[]")
+        d["mapping"] = json.loads(d.get("mapping") or "{}")
+        return d
+
+    def upsert(self, conn, fingerprint: str, template_id: int, headers: list,
+               mapping: dict, enterprise_id: int = None, user_id: int = None) -> None:
+        conn.execute(
+            """INSERT INTO mapping_cache
+               (enterprise_id, user_id, header_fingerprint, template_id, headers, mapping)
+               VALUES (?, ?, ?, ?, ?, ?)
+               ON CONFLICT(enterprise_id, header_fingerprint) DO UPDATE SET
+                 template_id = excluded.template_id,
+                 headers = excluded.headers,
+                 mapping = excluded.mapping,
+                 last_used_at = datetime('now','localtime'),
+                 use_count = use_count + 1""",
+            (enterprise_id, user_id, fingerprint, template_id,
+             json.dumps(headers, ensure_ascii=False), json.dumps(mapping, ensure_ascii=False)),
+        )
+
+    def touch(self, conn, fingerprint: str, enterprise_id: int = None) -> None:
+        conn.execute(
+            """UPDATE mapping_cache
+               SET last_used_at = datetime('now','localtime'), use_count = use_count + 1
+               WHERE header_fingerprint = ? AND (enterprise_id IS ? OR enterprise_id = ?)""",
+            (fingerprint, enterprise_id, enterprise_id),
+        )
+
+
+template_repo = TemplateRepo()
+mapping_cache_repo = MappingCacheRepo()

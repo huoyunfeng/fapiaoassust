@@ -12,8 +12,8 @@ body{font-family:"Microsoft YaHei",system-ui,sans-serif;background:var(--bg);col
 .nav .brand{font-weight:700;font-size:16px;margin-right:24px;color:var(--primary);}
 .nav a{padding:8px 14px;border-radius:6px;color:var(--text);text-decoration:none;}
 .nav a:hover,.nav a.active{background:#eff6ff;color:var(--primary);}
-.container{max-width:1200px;margin:24px auto;padding:0 24px;}
-.card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:20px;margin-bottom:20px;}
+.container{max-width:1560px;margin:24px auto;padding:0 24px;}
+.card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:20px;margin-bottom:20px;}
 .card h2{font-size:16px;margin-bottom:14px;}
 .grid{display:grid;gap:16px;}
 .g4{grid-template-columns:repeat(4,1fr);}
@@ -22,14 +22,33 @@ body{font-family:"Microsoft YaHei",system-ui,sans-serif;background:var(--bg);col
 .stat .num{font-size:26px;font-weight:700;margin-top:6px;}
 .stat .label{color:var(--muted);font-size:13px;}
 table{width:100%;border-collapse:collapse;}
-th,td{padding:9px 10px;border-bottom:1px solid var(--border);text-align:left;white-space:nowrap;}
-th{color:var(--muted);font-weight:600;background:#fafbfc;font-size:13px;}
-tr:hover td{background:#fafbff;}
+th,td{padding:9px 10px;border-bottom:1px solid var(--border);text-align:left;white-space:nowrap;vertical-align:middle;}
+tbody td{height:46px;}
+th{color:#666;font-weight:600;background:#fafbfc;font-size:13px;}
+tr:hover td{background:#f5f6f8;}
 td.wrap{white-space:normal;min-width:160px;}
-.badge{display:inline-block;padding:2px 10px;border-radius:999px;font-size:12px;font-weight:600;}
+td.num,th.num{text-align:right;}
+td.num{font-variant-numeric:tabular-nums;}
+/* 发票表格：固定布局，列宽按 colgroup 分配，长文本省略号 */
+.invoice-table{table-layout:fixed;width:100%;}
+.invoice-table th,.invoice-table td{padding:14px 12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:middle;}
+.invoice-table tbody td{height:auto;}
+.invoice-table .col-number{text-align:right;font-variant-numeric:tabular-nums;}
+.invoice-table .col-action{width:100px;min-width:100px;overflow:visible;}
+.invoice-table td.col-action{overflow:visible;}
+/* 操作按钮：文字与箭头不折行 */
+.action-btn{white-space:nowrap;padding:6px 12px;}
+.badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:12px;font-weight:500;}
 .badge-green{background:#dcfce7;color:#166534;}.badge-red{background:#fee2e2;color:#991b1b;}
 .badge-orange{background:#ffedd5;color:#9a3412;}.badge-blue{background:#dbeafe;color:#1e40af;}
 .badge-purple{background:#f3e8ff;color:#6b21a8;}.badge-gray{background:#f3f4f6;color:#4b5563;}
+.dropdown{position:relative;display:inline-block;}
+/* 下拉菜单挂载到 body，fixed 定位，避免被表格容器截断 */
+.dropdown-menu{display:none;position:fixed;background:#fff;border:1px solid var(--border);border-radius:6px;box-shadow:0 4px 14px rgba(0,0,0,.1);min-width:96px;z-index:100;overflow:hidden;}
+.dropdown-menu.open{display:block;}
+.dropdown-menu a,.dropdown-menu button{display:block;width:100%;padding:8px 14px;text-align:left;border:0;background:none;font-size:13px;color:var(--text);cursor:pointer;text-decoration:none;}
+.dropdown-menu a:hover,.dropdown-menu button:hover{background:#f5f7fa;}
+.dropdown-menu .danger{color:#dc2626;}
 .btn{display:inline-block;padding:7px 14px;border-radius:6px;border:1px solid transparent;background:var(--primary);color:#fff;cursor:pointer;font-size:13px;text-decoration:none;}
 .btn:hover{opacity:.9;}
 .btn-sm{padding:4px 10px;font-size:12px;}
@@ -87,6 +106,29 @@ async function post(url, data){
 function submitForm(e,url,after){e.preventDefault();post(url,e.target).then(j=>{if(!j.data||j.data.ok!==false){if(after)after(j);else location.reload();}});return false;}
 function openModal(){document.getElementById('modalBg').style.display='block';document.getElementById('modal').style.display='block';}
 function closeModal(){document.getElementById('modalBg').style.display='none';document.getElementById('modal').style.display='none';}
+// 下拉菜单：操作列【操作】按钮展开，挂载到 body 用 fixed 定位（避免被表格 overflow 截断），点击外部/滚动时收起
+function toggleDropdown(el){
+  const menu = el._menu || el.parentElement.querySelector('.dropdown-menu');
+  if(!menu) return;
+  el._menu = menu;
+  const wasOpen = menu.classList.contains('open');
+  closeAllDropdowns();
+  if(!wasOpen){
+    if(menu.parentElement !== document.body) document.body.appendChild(menu);
+    menu.classList.add('open');
+    const r = el.getBoundingClientRect();
+    menu.style.top = (r.bottom + 4) + 'px';
+    menu.style.left = Math.max(8, r.right - menu.offsetWidth) + 'px';
+  }
+}
+function closeAllDropdowns(){
+  document.querySelectorAll('.dropdown-menu.open').forEach(m=>m.classList.remove('open'));
+}
+document.addEventListener('click', function(e){
+  if(!e.target.closest('.dropdown-menu') && !e.target.closest('.action-btn')) closeAllDropdowns();
+});
+window.addEventListener('scroll', closeAllDropdowns, true);
+window.addEventListener('resize', closeAllDropdowns);
 // 自定义确认弹窗：内嵌浏览器不支持原生 confirm()，改用模态框实现
 function confirmDlg(msg){
   return new Promise(resolve=>{

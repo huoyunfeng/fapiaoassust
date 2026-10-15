@@ -396,24 +396,24 @@ def export_excel(status: str = None, keyword: str = None) -> bytes:
     wb = Workbook()
     ws = wb.active
     ws.title = "发票清单"
-    ws.append(["ID", "状态", "发票号码", "发票代码", "开票日期",
+    ws.append(["ID", "状态", "发票号码", "开票日期",
                "购买方名称", "购买方税号", "销售方名称", "销售方税号",
-               "金额", "税额", "价税合计", "税率", "项目摘要",
-               "红冲", "导入时间"])
+               "金额", "税额", "价税合计", "税率", "开票内容",
+               "导入时间"])
     for i in rows:
         ws.append([
-            i["id"], i["status"], i["invoice_no"], i["invoice_code"],
+            i["id"], i["status"], i["invoice_no"],
             i["invoice_date"], i["buyer_name"], i["buyer_tax_no"],
             i["seller_name"], i["seller_tax_no"],
             str(i["amount"]) if i["amount"] is not None else "",
             str(i["tax_amount"]) if i["tax_amount"] is not None else "",
             str(i["total_amount"]) if i["total_amount"] is not None else "",
             str(i["tax_rate"]) if i.get("tax_rate") is not None else "",
-            i["item_summary"] or "", "是" if i.get("is_red_flush") else "",
+            i["item_summary"] or "",
             i.get("created_at") or "",
         ])
-    for col, w in zip("ABCDEFGHIJKLMNOPQ",
-                      (6, 10, 22, 14, 12, 28, 20, 28, 20, 12, 10, 12, 8, 30, 6, 20)):
+    for col, w in zip("ABCDEFGHIJKLMN",
+                      (6, 10, 22, 12, 28, 20, 28, 20, 12, 10, 12, 8, 30, 20)):
         ws.column_dimensions[col].width = w
     buf = io.BytesIO()
     wb.save(buf)

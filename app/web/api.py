@@ -7,6 +7,11 @@ from fastapi.responses import Response
 
 from app.service import (invoice_service, match_service, reimburse_service,
                          report_service)
+from app.service.mapping_service import mapping_service
+from app.service.template_service import template_service
+from app.infra.logger import get_logger
+
+logger = get_logger(__name__)
 
 api = APIRouter(prefix="/api", tags=["api"])
 
@@ -75,9 +80,148 @@ async def batch_delete_invoices(ids: str = Form(""), operator: str = Form("admin
 
 # ---------------------------------------------------------------- 报销单
 @api.post("/reimburses/import")
-async def import_reimburses(file: UploadFile = File(...)):
+async def import_reimburses(file: UploadFile = File(...),
+                            template_id: int = Form(None),
+                            fields_config: str = Form("{}"),
+                            remember_mapping: str = Form("1")):
+    """导入报销单 Excel。
+
+    template_id: 指定模板 id（优先于默认模板）
+    fields_config: JSON 字符串，临时字段映射（映射向导传入，优先级最高）
+    remember_mapping: 是否回写映射缓存
+    """
     content = await file.read()
-    return _j(reimburse_service.import_excel(file.filename or "reimburses.xlsx", content))
+    if not content:
+        return {"ok": False, "message": "未收到文件，请重新选择 Excel"}
+    try:
+        fc = json.loads(fields_config) if fields_config else None
+        if fc == {}:
+            fc = None
+    except json.JSONDecodeError:
+        return {"ok": False, "message": "fields_config 必须是合法 JSON"}
+    try:
+        result = reimburse_service.import_excel(
+            file.filename or "reimburses.xlsx", content,
+            template_id=template_id,
+            fields_config=fc,
+            remember_mapping=remember_mapping == "1",
+        )
+    except Exception as e:
+        logger.exception("报销单导入异常")
+        return {"ok": False, "message": f"导入异常：{e}"}
+    return _j(result)
+
+
+@api.get("/reimburses/templates")
+async def list_templates():
+    """列出所有模板。"""
+    return _j(template_service.list())
+
+
+@api.post("/reimburses/templates")
+async def create_template(name: str = Form(...),
+                          description: str = Form(""),
+                          fields_config: str = Form("{}"),
+                          rules_config: str = Form("[]")):
+    try:
+        fc = json.loads(fields_config)
+        rc = json.loads(rules_config)
+    except json.JSONDecodeError:
+        return {"ok": False, "message": "fields_config / rules_config 必须是合法 JSON"}
+    return _j(template_service.create(name, fc, rc, description))
+
+
+@api.put("/reimburses/templates/{template_id}")
+async def update_template(template_id: int,
+                          name: str = Form(None),
+                          description: str = Form(None),
+                          fields_config: str = Form(None),
+                          rules_config: str = Form(None)):
+    fc = rc = None
+    try:
+        if fields_config is not None:
+            fc = json.loads(fields_config)
+        if rules_config is not None:
+            rc = json.loads(rules_config)
+    except json.JSONDecodeError:
+        return {"ok": False, "message": "fields_config / rules_config 必须是合法 JSON"}
+    return _j(template_service.update(template_id, name, description, fc, rc))
+
+
+@api.post("/reimburses/templates/{template_id}/copy")
+async def copy_template(template_id: int, new_name: str = Form(...)):
+    return _j(template_service.copy(template_id, new_name))
+
+
+@api.post("/reimburses/templates/{template_id}/delete")
+async def delete_template(template_id: int):
+    return _j(template_service.delete(template_id))
+
+
+@api.post("/reimburses/templates/{template_id}/set-default")
+async def set_default_template(template_id: int):
+    return _j(template_service.set_default(template_id))
+
+
+@api.get("/reimburses/templates/{template_id}")
+async def get_template(template_id: int):
+    tpl = template_service.get(template_id)
+    if tpl is None:
+        return {"ok": False, "message": "模板不存在"}
+    return _j(tpl)
+
+
+@api.get("/reimburses/system-fields")
+async def system_fields():
+    """返回系统字段元数据（供前端映射向导下拉选择）。"""
+    from app.service.template_service import system_fields_meta
+    return _j(system_fields_meta())
+
+
+@api.post("/reimburses/mapping/detect")
+async def detect_mapping(file: UploadFile = File(...)):
+    """上传 Excel，返回表头 + 表头所在行 + 自动映射方案（命中缓存 / 自动推断）。"""
+    content = await file.read()
+    from app.infra.excel import read_headers
+    try:
+        headers, header_row = read_headers(content)
+    except Exception as e:
+        return {"ok": False, "message": f"无法读取 Excel：{e}"}
+    if not headers:
+        return {"ok": False, "message": "无法识别表头，请确认文件含表头行"}
+    result = mapping_service.detect(headers, header_row=header_row)
+    return _j(result)
+
+
+@api.post("/reimburses/mapping/build-fields")
+async def build_fields_config(headers: str = Form("[]"), mapping: str = Form("{}"),
+                              header_row: int = Form(1)):
+    """由表头 + 用户映射生成 fields_config（用于动态创建模板/直接导入）。"""
+    try:
+        hs = json.loads(headers)
+        mp = json.loads(mapping)
+    except json.JSONDecodeError:
+        return {"ok": False, "message": "headers / mapping 必须是合法 JSON"}
+    return _j(mapping_service.build_fields_config(hs, mp, header_row))
+
+
+@api.post("/reimburses/manual")
+async def manual_reimburse(
+    reimburse_no: str = Form(""), submitter: str = Form(""),
+    reimburse_date: str = Form(""), period_start: str = Form(""),
+    period_end: str = Form(""), expense_type: str = Form(""),
+    amount: str = Form(""), invoice_no: str = Form(""),
+    invoice_date: str = Form(""), remark: str = Form(""),
+    operator: str = Form("admin"),
+):
+    """手动录入单条报销单（设计 §12.4 降级入口）。"""
+    return _j(reimburse_service.manual_create({
+        "reimburse_no": reimburse_no, "submitter": submitter,
+        "reimburse_date": reimburse_date, "period_start": period_start,
+        "period_end": period_end, "expense_type": expense_type,
+        "amount": amount, "invoice_no": invoice_no,
+        "invoice_date": invoice_date, "remark": remark,
+    }, operator))
 
 
 @api.post("/reimburses/{reimburse_id}/delete")

@@ -1,4 +1,4 @@
-﻿"""UI 层 - 页面路由（Jinja2 服务端渲染）。只做展示与交互，不含业务规则。"""
+"""UI 层 - 页面路由（Jinja2 服务端渲染）。只做展示与交互，不含业务规则。"""
 import json
 from typing import Optional
 
@@ -63,9 +63,16 @@ def invoice_detail_page(request: Request, invoice_id: int):
 @pages.get("/reimburses", response_class=HTMLResponse)
 def reimburses_page(request: Request, batch_id: str = "", q: str = ""):
     rows = reimburse_service.list_reimburses(batch_id=batch_id or None, keyword=q or None)
+    batches = reimburse_service.list_batches()
+    # 收集自定义字段列名（按出现顺序去重），用于动态表头
+    extra_cols: list = []
+    for r in rows:
+        for k in (r.get("extra_data") or {}):
+            if k not in extra_cols:
+                extra_cols.append(k)
     return templates.TemplateResponse(request, "reimburses.html", {
-        "request": request, "rows": rows, "batches": reimburse_service.list_batches(),
-        "batch_id": batch_id, "q": q,
+        "request": request, "rows": rows, "batches": batches,
+        "batch_id": batch_id, "q": q, "extra_cols": extra_cols,
     })
 
 

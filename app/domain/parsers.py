@@ -199,6 +199,10 @@ class OfdInvoiceParser(BaseParser):
                     break
             tag_dto = self._parse_custom_tags(zf)
 
+            # 税率在 CustomTag 中无对应标签，从页面文本对象中提取第一个百分比（如 6%）
+            # 注意：必须在 zip 关闭前完成读取
+            page_tax_rate = self._extract_tax_rate(zf)
+
         # 合并：内嵌 XML 缺失的字段用 CustomTag 结果补齐
         if best is None:
             best = tag_dto
@@ -207,9 +211,28 @@ class OfdInvoiceParser(BaseParser):
                 if _is_missing(getattr(best, field)) and not _is_missing(getattr(tag_dto, field)):
                     setattr(best, field, getattr(tag_dto, field))
 
+        if _is_missing(best.tax_rate):
+            best.tax_rate = page_tax_rate
+
         if all(_is_missing(getattr(best, f)) for f in REQUIRED_FIELDS):
             raise ParseSkip("OFD 内未找到可解析的发票 XML")
         return best
+
+    @staticmethod
+    def _extract_tax_rate(zf: zipfile.ZipFile) -> str:
+        """扫描全部页面 Content.xml 的文本对象，取第一个百分比作为税率。"""
+        texts = []
+        for name in sorted(zf.namelist()):
+            if "/Pages/" in name and name.lower().endswith("content.xml"):
+                try:
+                    root = ET.fromstring(zf.read(name))
+                except ET.ParseError:
+                    continue
+                for elem in root.iter():
+                    if elem.tag.rsplit("}", 1)[-1] == "TextCode" and elem.text:
+                        texts.append(elem.text)
+        m = re.search(r"(\d+(?:\.\d+)?%)", " ".join(texts))
+        return m.group(1) if m else ""
 
     def _parse_custom_tags(self, zf: zipfile.ZipFile) -> InvoiceDTO:
         dto = InvoiceDTO()
@@ -325,26 +348,29 @@ class PdfTextParser(BaseParser):
         m = self._RE_SUM_ROW.search(text)
         if m:
             dto.amount, dto.tax_amount = m.group(1), m.group(2)
+        # 税率：项目行中的 "6%" / "13%" 等形式，取第一个百分比
+        m = re.search(r"(\d+(?:\.\d+)?%)", text)
+        if m:
+            dto.tax_rate = m.group(1)
 
-        # 购买方/销售方块：名称 + 税号
-        for side, name_attr, tax_attr in (
-            ("购", "buyer_name", "buyer_tax_no"),
-            ("售", "seller_name", "seller_tax_no"),
-            ("销", "seller_name", "seller_tax_no"),
-        ):
-            block_m = re.search(rf"{side}[\s\S]{{0,400}}", text)
-            if not block_m:
-                continue
-            block = block_m.group(0)
-            nm = re.search(r"名称\s*[:：]\s*([^\s]+)", block)
-            tm = re.search(r"(?:统一社会信用代码|纳税人识别号)\s*[:：]\s*([0-9A-Z]{15,20})", block)
-            if nm and not getattr(dto, name_attr):
-                setattr(dto, name_attr, nm.group(1))
-            if tm and not getattr(dto, tax_attr):
-                setattr(dto, tax_attr, tm.group(1))
+        # 购买方/销售方块：数电票 PDF 为左右双栏，文本提取后名称与税号按出现顺序
+        # 交错排列（购名 售名 ... 购税号 售税号），按块截取会错配，必须按顺序配对：
+        # 第 1 个名称=购买方，第 2 个名称=销售方；税号同理。
+        names = re.findall(r"名称\s*[:：]\s*([^\s]+)", text)
+        taxes = re.findall(
+            r"(?:统一社会信用代码|纳税人识别号)\s*[/／]?\s*(?:纳税人识别号)?\s*[:：]\s*([0-9A-Z]{15,20})",
+            text)
+        if names:
+            dto.buyer_name = dto.buyer_name or names[0]
+            if len(names) > 1:
+                dto.seller_name = dto.seller_name or names[1]
+        if taxes:
+            dto.buyer_tax_no = dto.buyer_tax_no or taxes[0]
+            if len(taxes) > 1:
+                dto.seller_tax_no = dto.seller_tax_no or taxes[1]
 
-        # 项目名称（取前几个）
-        items = re.findall(r"\*[^*]+\*([^\n*]{2,30})", text)
+        # 项目名称（取 *税收分类*名称 中的名称部分，遇到空格/数字即止，取前几个）
+        items = re.findall(r"\*[^*\n]+\*\s*([^\s*0-9][^\s*]{1,29})", text)
         if items:
             dto.item_summary = "；".join(dict.fromkeys(x.strip() for x in items[:5]))
 
