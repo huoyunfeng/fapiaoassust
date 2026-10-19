@@ -17,7 +17,7 @@ STATUS_BADGE = {
     "PARSING": "badge-gray", "PARSED": "badge-blue", "NORMAL": "badge-green",
     "ABNORMAL": "badge-red", "DUPLICATE": "badge-orange", "MATCHED": "badge-purple",
     "PENDING": "badge-gray", "SUSPICIOUS": "badge-orange", "CONFLICT": "badge-red",
-    "UNMATCHED": "badge-gray", "CONFIRMED": "badge-green", "REJECTED": "badge-gray",
+    "UNMATCHED": "badge-red", "CONFIRMED": "badge-green", "REJECTED": "badge-gray",
 }
 templates.env.filters["badge"] = lambda s: STATUS_BADGE.get(s, "badge-gray")
 templates.env.filters["fromjson"] = lambda s: (json.loads(s) if isinstance(s, str) and s else (s if isinstance(s, dict) else {}))

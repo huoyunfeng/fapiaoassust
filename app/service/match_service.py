@@ -23,6 +23,9 @@ _engine = MatchEngine()
 T_EXACT, T_COMPOSITE, T_FUZZY = "exact", "composite", "fuzzy"
 T_MANY_TO_ONE, T_MANUAL = "many_to_one", "manual"
 
+# 不匹配项写入报销单备注时的标记：保留用户原始备注，重复执行可安全覆盖
+NOTE_MARK = "【不匹配】"
+
 
 def _inv_dto(row: dict) -> InvoiceDTO:
     return InvoiceDTO(
@@ -43,6 +46,26 @@ def _reb_dto(row: dict) -> ReimburseDTO:
         amount=to_decimal(row.get("amount")),
         invoice_no=row.get("invoice_no") or "",
     )
+
+
+def _strip_note(text: Optional[str]) -> str:
+    """剥掉上一次写入的不匹配说明，留下用户原始备注。"""
+    if not text:
+        return ""
+    idx = text.find(NOTE_MARK)
+    return text[:idx].rstrip() if idx >= 0 else text
+
+
+def _write_note(conn, reb_row: dict, notes: Optional[List[str]]) -> None:
+    """把"双方同类型字段的不一致项"写入报销单备注。
+
+    notes 为空表示无可写内容（字段都一致，或已匹配），此时清空说明。
+    """
+    base = _strip_note(reb_row.get("remark"))
+    detail = f"{NOTE_MARK}{'；'.join(notes)}"
+    text = f"{base} {detail}" if notes and base else (detail if notes else base)
+    if text != (reb_row.get("remark") or ""):
+        reimburse_repo.update_remark(conn, reb_row["id"], text)
 
 
 # ---------------------------------------------------------------- 执行匹配
@@ -86,6 +109,7 @@ def run_matching(operator: str = None) -> dict:
                 if meaningful and (best_ps is None or ps.score > best_ps.score):
                     best_id, best_ps = inv_id, ps
 
+            notes: List[str] = []
             if best_id is not None:
                 has_candidate.add(best_id)
                 status = _engine.decide_status(best_ps)
@@ -95,10 +119,14 @@ def run_matching(operator: str = None) -> dict:
                                           f"自动匹配（score={best_ps.score}, match#{mid}）", operator)
                     available.discard(best_id)
                     summary["auto_matched"] += 1
-                elif status == "SUSPICIOUS":
-                    summary["suspicious"] += 1
                 else:
-                    summary["conflict"] += 1
+                    # 未自动通过：把双方同类型字段的不一致项写进报销单备注
+                    notes = list(best_ps.field_notes)
+                    if status == "SUSPICIOUS":
+                        summary["suspicious"] += 1
+                    else:
+                        summary["conflict"] += 1
+                _write_note(conn, reb_row, notes)
                 continue
 
             # ---- 无单票候选：尝试汇总匹配（多对一）----
@@ -116,6 +144,15 @@ def run_matching(operator: str = None) -> dict:
                     summary["many_to_one"] += 1
                     summary["suspicious"] += 1
                 continue
+
+            # ---- 连候选发票都没有：说明没有可比对的对象 ----
+            if reb.invoice_no:
+                _write_note(conn, reb_row, [
+                    f"未找到可比对的发票（发票号 {reb.invoice_no} 无可用发票，"
+                    f"可能不存在或已被其他报销单占用）"
+                ])
+            else:
+                _write_note(conn, reb_row, ["未找到可比对的发票（报销单未填发票号，且金额无匹配）"])
         # ---- 无任何候选的发票 -> UNMATCHED ----
         for inv_id in sorted(available):
             if inv_id in has_candidate:
@@ -181,6 +218,10 @@ def confirm(match_id: int, operator: str = None, note: str = "") -> dict:
         if reb_id:
             change_invoice_status(conn, m["invoice_id"], "MATCHED",
                                   f"人工确认匹配 (match#{match_id})", operator)
+            # 已生效匹配：清掉报销单备注里的不匹配说明
+            reb_row = reimburse_repo.get(conn, reb_id)
+            if reb_row:
+                _write_note(conn, reb_row, [])
         # 同发票其余待确认候选自动拒绝
         for other in match_repo.list(conn, statuses=["SUSPICIOUS", "CONFLICT"], limit=10000):
             if other["invoice_id"] == m["invoice_id"] and other["id"] != match_id:
@@ -227,6 +268,10 @@ def manual_match(invoice_id: int, reimburse_id: int, operator: str = None) -> di
         })
         change_invoice_status(conn, invoice_id, "MATCHED",
                               f"人工指定匹配 (match#{mid})", operator)
+        # 已生效匹配：清掉报销单备注里的不匹配说明
+        reb_row = reimburse_repo.get(conn, reimburse_id)
+        if reb_row:
+            _write_note(conn, reb_row, [])
         for other in match_repo.list(conn, statuses=["SUSPICIOUS", "CONFLICT"], limit=10000):
             if other["invoice_id"] == invoice_id:
                 match_repo.update_status(conn, other["id"], "REJECTED", operator)

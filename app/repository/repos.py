@@ -148,6 +148,10 @@ class ReimburseRepo:
                GROUP BY r.batch_id ORDER BY created_at DESC"""
         ))
 
+    def update_remark(self, conn: sqlite3.Connection, rid: int, remark: str) -> None:
+        """仅更新报销单备注（匹配说明写入用，不触及其它业务字段）。"""
+        conn.execute("UPDATE reimburse SET remark = ? WHERE id = ?", (remark, rid))
+
     def delete(self, conn: sqlite3.Connection, rid: int) -> None:
         conn.execute("DELETE FROM reimburse WHERE id = ?", (rid,))
 

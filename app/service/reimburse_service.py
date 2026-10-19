@@ -172,9 +172,20 @@ def import_excel(file_name: str, content: bytes, batch_id: str = None,
             "can_fallback_classic": True,   # 可改用经典模板重试
             "can_manual_entry": True,       # 可转手动录入
         }
-    return {"ok": True, "message": f"导入成功：{imported} 行",
+    # ---- 导入成功后自动执行一轮匹配，避免用户忘记手动执行而一直显示"未匹配" ----
+    match_summary = None
+    try:
+        from app.service import match_service
+        match_summary = match_service.run_matching(operator)
+    except Exception as e:
+        logger.warning("报销单导入后自动匹配失败: %s", e)
+    message = f"导入成功：{imported} 行"
+    if match_summary is not None:
+        message += (f"；自动匹配 {match_summary['auto_matched']} 对"
+                    f"，待人工确认 {match_summary['suspicious'] + match_summary['conflict']} 对")
+    return {"ok": True, "message": message,
             "batch_id": batch_id, "imported": imported, "errors": errors,
-            "template_id": template_id}
+            "template_id": template_id, "match": match_summary}
 
 
 def manual_create(fields: dict, operator: str = None) -> dict:

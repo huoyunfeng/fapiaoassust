@@ -297,8 +297,9 @@ class TestIntegration:
         r = env["reb"].import_excel("r.xlsx", make_excel(rows))
         assert r["imported"] == 50
 
-        summary = env["match"].run_matching()
-        assert summary["auto_matched"] >= 40  # 前 40 对应精确/自动匹配
+        env["match"].run_matching()  # 导入时已自动匹配，显式调用验证幂等
+        matched = env["match"].list_matches(["MATCHED"])
+        assert len(matched) >= 40  # 前 40 对应精确/自动匹配
         report = env["report"].build_report()
         content = env["report"].export_excel(report)
         assert content[:2] == b"PK" and len(content) > 1000  # 有效 xlsx
@@ -318,7 +319,8 @@ class TestIntegration:
         match_ms = (time.time() - t0) * 1000
         print(f"\n[性能] 1000 张导入 {import_ms:.0f}ms（{import_ms/1000:.2f}ms/张），"
               f"1000x50 匹配 {match_ms:.0f}ms")
-        assert summary["auto_matched"] == 50
+        matched = env["match"].list_matches(["MATCHED"])
+        assert len(matched) == 50  # 导入时已自动匹配，显式调用幂等
         assert import_ms < 120_000 and match_ms < 120_000  # 宽松上限，只防卡死
 
     def test_concurrent_import_and_match(self, env):

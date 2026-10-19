@@ -63,7 +63,7 @@
       <th>操作</th>
     </tr>
     {% for r in rows %}
-    <tr>
+    <tr{% if not r.matched %} style="background:#fef2f2;"{% endif %}>
       <td>#{{ r.id }}</td>
       <td>{{ r.reimburse_no }}</td>
       <td>{{ r.submitter }}</td>
@@ -72,7 +72,7 @@
       <td>{{ r.expense_type or '—' }}</td>
       <td class="num"><b>{{ r.amount }}</b></td>
       <td>{{ r.invoice_no or '—' }}</td>
-      <td>{% if r.matched %}<span class="badge badge-purple">已匹配</span>{% else %}<span class="badge badge-gray">未匹配</span>{% endif %}</td>
+      <td>{% if r.matched %}<span class="badge badge-purple">已匹配</span>{% else %}<span class="badge badge-red">未匹配</span>{% endif %}</td>
       <td class="wrap muted">{{ r.remark }}</td>
       {% if extra_cols %}{% for c in extra_cols %}<td class="wrap muted">{{ r.extra_data.get(c, '') }}</td>{% endfor %}{% endif %}
       <td><button class="btn btn-sm btn-danger" onclick="delReimburse({{ r.id }})">删除</button></td>

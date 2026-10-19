@@ -44,10 +44,10 @@
         <th class="col-number">金额</th><th class="col-number">税额</th><th class="col-number">价税合计</th>
         <th class="col-action">操作</th></tr>
     {% for i in rows %}
-    <tr>
+    <tr{% if i.status == 'NORMAL' %} style="background:#fef2f2;"{% endif %}>
       <td><input type="checkbox" class="chk-inv" value="{{ i.id }}" onchange="refreshSel()"></td>
       <td>#{{ i.id }}</td>
-      <td><span class="badge {{ i.status|badge }}">{{ i.status }}</span></td>
+      <td>{% if i.status == 'NORMAL' %}<span class="badge badge-red">未匹配</span>{% else %}<span class="badge {{ i.status|badge }}">{{ i.status }}</span>{% endif %}</td>
       <td title="{{ i.invoice_no or '' }}">{{ i.invoice_no or '—' }}</td>
       <td>{{ i.invoice_date or '—' }}</td>
       <td title="{{ i.buyer_name }}">{{ i.buyer_name }}</td>

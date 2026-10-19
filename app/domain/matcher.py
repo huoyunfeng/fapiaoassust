@@ -47,8 +47,9 @@ class PairScore:
     score: float
     match_type: str                       # exact / composite / fuzzy
     conflict_fields: List[str] = field(default_factory=list)
-    diff_fields: List[str] = field(default_factory=list)   # 差异说明（落库 diff_fields）
+    diff_fields: List[str] = field(default_factory=list)
     amount_diff: Decimal = Decimal("0")
+    field_notes: List[str] = field(default_factory=list)   # 双方同类型字段的不一致项（写报销单备注）
 
 
 def _parse_d(s: Optional[str]) -> Optional[date]:
@@ -67,6 +68,8 @@ class MatchEngine:
                    company_tax_nos: Optional[set] = None) -> PairScore:
         conflict_fields: List[str] = []
         diff_fields: List[str] = []
+        # 仅记录"双方都有且不一致"的字段，用于回写报销单备注
+        notes: List[str] = []
 
         # ---------- 发票号维度 ----------
         no_score = 0.0
@@ -80,10 +83,14 @@ class MatchEngine:
                 ratio = difflib.SequenceMatcher(None, inv_no, reb_no).ratio()
                 if ratio >= 0.85:
                     no_score = 0.8          # 高度相似（OCR/笔误），待人工确认而非冲突
+                    notes.append(
+                        f"发票号不匹配（报销单 {reb_no} vs 发票 {inv_no}，相似度 {ratio:.0%}）"
+                    )
                 else:
                     no_score = 0.0
                     diff_fields.append(f"发票号: 报销单 {reb_no} vs 发票 {inv_no}")
                     conflict_fields.append("invoice_no")  # 两边均有号但显著不同 -> 字段冲突
+                    notes.append(f"发票号不匹配（报销单 {reb_no} vs 发票 {inv_no}）")
         # 复合维度：报销单号 == 发票号 且 代码一致（composite）
         if inv_no and reb_no and inv_no == reb_no and inv.invoice_code:
             match_type = "composite"
@@ -105,6 +112,10 @@ class MatchEngine:
                 diff_fields.append(
                     f"金额: 报销单 {reb.amount} vs 发票价税合计 {inv.total_amount}（差 {amount_diff}）"
                 )
+                notes.append(
+                    f"金额不匹配（报销单 {reb.amount} vs 发票价税合计 "
+                    f"{inv.total_amount}，差 {amount_diff}）"
+                )
                 # 发票号精确一致但金额差异显著 -> 字段冲突
                 if no_score == 1.0 and amount_diff > max(FUZZY_AMOUNT_ABS, abs(reb.amount) * FUZZY_AMOUNT_REL):
                     conflict_fields.append("amount")
@@ -121,10 +132,19 @@ class MatchEngine:
                 date_score = 0.5
             else:
                 diff_fields.append(f"日期: 开票 {inv.invoice_date} 不在报销期间 [{start or ''} ~ {end or ''}]")
+                notes.append(
+                    f"日期不匹配（开票 {inv.invoice_date} 不在报销期间 "
+                    f"[{start or ''} ~ {end or ''}]）"
+                )
         elif inv.invoice_date and reb.reimburse_date and not (start or end):
             # 无期间信息时以报销日期为基准（±7 天容差）
             gap = abs((_parse_d(inv.invoice_date) or date.min) - (_parse_d(reb.reimburse_date) or date.min)).days
             date_score = 1.0 if gap == 0 else (0.5 if gap <= 7 else 0.0)
+            if date_score == 0.0:
+                notes.append(
+                    f"日期不匹配（开票 {inv.invoice_date} vs 报销日期 "
+                    f"{reb.reimburse_date}，相差 {gap} 天）"
+                )
         else:
             date_score = 0.5  # 报销单无日期信息 -> 中性
 
@@ -138,7 +158,7 @@ class MatchEngine:
                                + W_DATE * date_score + W_TITLE * title_score, 4))
         return PairScore(score=score, match_type=match_type,
                          conflict_fields=conflict_fields, diff_fields=diff_fields,
-                         amount_diff=amount_diff)
+                         amount_diff=amount_diff, field_notes=notes)
 
     # ------------------------------------------------------------------
     def decide_status(self, ps: PairScore) -> str:

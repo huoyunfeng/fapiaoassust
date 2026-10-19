@@ -108,6 +108,14 @@ def import_files(files: List[tuple[str, str, bytes]], operator: str = None) -> L
             results.append({"file_name": file_name, "ok": False,
                             "invoice_id": None, "status": None,
                             "message": f"导入异常: {e}"})
+    # 有新发票导入成功后自动执行一轮匹配，报销单页状态随之刷新
+    if any(r.get("ok") for r in results):
+        try:
+            from app.service import match_service
+            ms = match_service.run_matching(operator)
+            logger.info("发票导入后自动匹配: %s", ms)
+        except Exception as e:
+            logger.warning("发票导入后自动匹配失败: %s", e)
     return results
 
 
