@@ -1,5 +1,20 @@
 {% extends "base.html" %}
 {% block content %}
+<style>
+/* ===== 与报销单页一致的 PRD 视觉规范 ===== */
+.card{box-shadow:0 2px 12px rgba(0,0,0,.06);}
+.table-scroll{overflow-x:auto;}
+.invoice-table{min-width:1200px;}
+.invoice-table tbody td{background:#fff;}
+.invoice-table tbody tr:nth-child(even) td{background:#fafbfc;}
+.invoice-table tbody tr.row-unmatched td,
+.invoice-table tbody tr.row-unmatched:nth-child(even) td{background:#fef2f2;}
+.invoice-table tbody tr:hover td{background:#e8f0fe;}
+.invoice-table tbody tr.row-unmatched:hover td{background:#fdd8d8;}
+.cell-amount{color:#1677ff;font-weight:500;text-align:right;font-variant-numeric:tabular-nums;}
+.invoice-table .col-state,.invoice-table .col-action{border-left:1px solid var(--border);text-align:center;}
+</style>
+
 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
   <h1 style="font-size:20px;">发票管理</h1>
   <div>
@@ -30,31 +45,32 @@
       <button class="btn btn-danger btn-sm" id="btnBatchDel" onclick="batchDelete()" disabled>批量删除</button>
     </div>
   </div>
+  <div class="table-scroll">
   <table class="invoice-table">
     <colgroup>
-      <col style="width:60px"><col style="width:70px"><col style="width:90px">
+      <col style="width:46px">
       <col style="width:240px"><col style="width:130px">
       <col style="width:220px"><col style="width:220px">
       <col style="width:100px"><col style="width:100px"><col style="width:110px">
-      <col style="width:100px">
+      <col style="width:100px"><col style="width:100px">
     </colgroup>
     <tr><th><input type="checkbox" id="chkAll" onchange="toggleAll(this)"></th>
-        <th>ID</th><th>状态</th><th>发票号</th><th>开票日期</th>
+        <th>发票号</th><th>开票日期</th>
         <th>购买方</th><th>销售方</th>
         <th class="col-number">金额</th><th class="col-number">税额</th><th class="col-number">价税合计</th>
-        <th class="col-action">操作</th></tr>
+        <th class="col-state">状态</th><th class="col-action">操作</th></tr>
+    <tbody>
     {% for i in rows %}
-    <tr{% if i.status == 'NORMAL' %} style="background:#fef2f2;"{% endif %}>
+    <tr{% if i.status == 'NORMAL' %} class="row-unmatched"{% endif %}>
       <td><input type="checkbox" class="chk-inv" value="{{ i.id }}" onchange="refreshSel()"></td>
-      <td>#{{ i.id }}</td>
-      <td>{% if i.status == 'NORMAL' %}<span class="badge badge-red">未匹配</span>{% else %}<span class="badge {{ i.status|badge }}">{{ i.status }}</span>{% endif %}</td>
       <td title="{{ i.invoice_no or '' }}">{{ i.invoice_no or '—' }}</td>
       <td>{{ i.invoice_date or '—' }}</td>
       <td title="{{ i.buyer_name }}">{{ i.buyer_name }}</td>
       <td title="{{ i.seller_name }}">{{ i.seller_name }}</td>
-      <td class="col-number">{{ i.amount or '—' }}</td>
-      <td class="col-number">{{ i.tax_amount or '—' }}</td>
-      <td class="col-number"><b>{{ i.total_amount or '—' }}</b></td>
+      <td class="col-number cell-amount">{{ i.amount or '—' }}</td>
+      <td class="col-number cell-amount">{{ i.tax_amount or '—' }}</td>
+      <td class="col-number cell-amount"><b>{{ i.total_amount or '—' }}</b></td>
+      <td class="col-state">{% if i.status == 'NORMAL' %}<span class="badge badge-red">未匹配</span>{% else %}<span class="badge {{ i.status|badge }}">{{ i.status }}</span>{% endif %}</td>
       <td class="col-action">
         <div class="dropdown">
           <button class="btn btn-sm btn-outline action-btn" onclick="toggleDropdown(this)">操作 ▾</button>
@@ -66,7 +82,9 @@
       </td>
     </tr>
     {% endfor %}
+    </tbody>
   </table>
+  </div>
   {% else %}<p class="muted">暂无发票，点击右上角"上传发票文件"开始导入</p>{% endif %}
 </div>
 

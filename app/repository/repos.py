@@ -73,7 +73,7 @@ class InvoiceRepo:
             sql += " AND (invoice_no LIKE ? OR invoice_code LIKE ? OR buyer_name LIKE ? OR seller_name LIKE ? OR item_summary LIKE ?)"
             kw = f"%{keyword}%"
             params += [kw, kw, kw, kw, kw]
-        sql += " ORDER BY id DESC LIMIT ? OFFSET ?"
+        sql += " ORDER BY id ASC LIMIT ? OFFSET ?"
         params += [limit, offset]
         return _rows_to_dicts(conn.execute(sql, params))
 

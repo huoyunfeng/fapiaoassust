@@ -50,6 +50,7 @@ class PairScore:
     diff_fields: List[str] = field(default_factory=list)
     amount_diff: Decimal = Decimal("0")
     field_notes: List[str] = field(default_factory=list)   # 双方同类型字段的不一致项（写报销单备注）
+    no_ratio: float = 0.0                     # 发票号原始相似度（总分相同时优先选错位更少的候选）
 
 
 def _parse_d(s: Optional[str]) -> Optional[date]:
@@ -73,14 +74,17 @@ class MatchEngine:
 
         # ---------- 发票号维度 ----------
         no_score = 0.0
+        no_ratio = 0.0
         match_type = "fuzzy"
         inv_no, reb_no = inv.invoice_no, reb.invoice_no
         if inv_no and reb_no:
             if inv_no == reb_no:
                 no_score = 1.0
+                no_ratio = 1.0
                 match_type = "exact"
             else:
                 ratio = difflib.SequenceMatcher(None, inv_no, reb_no).ratio()
+                no_ratio = ratio
                 if ratio >= 0.85:
                     no_score = 0.8          # 高度相似（OCR/笔误），待人工确认而非冲突
                     notes.append(
@@ -158,7 +162,7 @@ class MatchEngine:
                                + W_DATE * date_score + W_TITLE * title_score, 4))
         return PairScore(score=score, match_type=match_type,
                          conflict_fields=conflict_fields, diff_fields=diff_fields,
-                         amount_diff=amount_diff, field_notes=notes)
+                         amount_diff=amount_diff, field_notes=notes, no_ratio=no_ratio)
 
     # ------------------------------------------------------------------
     def decide_status(self, ps: PairScore) -> str:

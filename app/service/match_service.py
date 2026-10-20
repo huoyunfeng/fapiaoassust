@@ -100,13 +100,14 @@ def run_matching(operator: str = None) -> dict:
             summary["evaluated_reimburses"] += 1
             reb = _reb_dto(reb_row)
 
-            # ---- 单发票候选：取最高分 ----
+            # ---- 单发票候选：取最高分；总分相同时优先发票号相似度更高（错位更少）的 ----
             best_id, best_ps = None, None
             for inv_id in list(available):
                 ps = _engine.score_pair(inv_dtos[inv_id], reb, company_tax_nos)
                 meaningful = ps.score >= settings.suspicious_threshold or (
                     ps.conflict_fields and "amount" in ps.conflict_fields)
-                if meaningful and (best_ps is None or ps.score > best_ps.score):
+                if meaningful and (best_ps is None or ps.score > best_ps.score
+                                   or (ps.score == best_ps.score and ps.no_ratio > best_ps.no_ratio)):
                     best_id, best_ps = inv_id, ps
 
             notes: List[str] = []

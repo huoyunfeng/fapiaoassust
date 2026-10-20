@@ -64,16 +64,83 @@ def invoice_detail_page(request: Request, invoice_id: int):
 def reimburses_page(request: Request, batch_id: str = "", q: str = ""):
     rows = reimburse_service.list_reimburses(batch_id=batch_id or None, keyword=q or None)
     batches = reimburse_service.list_batches()
-    # 收集自定义字段列名（按出现顺序去重），用于动态表头
-    extra_cols: list = []
+    columns = _display_columns(rows)
     for r in rows:
-        for k in (r.get("extra_data") or {}):
-            if k not in extra_cols:
-                extra_cols.append(k)
+        r["cells"] = [_cell_value(r, c) for c in columns]
+        r["note"] = _extract_note(r.get("remark"))
+    _sort_rows(rows, columns)
     return templates.TemplateResponse(request, "reimburses.html", {
         "request": request, "rows": rows, "batches": batches,
-        "batch_id": batch_id, "q": q, "extra_cols": extra_cols,
+        "batch_id": batch_id, "q": q, "columns": columns,
     })
+
+
+NOTE_MARK = "【不匹配】"
+
+
+def _sort_rows(rows: list, columns: list) -> None:
+    """优先按「序号」从小到大排序；无序号时按导入顺序（id 升序）。"""
+    idx = next((i for i, c in enumerate(columns) if c.get("label") == "序号"), None)
+    if idx is None:
+        rows.sort(key=lambda r: r.get("id") or 0)
+        return
+
+    def key(r):
+        s = r["cells"][idx]["text"]
+        try:
+            return (0, float(s))
+        except (ValueError, TypeError):
+            return (1, s)
+
+    rows.sort(key=key)
+
+
+def _extract_note(remark: str) -> str:
+    """从备注中提取不匹配说明（匹配成功或无说明时为空）。"""
+    if not remark:
+        return ""
+    idx = remark.find(NOTE_MARK)
+    return remark[idx + len(NOTE_MARK):] if idx >= 0 else ""
+
+
+def _display_columns(rows: list) -> list:
+    """数据列按模板字段顺序生成：取行中最常用的模板，兜底默认模板。"""
+    from collections import Counter
+    from app.service.template_service import template_service
+    tpl_ids = [r.get("template_id") for r in rows if r.get("template_id")]
+    tpl = template_service.get(Counter(tpl_ids).most_common(1)[0][0]) if tpl_ids else None
+    if tpl is None:
+        tpl = template_service.get_default()
+    cols = []
+    for f in ((tpl or {}).get("fields_config") or {}).get("fields", []):
+        label = f.get("excel_header") or f.get("display_name") or f.get("system_key") or ""
+        if f.get("system_key") == "remark" or label == "备注":
+            continue  # 备注不单独成列，不匹配原因统一在「说明」列展示
+        if f.get("is_custom"):
+            cols.append({"label": label, "custom": f.get("display_name") or label})
+        else:
+            cols.append({"label": label, "key": f.get("system_key")})
+    return cols
+
+
+def _cell_value(row: dict, col: dict) -> dict:
+    """单元格智能渲染：金额保留两位小数、长文本标记（>18字符）、空值。"""
+    if "custom" in col:
+        v = (row.get("extra_data") or {}).get(col["custom"], "")
+    else:
+        v = row.get(col["key"])
+    if v is None or v == "":
+        return {"text": "", "amount": False, "long": False}
+    s = str(v).strip()
+    if s.endswith(" 00:00:00"):
+        s = s[:-9]
+    is_amount = col.get("key") == "amount"
+    if is_amount:
+        try:
+            s = f"{float(s.replace(',', '')):.2f}"
+        except (ValueError, TypeError):
+            pass
+    return {"text": s, "amount": is_amount, "long": len(s) > 18}
 
 
 @pages.get("/matches", response_class=HTMLResponse)

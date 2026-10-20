@@ -13,6 +13,32 @@
 .alert-green{background:#dcfce7;color:#166534;border:1px solid #bbf7d0;}
 .err-list{max-height:180px;overflow:auto;background:#fff7f7;border:1px solid #fee2e2;border-radius:8px;padding:8px 12px;margin-bottom:12px;font-size:12px;line-height:1.8;}
 .hint{border:1px dashed var(--border);border-radius:8px;padding:8px 12px;font-size:12px;color:var(--muted);margin-top:10px;}
+
+/* ===== PRD 视觉规范：卡片阴影 ===== */
+.card{box-shadow:0 2px 12px rgba(0,0,0,.06);}
+
+/* ===== 数据表格：横向滚动 + 斑马行 + hover 高亮 ===== */
+.table-scroll{overflow-x:auto;}
+.reb-table{min-width:700px;}
+.reb-table thead th{background:#fafbfc;font-weight:600;white-space:nowrap;font-size:13px;color:#555;}
+.reb-table tbody td{height:46px;background:#fff;}
+.reb-table tbody tr:nth-child(even) td{background:#fafbfc;}
+.reb-table tbody tr.row-unmatched td,
+.reb-table tbody tr.row-unmatched:nth-child(even) td{background:#fef2f2;}
+.reb-table tbody tr:hover td{background:#e8f0fe;}
+.reb-table tbody tr.row-unmatched:hover td{background:#fdd8d8;}
+
+/* ===== 单元格智能渲染 ===== */
+.cell-amount{color:#1677ff;font-weight:500;text-align:right;font-variant-numeric:tabular-nums;}
+.cell-long{max-width:200px;}
+.text-ellipsis{display:inline-block;max-width:180px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;vertical-align:middle;}
+
+/* ===== 右侧固定列（说明/状态/操作）：视觉分隔 ===== */
+.reb-table .col-note,
+.reb-table .col-state,
+.reb-table .col-action{border-left:1px solid var(--border);}
+.reb-table .col-note{min-width:140px;max-width:280px;white-space:normal;font-size:12px;color:var(--muted);}
+.reb-table .col-state,.reb-table .col-action{text-align:center;white-space:nowrap;}
 </style>
 
 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
@@ -53,32 +79,35 @@
   </form>
 </div>
 
-<div class="card">
+<div class="card table-card">
   {% if rows %}
-  <table>
-    <tr>
-      <th>ID</th><th>单号</th><th>提交人</th><th>报销日期</th><th>期间</th>
-      <th>费用类型</th><th>金额</th><th>发票号</th><th>状态</th><th>备注</th>
-      {% if extra_cols %}{% for c in extra_cols %}<th>{{ c }}</th>{% endfor %}{% endif %}
-      <th>操作</th>
-    </tr>
-    {% for r in rows %}
-    <tr{% if not r.matched %} style="background:#fef2f2;"{% endif %}>
-      <td>#{{ r.id }}</td>
-      <td>{{ r.reimburse_no }}</td>
-      <td>{{ r.submitter }}</td>
-      <td>{{ r.reimburse_date or '—' }}</td>
-      <td class="muted">{{ r.period_start or '' }} ~ {{ r.period_end or '' }}</td>
-      <td>{{ r.expense_type or '—' }}</td>
-      <td class="num"><b>{{ r.amount }}</b></td>
-      <td>{{ r.invoice_no or '—' }}</td>
-      <td>{% if r.matched %}<span class="badge badge-purple">已匹配</span>{% else %}<span class="badge badge-red">未匹配</span>{% endif %}</td>
-      <td class="wrap muted">{{ r.remark }}</td>
-      {% if extra_cols %}{% for c in extra_cols %}<td class="wrap muted">{{ r.extra_data.get(c, '') }}</td>{% endfor %}{% endif %}
-      <td><button class="btn btn-sm btn-danger" onclick="delReimburse({{ r.id }})">删除</button></td>
-    </tr>
-    {% endfor %}
-  </table>
+  <div class="table-scroll">
+    <table class="reb-table">
+      <thead>
+        <tr>
+          {% for c in columns %}<th{% if c.key == 'amount' %} class="num"{% endif %}>{{ c.label }}</th>{% endfor %}
+          <th>说明</th><th class="col-state">状态</th><th class="col-action">操作</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in rows %}
+        <tr{% if not r.matched %} class="row-unmatched"{% endif %}>
+          {% for c in columns %}
+          {% set cell = r.cells[loop.index0] %}
+          <td{% if cell.amount %} class="cell-amount"{% elif cell.long %} class="cell-long" title="{{ cell.text }}"{% endif %}>
+            {%- if cell.amount -%}<b>{{ cell.text }}</b>
+            {%- elif cell.long -%}<span class="text-ellipsis">{{ cell.text }}</span>
+            {%- else -%}{{ cell.text or '—' }}{%- endif -%}
+          </td>
+          {% endfor %}
+          <td class="col-note">{{ r.note or '—' }}</td>
+          <td class="col-state">{% if r.matched %}<span class="badge badge-purple">已匹配</span>{% else %}<span class="badge badge-red">未匹配</span>{% endif %}</td>
+          <td class="col-action"><button class="btn btn-sm btn-danger" onclick="delReimburse({{ r.id }})">删除</button></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
   {% else %}<p class="muted">暂无报销单，点击右上角「导入报销单 Excel」开始。</p>{% endif %}
 </div>
 

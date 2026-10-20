@@ -5,13 +5,16 @@
 - 税号去除空格/连字符并转大写。
 """
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Optional
 
 from app.domain.dto import InvoiceDTO
 
 _DATE_FORMATS = ("%Y-%m-%d", "%Y/%m/%d", "%Y年%m月%d日", "%Y%m%d", "%Y.%m.%d")
+
+# Excel 日期序列号基准（1900 日期系统）
+_EXCEL_EPOCH = datetime(1899, 12, 30)
 
 
 def clean(v) -> str:
@@ -37,12 +40,24 @@ def to_decimal(v) -> Optional[Decimal]:
 
 
 def parse_date(v) -> Optional[str]:
-    """日期标准化：统一输出 ISO8601 字符串 YYYY-MM-DD。"""
-    if not v:
+    """日期标准化：统一输出 ISO8601 字符串 YYYY-MM-DD。
+
+    兼容：datetime 对象、Excel 日期序列号（单元格未被识别为日期时的原始数值）、
+    带时间部分的字符串（如 "2026-08-20 00:00:00"）。
+    """
+    if v is None or v == "":
         return None
     if isinstance(v, datetime):
         return v.strftime("%Y-%m-%d")
+    if isinstance(v, (int, float)):
+        # Excel 序列号：合理业务日期区间 1954~2099 年
+        n = float(v)
+        if 20000 <= n <= 80000:
+            return (_EXCEL_EPOCH + timedelta(days=int(n))).strftime("%Y-%m-%d")
+        return None
     s = str(v).strip()
+    if s.endswith(" 00:00:00"):
+        s = s[:-9]
     for fmt in _DATE_FORMATS:
         try:
             return datetime.strptime(s, fmt).strftime("%Y-%m-%d")
