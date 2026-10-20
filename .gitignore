@@ -1,0 +1,15 @@
+
+
+
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# 日志
+data/logs/
+*.log
+
+# 虚拟环境
+venv/
+.venv/
