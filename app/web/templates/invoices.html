@@ -95,7 +95,7 @@
 <h2 style="margin-bottom:14px;">上传发票文件</h2>
 <p class="muted mb">支持 XML / OFD / PDF / JPG / PNG，多文件同时上传。解析链：XML → OFD → PDF文本 → OCR → 人工。</p>
 <form onsubmit="submitForm(event,'/api/invoices/upload')">
-  <input type="file" name="files" multiple required style="width:100%;">
+  <input type="file" name="files" multiple required accept=".xml,.ofd,.pdf,.jpg,.jpeg,.png,image/jpeg,image/png" style="width:100%;">
   <div class="mt"><button class="btn">上传并解析</button> <button type="button" class="btn btn-outline" onclick="closeModal()">取消</button></div>
 </form>
 {% endblock %}

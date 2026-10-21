@@ -16,10 +16,12 @@ templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 STATUS_BADGE = {
     "PARSING": "badge-gray", "PARSED": "badge-blue", "NORMAL": "badge-green",
     "ABNORMAL": "badge-red", "DUPLICATE": "badge-orange", "MATCHED": "badge-purple",
-    "PENDING": "badge-gray", "SUSPICIOUS": "badge-orange", "CONFLICT": "badge-red",
+    "PENDING": "badge-gray", "SUSPICIOUS": "badge-red", "CONFLICT": "badge-red",
     "UNMATCHED": "badge-red", "CONFIRMED": "badge-green", "REJECTED": "badge-gray",
 }
 templates.env.filters["badge"] = lambda s: STATUS_BADGE.get(s, "badge-gray")
+# 需求2：SUSPICIOUS 状态已废弃，存量记录在前端统一按 UNMATCHED 展示
+templates.env.filters["dstatus"] = lambda s: "UNMATCHED" if s == "SUSPICIOUS" else s
 templates.env.filters["fromjson"] = lambda s: (json.loads(s) if isinstance(s, str) and s else (s if isinstance(s, dict) else {}))
 
 
@@ -36,7 +38,9 @@ def dashboard(request: Request):
         "unmatched_reimburses": report["unmatched_reimburses"],
         "unmatched_invoices": report["unmatched_invoices"],
         "abnormal": report["abnormal"][:10],
-        "suspicious": [d for d in report["details"] if d["match"]["status"] in ("SUSPICIOUS", "CONFLICT")][:10],
+        "suspicious": [d for d in report["details"]
+                       if d["match"]["status"] in ("SUSPICIOUS", "CONFLICT")
+                       or (d["match"]["status"] == "UNMATCHED" and d["match"]["reimburse_id"])][:10],
     })
 
 
@@ -67,15 +71,11 @@ def reimburses_page(request: Request, batch_id: str = "", q: str = ""):
     columns = _display_columns(rows)
     for r in rows:
         r["cells"] = [_cell_value(r, c) for c in columns]
-        r["note"] = _extract_note(r.get("remark"))
     _sort_rows(rows, columns)
     return templates.TemplateResponse(request, "reimburses.html", {
         "request": request, "rows": rows, "batches": batches,
         "batch_id": batch_id, "q": q, "columns": columns,
     })
-
-
-NOTE_MARK = "【不匹配】"
 
 
 def _sort_rows(rows: list, columns: list) -> None:
@@ -93,14 +93,6 @@ def _sort_rows(rows: list, columns: list) -> None:
             return (1, s)
 
     rows.sort(key=key)
-
-
-def _extract_note(remark: str) -> str:
-    """从备注中提取不匹配说明（匹配成功或无说明时为空）。"""
-    if not remark:
-        return ""
-    idx = remark.find(NOTE_MARK)
-    return remark[idx + len(NOTE_MARK):] if idx >= 0 else ""
 
 
 def _display_columns(rows: list) -> list:
@@ -145,9 +137,12 @@ def _cell_value(row: dict, col: dict) -> dict:
 
 @pages.get("/matches", response_class=HTMLResponse)
 def matches_page(request: Request):
-    pending = match_service.list_matches(["SUSPICIOUS", "CONFLICT"])
+    # 待人工处理：有报销单关联的 CONFLICT / UNMATCHED（含存量 SUSPICIOUS）；
+    # 无候选发票：无报销单关联的 UNMATCHED（含汇总匹配 many_to_one）
+    evals = match_service.list_matches(["SUSPICIOUS", "CONFLICT", "UNMATCHED"])
+    pending = [m for m in evals if m["reimburse_id"] is not None or m["pair_reimburses"]]
+    unmatched = [m for m in evals if m["reimburse_id"] is None and not m["pair_reimburses"]]
     active = match_service.list_matches(["MATCHED", "CONFIRMED"])
-    unmatched = match_service.list_matches(["UNMATCHED"])
     options = match_service.matchable_options()
     return templates.TemplateResponse(request, "matches.html", {
         "request": request,

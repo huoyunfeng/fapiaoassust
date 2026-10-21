@@ -182,7 +182,7 @@ def import_excel(file_name: str, content: bytes, batch_id: str = None,
     message = f"导入成功：{imported} 行"
     if match_summary is not None:
         message += (f"；自动匹配 {match_summary['auto_matched']} 对"
-                    f"，待人工确认 {match_summary['suspicious'] + match_summary['conflict']} 对")
+                    f"，待人工确认 {match_summary['pending'] + match_summary['conflict']} 对")
     return {"ok": True, "message": message,
             "batch_id": batch_id, "imported": imported, "errors": errors,
             "template_id": template_id, "match": match_summary}

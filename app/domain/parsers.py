@@ -309,17 +309,69 @@ class OfdInvoiceParser(BaseParser):
                 setattr(dto, field, elem.text.strip())
 
 
+_RE_NO = re.compile(r"发票号码\s*[:：]?\s*(\d[\d\s]{6,22}\d)")
+_RE_CODE = re.compile(r"发票代码\s*[:：]?\s*(\d{10,12})")
+_RE_DATE = re.compile(r"开票日期\s*[:：]?\s*(\d{4}[年\-/.]\d{1,2}[月\-/.]\d{1,2}日?)")
+_RE_TOTAL = re.compile(r"[（(]小写[）)]\s*[:：]?\s*[¥￥]?\s*([0-9,，.]+)")
+_RE_TOTAL2 = re.compile(r"价税合计\s*[:：]?\s*[¥￥]?\s*([0-9,，.]+)")
+_RE_SUM_ROW = re.compile(r"合\s*计\s*[¥￥]?\s*([0-9,，.]+)\s*[¥￥]?\s*([0-9,，.]+)")
+
+
+def extract_fields_from_text(text: str) -> InvoiceDTO:
+    """从发票文本（PDF 文本层 / OCR 结果）中抽取字段。
+
+    PDF 与图片共用同一套规则，保证两种来源识别口径一致。
+    """
+    dto = InvoiceDTO()
+
+    m = _RE_NO.search(text)
+    if m:
+        dto.invoice_no = re.sub(r"\s+", "", m.group(1))   # OCR 可能在号码中插入空格
+    m = _RE_CODE.search(text)
+    if m:
+        dto.invoice_code = m.group(1)
+    m = _RE_DATE.search(text)
+    if m:
+        dto.invoice_date = m.group(1)
+    m = _RE_TOTAL.search(text) or _RE_TOTAL2.search(text)
+    if m:
+        dto.total_amount = m.group(1)
+    m = _RE_SUM_ROW.search(text)
+    if m:
+        dto.amount, dto.tax_amount = m.group(1), m.group(2)
+    # 税率：项目行中的 "6%" / "13%" 等形式，取第一个百分比
+    m = re.search(r"(\d+(?:\.\d+)?%)", text)
+    if m:
+        dto.tax_rate = m.group(1)
+
+    # 购买方/销售方块：数电票 PDF 为左右双栏，文本提取后名称与税号按出现顺序
+    # 交错排列（购名 售名 ... 购税号 售税号），按块截取会错配，必须按顺序配对：
+    # 第 1 个名称=购买方，第 2 个名称=销售方；税号同理。
+    names = re.findall(r"名称\s*[:：]\s*([^\s]+)", text)
+    taxes = re.findall(
+        r"(?:统一社会信用代码|纳税人识别号)\s*[/／]?\s*(?:纳税人识别号)?\s*[:：]\s*([0-9A-Z]{15,20})",
+        text)
+    if names:
+        dto.buyer_name = dto.buyer_name or names[0]
+        if len(names) > 1:
+            dto.seller_name = dto.seller_name or names[1]
+    if taxes:
+        dto.buyer_tax_no = dto.buyer_tax_no or taxes[0]
+        if len(taxes) > 1:
+            dto.seller_tax_no = dto.seller_tax_no or taxes[1]
+
+    # 项目名称（取 *税收分类*名称 中的名称部分，遇到空格/数字即止，取前几个）
+    items = re.findall(r"\*[^*\n]+\*\s*([^\s*0-9][^\s*]{1,29})", text)
+    if items:
+        dto.item_summary = "；".join(dict.fromkeys(x.strip() for x in items[:5]))
+    return dto
+
+
 class PdfTextParser(BaseParser):
     """PDF 文本层解析（pdfplumber，可替换）。"""
     name = "pdf_text"
     confidence = 0.85
 
-    _RE_NO = re.compile(r"发票号码\s*[:：]?\s*(\d{8,20})")
-    _RE_CODE = re.compile(r"发票代码\s*[:：]?\s*(\d{10,12})")
-    _RE_DATE = re.compile(r"开票日期\s*[:：]?\s*(\d{4}[年\-/.]\d{1,2}[月\-/.]\d{1,2}日?)")
-    _RE_TOTAL = re.compile(r"[（(]小写[）)]\s*[:：]?\s*[¥￥]?\s*([0-9,，.]+)")
-    _RE_TOTAL2 = re.compile(r"价税合计\s*[:：]?\s*[¥￥]?\s*([0-9,，.]+)")
-    _RE_SUM_ROW = re.compile(r"合\s*计\s*[¥￥]?\s*([0-9,，.]+)\s+[¥￥]?([0-9,，.]+)")
 
     def parse(self, task: ParseTask) -> InvoiceDTO:
         try:
@@ -333,47 +385,7 @@ class PdfTextParser(BaseParser):
         if not text.strip():
             raise ParseSkip("PDF 无文本层（可能为扫描件）")
 
-        m = self._RE_NO.search(text)
-        if m:
-            dto.invoice_no = m.group(1)
-        m = self._RE_CODE.search(text)
-        if m:
-            dto.invoice_code = m.group(1)
-        m = self._RE_DATE.search(text)
-        if m:
-            dto.invoice_date = m.group(1)
-        m = self._RE_TOTAL.search(text) or self._RE_TOTAL2.search(text)
-        if m:
-            dto.total_amount = m.group(1)
-        m = self._RE_SUM_ROW.search(text)
-        if m:
-            dto.amount, dto.tax_amount = m.group(1), m.group(2)
-        # 税率：项目行中的 "6%" / "13%" 等形式，取第一个百分比
-        m = re.search(r"(\d+(?:\.\d+)?%)", text)
-        if m:
-            dto.tax_rate = m.group(1)
-
-        # 购买方/销售方块：数电票 PDF 为左右双栏，文本提取后名称与税号按出现顺序
-        # 交错排列（购名 售名 ... 购税号 售税号），按块截取会错配，必须按顺序配对：
-        # 第 1 个名称=购买方，第 2 个名称=销售方；税号同理。
-        names = re.findall(r"名称\s*[:：]\s*([^\s]+)", text)
-        taxes = re.findall(
-            r"(?:统一社会信用代码|纳税人识别号)\s*[/／]?\s*(?:纳税人识别号)?\s*[:：]\s*([0-9A-Z]{15,20})",
-            text)
-        if names:
-            dto.buyer_name = dto.buyer_name or names[0]
-            if len(names) > 1:
-                dto.seller_name = dto.seller_name or names[1]
-        if taxes:
-            dto.buyer_tax_no = dto.buyer_tax_no or taxes[0]
-            if len(taxes) > 1:
-                dto.seller_tax_no = dto.seller_tax_no or taxes[1]
-
-        # 项目名称（取 *税收分类*名称 中的名称部分，遇到空格/数字即止，取前几个）
-        items = re.findall(r"\*[^*\n]+\*\s*([^\s*0-9][^\s*]{1,29})", text)
-        if items:
-            dto.item_summary = "；".join(dict.fromkeys(x.strip() for x in items[:5]))
-
+        dto = extract_fields_from_text(text)
         if not dto.invoice_no and not dto.total_amount:
             raise ParseSkip("PDF 文本层未提取到关键字段（可能为扫描件）")
         return dto

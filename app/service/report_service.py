@@ -30,7 +30,9 @@ def build_report() -> dict:
         duplicates = [r for r in invoice_repo.list(conn, status="DUPLICATE", limit=10000)]
         normal_invoices = invoice_repo.list(conn, status="NORMAL", limit=100000)
         matched_invoice_ids = {m["invoice_id"] for m in matches if m["status"] in ("MATCHED", "CONFIRMED")}
-        pending_invoice_ids = {m["invoice_id"] for m in matches if m["status"] in ("SUSPICIOUS", "CONFLICT")}
+        pending_invoice_ids = {m["invoice_id"] for m in matches
+                               if m["status"] in ("SUSPICIOUS", "CONFLICT")
+                               or (m["status"] == "UNMATCHED" and m["reimburse_id"])}
 
     # 附带 raw_json（解析错误/重复原因），供页面展示
     for i in abnormal + duplicates:
@@ -75,7 +77,9 @@ def export_excel(report: dict) -> bytes:
         ["发票-MATCHED（已匹配）", inv_counts.get("MATCHED", 0)],
         ["报销单总数", report["reb_total"]],
         ["生效匹配数", report["active_matches"]],
-        ["待人工确认（SUSPICIOUS）", mc.get("SUSPICIOUS", 0)],
+        ["待人工处理（UNMATCHED/CONFLICT）",
+         mc.get("CONFLICT", 0) + sum(1 for m in report["details"]
+                                     if m["match"]["status"] == "UNMATCHED" and m["match"]["reimburse_id"])],
         ["字段冲突（CONFLICT）", mc.get("CONFLICT", 0)],
         ["未匹配报销单", len(report["unmatched_reimburses"])],
         ["未匹配发票", len(report["unmatched_invoices"])],
@@ -111,8 +115,9 @@ def export_excel(report: dict) -> bytes:
         issue_rows.append(["重复发票(DUPLICATE)", f"#{i['id']} {i.get('invoice_no', '')}",
                            raw.get("dup_reason", ""), f"重复于发票 #{raw.get('dup_of', '')}"])
     for m in report["details"]:
-        if m["match"]["status"] in ("SUSPICIOUS", "CONFLICT"):
-            issue_rows.append([f"待确认({m['match']['status']})",
+        ms = m["match"]["status"]
+        if ms in ("SUSPICIOUS", "CONFLICT") or (ms == "UNMATCHED" and m["match"]["reimburse_id"]):
+            issue_rows.append([f"待处理({ms})",
                                f"match#{m['match']['id']} 发票 {m['match'].get('invoice_no', '')}",
                                m["match"].get("message", ""),
                                f"score={m['match']['match_score']}"])

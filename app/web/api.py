@@ -250,6 +250,11 @@ async def reject_match(match_id: int, operator: str = Form("admin"), note: str =
     return _j(match_service.reject(match_id, operator, note))
 
 
+@api.post("/match/auto-correct")
+async def auto_correct_match(match_id: int = Form(...), operator: str = Form("admin")):
+    return _j(match_service.auto_correct(match_id, operator))
+
+
 @api.post("/match/{match_id}/unmatch")
 async def unmatch_match(match_id: int, operator: str = Form("admin"), reason: str = Form("")):
     return _j(match_service.unmatch(match_id, operator, reason))

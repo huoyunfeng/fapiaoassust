@@ -5,6 +5,7 @@
 """
 import hashlib
 import json
+import time
 import uuid
 from datetime import datetime
 from decimal import Decimal
@@ -20,6 +21,7 @@ from app.domain.states import InvoiceStatus
 from app.domain.validator import InvoiceValidator
 from app.infra.filestore import FileStore
 from app.infra.logger import get_logger
+from app.infra.ocr import register_ocr_backend
 from app.repository import db
 from app.repository.repos import invoice_repo, log_repo, rule_repo
 from app.service.status_flow import change_invoice_status
@@ -32,6 +34,9 @@ _rule_engine = RuleEngine()
 _dedup = DedupEngine()
 _parser_engine = parsers_mod.ParserEngine()
 _file_store = FileStore()
+
+# 图片发票（jpg/png）解析依赖 OCR 后端：在服务层装配，保证 Web 与测试路径一致
+register_ocr_backend()
 
 # 文件类型 -> 解析链首环节（作为 parse_engine 的初始占位，解析成功后更新）
 _CHAIN_HEAD = {"xml": "xml", "ofd": "ofd", "pdf": "pdf_text",
@@ -102,7 +107,11 @@ def import_files(files: List[tuple[str, str, bytes]], operator: str = None) -> L
     results = []
     for file_name, _ct, content in files:
         try:
-            results.append(_import_one(file_name, content, operator))
+            t0 = time.perf_counter()
+            r = _import_one(file_name, content, operator)
+            logger.info("导入耗时 %s: %.0fms (status=%s)",
+                        file_name, (time.perf_counter() - t0) * 1000, r.get("status"))
+            results.append(r)
         except Exception as e:
             logger.exception("导入 %s 失败", file_name)
             results.append({"file_name": file_name, "ok": False,
@@ -112,8 +121,10 @@ def import_files(files: List[tuple[str, str, bytes]], operator: str = None) -> L
     if any(r.get("ok") for r in results):
         try:
             from app.service import match_service
+            t0 = time.perf_counter()
             ms = match_service.run_matching(operator)
-            logger.info("发票导入后自动匹配: %s", ms)
+            logger.info("发票导入后自动匹配: %s (%.0fms)",
+                        ms, (time.perf_counter() - t0) * 1000)
         except Exception as e:
             logger.warning("发票导入后自动匹配失败: %s", e)
     return results
@@ -126,7 +137,9 @@ def _import_one(file_name: str, content: bytes, operator: str) -> dict:
                 "status": None, "message": f"不支持的文件类型: {file_type or '未知'}"}
 
     file_hash = _file_store.sha256(content)
+    t_save = time.perf_counter()
     source_path = str(_file_store.save(file_name, content))
+    save_ms = (time.perf_counter() - t_save) * 1000
     task = ParseTask(file_name=file_name, file_type=file_type, content=content)
 
     with db.tx() as conn:
@@ -150,19 +163,30 @@ def _import_one(file_name: str, content: bytes, operator: str) -> dict:
         })
 
         # 解析（引擎为纯函数，在事务内调用无副作用）
+        t_parse = time.perf_counter()
         result = _parser_engine.parse(task)
+        parse_ms = (time.perf_counter() - t_parse) * 1000
+        t_write = time.perf_counter()
+        logger.info("导入分段 %s: 存盘=%.0fms 解析=%.0fms", file_name, save_ms, parse_ms)
 
         if result.success:
             raw["degrade_chain"] = result.degrade_chain
+            t_u = time.perf_counter()
             invoice_repo.update(conn, invoice_id, {
                 **_row_fields_from_dto(result.dto),
                 "parse_engine": result.engine,
                 "parse_confidence": result.confidence,
                 "raw_json": json.dumps(raw, ensure_ascii=False),
             })
+            t_s = time.perf_counter()
             change_invoice_status(conn, invoice_id, InvoiceStatus.PARSED.value,
                                   f"解析成功（engine={result.engine}）", operator)
+            t_v = time.perf_counter()
             status, message = _validate_and_dedup(conn, invoice_id, operator)
+            logger.info("导入分段 %s: 存盘=%.0fms 解析=%.0fms 落库=%.0fms (update=%.0f "
+                        "status=%.0f validate=%.0f)", file_name, save_ms, parse_ms,
+                        (time.perf_counter() - t_write) * 1000, (t_s - t_u) * 1000,
+                        (t_v - t_s) * 1000, (time.perf_counter() - t_v) * 1000)
             return {"file_name": file_name, "ok": True, "invoice_id": invoice_id,
                     "status": status, "message": message}
 
