@@ -4,26 +4,27 @@
 
 <div class="grid g4">
   <div class="stat stat-link" onclick="location.href='/invoices'"><div class="label">发票总数</div><div class="num">{{ inv_counts.values()|sum }}</div>
-    <div class="muted mt">正常 {{ inv_counts.get('NORMAL',0) }} · 异常 {{ inv_counts.get('ABNORMAL',0) }} · 重复 {{ inv_counts.get('DUPLICATE',0) }}</div></div>
+    <div class="muted mt">未匹配 {{ inv_counts.get('NORMAL',0) }} · 已匹配 {{ inv_counts.get('MATCHED',0) }} · 异常 {{ inv_counts.get('ABNORMAL',0) }} · 重复 {{ inv_counts.get('DUPLICATE',0) }}</div></div>
   <div class="stat stat-link" onclick="location.href='/reimburses'"><div class="label">报销单总数</div><div class="num">{{ reb_total }}</div>
     <div class="muted mt" style="text-decoration:underline;" onclick="event.stopPropagation();location.href='/reimburses?status=unmatched'">未匹配 {{ unmatched_reimburses|length }} 张</div></div>
   <div class="stat stat-link" onclick="location.href='/matches?tab=matched'"><div class="label">生效匹配</div><div class="num">{{ active_matches }}</div>
     <div class="muted mt" onclick="event.stopPropagation();location.href='/matches?tab=pending'">待确认 {{ match_counts.get('SUSPICIOUS',0) }} · 冲突 {{ match_counts.get('CONFLICT',0) }}</div></div>
-  <div class="stat stat-link" onclick="location.href='/invoices?status=unmatched'"><div class="label">未匹配发票</div><div class="num">{{ unmatched_invoices|length }}</div>
-    <div class="muted mt">无候选配对</div></div>
+  <div class="stat stat-link{% if unmatched_invoices %} stat-danger{% endif %}" onclick="location.href='/invoices?status=unmatched'"><div class="label">未匹配发票</div><div class="num">{{ unmatched_invoices|length }}</div>
+    <div class="muted mt{% if unmatched_invoices %} text-danger{% endif %}">无候选配对</div></div>
 </div>
 
 <div class="grid g2 mt">
   <div class="card">
     <h2>待人工处理（SUSPICIOUS / CONFLICT）</h2>
     {% if suspicious %}
-    <table><tr><th>匹配</th><th>发票号</th><th>报销单号</th><th>分数</th><th>状态</th><th>差异</th></tr>
+    <table><tr><th>匹配</th><th>发票号</th><th>报销单号</th><th>分数</th><th>状态</th><th>差异</th><th>操作</th></tr>
     {% for d in suspicious %}
       <tr class="clickable" title="点击定位到匹配中心处理" onclick="location.href='/matches?tab=pending&focus_id={{ d.match.id }}'"><td>#{{ d.match.id }}</td><td>{{ d.match.invoice_no }}</td>
           <td>{{ d.reimburse.reimburse_no if d.reimburse else (d.match.reimburse_no or '汇总') }}</td>
           <td>{{ '%.2f'|format(d.match.match_score) }}</td>
           <td><span class="badge {{ d.match.status|badge }}">{{ d.match.status }}</span></td>
-          <td class="wrap muted">{{ d.match.message }}</td></tr>
+          <td class="wrap muted">{{ d.match.message }}</td>
+          <td><a class="btn btn-sm btn-outline" href="/matches?tab=pending&focus_id={{ d.match.id }}" onclick="event.stopPropagation()">去处理</a></td></tr>
     {% endfor %}</table>
     <div class="mt"><a class="btn btn-sm" href="/matches">去处理</a></div>
     {% else %}<p class="muted">暂无待处理项</p>{% endif %}
@@ -32,11 +33,12 @@
   <div class="card">
     <h2>异常发票（ABNORMAL，可人工修正）</h2>
     {% if abnormal %}
-    <table><tr><th>ID</th><th>发票号</th><th>文件</th><th>原因</th></tr>
+    <table><tr><th>ID</th><th>发票号</th><th>文件</th><th>原因</th><th>操作</th></tr>
     {% for i in abnormal %}
       <tr><td>#{{ i.id }}</td><td>{{ i.invoice_no or '—' }}</td>
           <td class="wrap muted">{{ (i.raw|fromjson).file_name or i.source_path }}</td>
-          <td class="wrap muted">{{ ((i.raw|fromjson).error or ((i.raw|fromjson).issues|map(attribute='message')|join('; ')) or '—') }}</td></tr>
+          <td class="wrap muted">{{ ((i.raw|fromjson).error or ((i.raw|fromjson).issues|map(attribute='message')|join('; ')) or '—') }}</td>
+          <td><a class="btn btn-sm btn-outline" href="/invoices/{{ i.id }}">去处理</a></td></tr>
     {% endfor %}</table>
     {% else %}<p class="muted">暂无异常发票</p>{% endif %}
   </div>

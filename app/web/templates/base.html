@@ -87,7 +87,12 @@ pre{background:#0f172a;color:#e2e8f0;padding:14px;border-radius:8px;font-size:12
 /* ---- 全局路由联动（上下文穿透） ---- */
 /* 可点击的统计卡片 / 列表行：手型 + 阴影提示 */
 .stat-link{cursor:pointer;transition:box-shadow .15s,transform .15s;}
-.stat-link:hover{box-shadow:0 4px 14px rgba(37,99,235,.18);transform:translateY(-1px);}
+.stat-link:hover{box-shadow:0 6px 16px rgba(37,99,235,.16);transform:translateY(-2px);}
+/* 风险警示卡片：未匹配发票等需财务优先处理的风险数据 */
+.stat-danger{border-color:#fca5a5;}
+.stat-danger:hover{box-shadow:0 6px 16px rgba(220,38,38,.18);}
+.stat-danger .num{color:#dc2626;}
+.text-danger{color:#dc2626 !important;}
 tr.clickable{cursor:pointer;}
 tr.clickable:hover td{background:#eff6ff;}
 /* focus 定位高亮：黄色闪烁 3 次后自动恢复（animation 结束即回默认背景） */
