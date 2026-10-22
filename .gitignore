@@ -1,5 +1,16 @@
+# Python 缓存
 __pycache__/
 *.pyc
+
+# 上传附件目录，永久忽略
+data/uploads/
+
+# 日志
 data/logs/
 *.log
+
+# 数据库（按需，不想提交db就取消注释）
+#data/fapiao.db
+
+# 虚拟环境
 venv/
