@@ -373,15 +373,42 @@ def confirm_not_duplicate(invoice_id: int, operator: str = None, reason: str = "
 
 
 def delete_invoice(invoice_id: int, operator: str = None) -> dict:
-    """删除发票（I8: 匹配记录级联删除；若已匹配，报销单自动释放）。"""
+    """删除发票（I8: 匹配记录级联删除；若已匹配，报销单自动释放）。
+
+    删除后自动扫描 DUPLICATE 状态的孤儿记录（dup_of == 被删 id），
+    对它们重新跑校验+去重，条件满足时恢复为 NORMAL。
+    """
     operator = operator or settings.default_operator
+    recovered = []
     with db.tx() as conn:
         row = invoice_repo.get(conn, invoice_id)
         if row is None:
             return {"ok": False, "message": f"发票 #{invoice_id} 不存在"}
         invoice_repo.delete(conn, invoice_id)
         logger.info("发票 #%s 已删除 (status=%s, by %s)", invoice_id, row["status"], operator)
-        return {"ok": True, "message": "发票已删除（匹配记录已级联删除）"}
+
+        # 恢复孤儿 DUPLICATE：raw_json.dup_of == 被删 id 的 DUPLICATE 记录重新去重
+        dup_rows = conn.execute(
+            "SELECT id, raw_json FROM invoice WHERE status = 'DUPLICATE'"
+        ).fetchall()
+        for dup_id, raw_json in dup_rows:
+            try:
+                raw = json.loads(raw_json) if raw_json else {}
+            except (json.JSONDecodeError, TypeError):
+                raw = {}
+            if raw.get("dup_of") != invoice_id:
+                continue
+            new_status, _msg = _validate_and_dedup(conn, dup_id, operator)
+            if new_status != "DUPLICATE":
+                recovered.append((dup_id, new_status))
+                logger.info("删除发票 #%s 后，孤儿 DUPLICATE #%s 恢复为 %s",
+                            invoice_id, dup_id, new_status)
+
+    msg = "发票已删除（匹配记录已级联删除）"
+    if recovered:
+        msg += f"；{len(recovered)} 张重复发票已自动恢复: " + \
+               ", ".join(f"#{i}->{s}" for i, s in recovered)
+    return {"ok": True, "message": msg, "recovered": recovered}
 
 
 def delete_invoices(invoice_ids: List[int], operator: str = None) -> dict:
