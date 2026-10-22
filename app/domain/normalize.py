@@ -89,13 +89,18 @@ class NormalizeEngine:
             tax_amount=self._to_decimal(dto.tax_amount),
             total_amount=self._to_decimal(dto.total_amount),
             tax_rate=self._clean(dto.tax_rate),
-            item_summary=self._clean(dto.item_summary),
+            item_summary=self._clean_summary(dto.item_summary),
+            items_detail=list(dto.items_detail or []),
             is_red_flush=bool(dto.is_red_flush),
         )
 
     # 以下为实例方法别名，保持与设计伪代码一致的调用形态
     def _clean(self, v) -> str:
         return clean(v)
+
+    def _clean_summary(self, v) -> str:
+        """项目摘要去除税收分类编码前缀（*xx*名称 → 名称），OFD/XML 来源可能带星号段。"""
+        return re.sub(r"\*[^*\n]+\*\s*", "", clean(v))
 
     def _to_decimal(self, v) -> Optional[Decimal]:
         return to_decimal(v)

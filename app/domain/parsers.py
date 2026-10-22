@@ -130,7 +130,51 @@ def _parse_xml_bytes(content: bytes) -> InvoiceDTO:
         _extract_from_element(elem, dto, seen)
         if len(seen) >= len(_XML_FIELD_KEYS):
             break
+    dto.items_detail = _extract_items_from_xml(root)
     return dto
+
+
+# XML 明细节点内的字段关键字（数电票/电子发票常见标签）
+_XML_ITEM_NAME = ["itemname", "goodsname", "xmmc", "项目名称", "mealtyname"]
+_XML_ITEM_FIELDS = {
+    "quantity": ["quantity", "num"],
+    "price":    ["unitprice", "price", "dj"],
+    "amount":   ["amount", "je"],
+    "tax_rate": ["taxrate", "slv", "rate"],
+}
+
+
+def _extract_items_from_xml(root) -> list:
+    """抽取 XML 明细列表：识别包含名称子元素的重复兄弟节点（Item/GoodsInfo 等）。"""
+    items = []
+    for parent in root.iter():
+        children = list(parent)
+        if len(children) < 1:
+            continue
+        for child in children:
+            sub = {c.tag.rsplit("}", 1)[-1]: (c.text or "").strip() for c in child}
+            if not sub:
+                continue
+            name = ""
+            for tag, v in sub.items():
+                if v and _match_key(tag, _XML_ITEM_NAME):
+                    name = v
+                    break
+            if not name:
+                continue
+            item = {"name": name, "quantity": None, "price": None,
+                    "amount": None, "tax_rate": ""}
+            for tag, v in sub.items():
+                if not v:
+                    continue
+                for field, keys in _XML_ITEM_FIELDS.items():
+                    if item[field] is None and _match_key(tag, keys):
+                        item[field] = v
+                        break
+            items.append(item)
+        if items:
+            break  # 只取第一个含明细名称的容器层
+    return items
 
 
 # =====================================================================
@@ -202,6 +246,7 @@ class OfdInvoiceParser(BaseParser):
             # 税率在 CustomTag 中无对应标签，从页面文本对象中提取第一个百分比（如 6%）
             # 注意：必须在 zip 关闭前完成读取
             page_tax_rate = self._extract_tax_rate(zf)
+            page_items = _extract_items_loose(" ".join(self._page_texts(zf)))
 
         # 合并：内嵌 XML 缺失的字段用 CustomTag 结果补齐
         if best is None:
@@ -213,14 +258,16 @@ class OfdInvoiceParser(BaseParser):
 
         if _is_missing(best.tax_rate):
             best.tax_rate = page_tax_rate
+        if not best.items_detail:
+            best.items_detail = page_items
 
         if all(_is_missing(getattr(best, f)) for f in REQUIRED_FIELDS):
             raise ParseSkip("OFD 内未找到可解析的发票 XML")
         return best
 
     @staticmethod
-    def _extract_tax_rate(zf: zipfile.ZipFile) -> str:
-        """扫描全部页面 Content.xml 的文本对象，取第一个百分比作为税率。"""
+    def _page_texts(zf: zipfile.ZipFile) -> list:
+        """收集全部页面 Content.xml 的文本对象（TextCode），按文件序返回。"""
         texts = []
         for name in sorted(zf.namelist()):
             if "/Pages/" in name and name.lower().endswith("content.xml"):
@@ -231,7 +278,12 @@ class OfdInvoiceParser(BaseParser):
                 for elem in root.iter():
                     if elem.tag.rsplit("}", 1)[-1] == "TextCode" and elem.text:
                         texts.append(elem.text)
-        m = re.search(r"(\d+(?:\.\d+)?%)", " ".join(texts))
+        return texts
+
+    @classmethod
+    def _extract_tax_rate(cls, zf: zipfile.ZipFile) -> str:
+        """扫描全部页面文本对象，取第一个百分比作为税率。"""
+        m = re.search(r"(\d+(?:\.\d+)?%)", " ".join(cls._page_texts(zf)))
         return m.group(1) if m else ""
 
     def _parse_custom_tags(self, zf: zipfile.ZipFile) -> InvoiceDTO:
@@ -364,7 +416,91 @@ def extract_fields_from_text(text: str) -> InvoiceDTO:
     items = re.findall(r"\*[^*\n]+\*\s*([^\s*0-9][^\s*]{1,29})", text)
     if items:
         dto.item_summary = "；".join(dict.fromkeys(x.strip() for x in items[:5]))
+    dto.items_detail = _extract_items_from_text(text)
     return dto
+
+
+# 明细行：*税收分类*名称 后跟随 规格/单位/数量/单价/金额/税率/税额
+_RE_ITEM_HEAD = re.compile(r"^\s*\*[^*\n]{1,40}\*\s*(\S+)(.*)$")
+_RE_NUM = re.compile(r"-?\d+(?:\.\d+)?")
+_RE_RATE = re.compile(r"-?\d+(?:\.\d+)?%|免税|不征税")
+
+
+def _parse_item_tokens(name: str, tokens: list) -> dict:
+    """由名称 + 后续 token 序列组装一条明细（税率/数字识别，缺列降级为 None）。
+
+    列对齐策略：有税率时从右往左找「金额×税率≈税额」的数对锚定金额列
+    （兼容 数量单价金额税额 / 金额税额 / 负数红冲行 等版式），无税率时按
+    从右往左 [数量 单价 金额 税额] 截取。
+    """
+    rate = ""
+    nums = []
+    for t in tokens:
+        if _RE_RATE.fullmatch(t):
+            rate = rate or t
+        elif _RE_NUM.fullmatch(t):
+            nums.append(t)
+    item = {"name": name, "quantity": None, "price": None,
+            "amount": None, "tax_rate": rate}
+    rate_val = None
+    if rate.endswith("%"):
+        try:
+            rate_val = float(rate[:-1]) / 100
+        except ValueError:
+            rate_val = None
+    anchored = False
+    if rate_val and len(nums) >= 2:
+        for j in range(len(nums) - 1, 0, -1):
+            if abs(float(nums[j - 1]) * rate_val - float(nums[j])) <= 0.02:
+                item["amount"] = nums[j - 1]
+                left = nums[:j - 1]          # 金额左边的列：… 数量 单价
+                if len(left) >= 2:
+                    item.update(quantity=left[-2], price=left[-1])
+                elif len(left) == 1:
+                    item["price"] = left[0]
+                anchored = True
+                break
+    if not anchored:
+        if len(nums) >= 4:      # 数量 单价 金额 税额
+            item.update(quantity=nums[-4], price=nums[-3], amount=nums[-2])
+        elif len(nums) == 3:    # 数量 单价 金额
+            item.update(quantity=nums[0], price=nums[1], amount=nums[2])
+        elif len(nums) == 2:    # 单价 金额
+            item.update(price=nums[0], amount=nums[1])
+        elif len(nums) == 1:    # 仅金额
+            item["amount"] = nums[0]
+    return item
+
+
+def _extract_items_from_text(text: str) -> list:
+    """从发票文本抽取明细行（PDF 文本层 / OCR 共用，尽力而为）。
+
+    数电票明细行版式：*税收分类*名称 规格 单位 数量 单价 金额 税率 税额
+    数值 token 从右往左按 [数量 单价 金额 税额] 截取；OCR 拆行/缺列时降级为仅存名称。
+    """
+    items = []
+    for line in text.splitlines():
+        m = _RE_ITEM_HEAD.match(line)
+        if not m:
+            continue
+        items.append(_parse_item_tokens(m.group(1), m.group(2).split()))
+    return items
+
+
+def _extract_items_loose(text: str) -> list:
+    """宽松模式：全文扫描 *分类*名称 锚点，向后窗口取 token（供 OFD 文本对象等
+    无换行结构的来源使用）；遇到合计/价税等关键词即截断，避免吞入合计行。"""
+    items = []
+    for m in re.finditer(r"\*[^*\n]{1,40}\*\s*(\S+)", text):
+        tokens = []
+        for t in text[m.end():m.end() + 120].split():
+            if t.startswith(("合", "价税", "*", "备", "开票人")):
+                break
+            tokens.append(t)
+            if len(tokens) >= 8:
+                break
+        items.append(_parse_item_tokens(m.group(1), tokens))
+    return items
 
 
 class PdfTextParser(BaseParser):

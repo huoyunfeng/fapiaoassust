@@ -35,6 +35,7 @@ class InvoiceDTO:
     total_amount: Optional[Decimal] = None      # 价税合计
     tax_rate: str = ""
     item_summary: str = ""
+    items_detail: list = field(default_factory=list)  # [{name, quantity, price, amount, tax_rate}]
     is_red_flush: bool = False                  # 是否红冲（负数发票）
 
     def filled_fields(self) -> list[str]:
