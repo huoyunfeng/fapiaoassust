@@ -30,17 +30,15 @@ def build_report() -> dict:
         duplicates = [r for r in invoice_repo.list(conn, status="DUPLICATE", limit=10000)]
         normal_invoices = invoice_repo.list(conn, status="NORMAL", limit=100000)
         matched_invoice_ids = {m["invoice_id"] for m in matches if m["status"] in ("MATCHED", "CONFIRMED")}
-        pending_invoice_ids = {m["invoice_id"] for m in matches
-                               if m["status"] in ("SUSPICIOUS", "CONFLICT")
-                               or (m["status"] == "UNMATCHED" and m["reimburse_id"])}
 
     # 附带 raw_json（解析错误/重复原因），供页面展示
     for i in abnormal + duplicates:
         i["raw"] = _raw_json(i)
 
     unmatched_reimburses = [r for r in all_reimburses if r["id"] not in occupied]
-    unmatched_invoices = [i for i in normal_invoices
-                          if i["id"] not in matched_invoice_ids and i["id"] not in pending_invoice_ids]
+    # 未匹配发票 = NORMAL 且无有效匹配（MATCHED/CONFIRMED）的发票
+    # 与发票列表页口径一致（NORMAL 即标红为未匹配），不再排除匹配失败的 pending 项
+    unmatched_invoices = [i for i in normal_invoices if i["id"] not in matched_invoice_ids]
 
     # 匹配明细行（含汇总匹配的报销单号）
     details: List[Dict[str, Any]] = []
