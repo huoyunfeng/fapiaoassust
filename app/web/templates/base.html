@@ -84,6 +84,15 @@ pre{background:#0f172a;color:#e2e8f0;padding:14px;border-radius:8px;font-size:12
 .progress-bar.indet{width:36%;transition:none;animation:busySlide 1.1s ease-in-out infinite;}
 @keyframes busySlide{0%{margin-left:-40%}100%{margin-left:110%}}
 .busy-detail{margin-top:10px;color:var(--muted);font-size:12px;min-height:16px;word-break:break-all;}
+/* ---- 全局路由联动（上下文穿透） ---- */
+/* 可点击的统计卡片 / 列表行：手型 + 阴影提示 */
+.stat-link{cursor:pointer;transition:box-shadow .15s,transform .15s;}
+.stat-link:hover{box-shadow:0 4px 14px rgba(37,99,235,.18);transform:translateY(-1px);}
+tr.clickable{cursor:pointer;}
+tr.clickable:hover td{background:#eff6ff;}
+/* focus 定位高亮：黄色闪烁 3 次后自动恢复（animation 结束即回默认背景） */
+@keyframes focusFlash{0%,100%{background:#fef9c3;}50%{background:#fde047;}}
+tr.row-focus td{animation:focusFlash .7s ease-in-out 3;}
 </style>
 </head>
 <body>
@@ -208,6 +217,30 @@ function switchTab(e,id){
   document.querySelectorAll('.tabpane').forEach(p=>p.classList.remove('active'));
   e.classList.add('active');document.getElementById(id).classList.add('active');
 }
+// 按 paneId 激活 Tab（供路由联动 ?tab= 自动切换）
+function activateTab(paneId){
+  const pane=document.getElementById(paneId);
+  if(!pane) return;
+  document.querySelectorAll('.tabs .tab').forEach(t=>{
+    const oc=t.getAttribute('onclick')||'';
+    t.classList.toggle('active', oc.includes("'"+paneId+"'"));
+  });
+  document.querySelectorAll('.tabpane').forEach(p=>p.classList.toggle('active', p.id===paneId));
+}
+// focus 定位高亮：页面渲染完成后找到 #row-{focus_id}，平滑滚动至中央并闪烁
+// 页面可在自身 scripts 块定义 window.preFocus（如先切换 Tab），会在高亮前调用
+function applyFocus(){
+  const fid=new URLSearchParams(location.search).get('focus_id');
+  if(!fid) return;
+  if(typeof window.preFocus==='function') window.preFocus();
+  requestAnimationFrame(()=>{
+    const el=document.getElementById('row-'+fid);
+    if(!el) return;
+    el.classList.add('row-focus');
+    el.scrollIntoView({behavior:'smooth',block:'center'});
+  });
+}
+document.addEventListener('DOMContentLoaded',applyFocus);
 </script>
 {% block scripts %}{% endblock %}
 </body>

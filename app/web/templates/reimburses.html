@@ -72,6 +72,11 @@
       <option value="">全部批次</option>
       {% for b in batches %}<option value="{{ b.batch_id }}" {% if batch_id==b.batch_id %}selected{% endif %}>{{ b.batch_id }}</option>{% endfor %}
     </select>
+    <select name="status">
+      <option value="" {% if not status %}selected{% endif %}>全部状态</option>
+      <option value="unmatched" {% if status=='unmatched' %}selected{% endif %}>未匹配</option>
+      <option value="matched" {% if status=='matched' %}selected{% endif %}>已匹配</option>
+    </select>
     <input name="q" value="{{ q }}" placeholder="单号/提交人/费用类型">
     <button class="btn btn-sm">筛选</button>
   </form>
@@ -89,7 +94,7 @@
       </thead>
       <tbody>
         {% for r in rows %}
-        <tr{% if not r.matched %} class="row-unmatched"{% endif %}>
+        <tr id="row-{{ r.id }}"{% if not r.matched %} class="row-unmatched"{% endif %}>
           {% for c in columns %}
           {% set cell = r.cells[loop.index0] %}
           <td{% if cell.amount %} class="cell-amount"{% elif cell.long %} class="cell-long" title="{{ cell.text }}"{% endif %}>

@@ -28,7 +28,7 @@
     <select name="status">
       <option value="">全部状态</option>
       {% for s in ['PARSING','PARSED','NORMAL','ABNORMAL','DUPLICATE','MATCHED'] %}
-      <option value="{{ s }}" {% if status==s %}selected{% endif %}>{{ s }} ({{ counts.get(s,0) }})</option>
+      <option value="{{ s }}" {% if status==s %}selected{% endif %}>{{ {'PARSING':'解析中','PARSED':'已解析','NORMAL':'未匹配','ABNORMAL':'异常','DUPLICATE':'重复','MATCHED':'已匹配'}.get(s,s) }} ({{ counts.get(s,0) }})</option>
       {% endfor %}
     </select>
     <input name="q" value="{{ q }}" placeholder="发票号/抬头/摘要关键词">
@@ -61,7 +61,7 @@
         <th class="col-state">状态</th><th class="col-action">操作</th></tr>
     <tbody>
     {% for i in rows %}
-    <tr{% if i.status == 'NORMAL' %} class="row-unmatched"{% endif %}>
+    <tr id="row-{{ i.id }}"{% if i.status == 'NORMAL' %} class="row-unmatched"{% endif %}>
       <td><input type="checkbox" class="chk-inv" value="{{ i.id }}" onchange="refreshSel()"></td>
       <td title="{{ i.invoice_no or '' }}">{{ i.invoice_no or '—' }}</td>
       <td>{{ i.invoice_date or '—' }}</td>

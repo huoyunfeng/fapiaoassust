@@ -46,6 +46,9 @@ def dashboard(request: Request):
 
 @pages.get("/invoices", response_class=HTMLResponse)
 def invoices_page(request: Request, status: str = "", q: str = ""):
+    # 路由联动语义参数：unmatched 映射为 NORMAL（未匹配发票 = NORMAL 状态）
+    if status == "unmatched":
+        status = "NORMAL"
     rows = invoice_service.list_invoices(status=status or None, keyword=q or None)
     return templates.TemplateResponse(request, "invoices.html", {
         "request": request, "rows": rows,
@@ -65,8 +68,13 @@ def invoice_detail_page(request: Request, invoice_id: int):
 
 
 @pages.get("/reimburses", response_class=HTMLResponse)
-def reimburses_page(request: Request, batch_id: str = "", q: str = ""):
+def reimburses_page(request: Request, batch_id: str = "", q: str = "", status: str = ""):
     rows = reimburse_service.list_reimburses(batch_id=batch_id or None, keyword=q or None)
+    # 路由联动语义参数：按匹配状态过滤（matched 口径与差异报告一致）
+    if status == "unmatched":
+        rows = [r for r in rows if not r.get("matched")]
+    elif status == "matched":
+        rows = [r for r in rows if r.get("matched")]
     batches = reimburse_service.list_batches()
     columns = _display_columns(rows)
     for r in rows:
@@ -74,7 +82,7 @@ def reimburses_page(request: Request, batch_id: str = "", q: str = ""):
     _sort_rows(rows, columns)
     return templates.TemplateResponse(request, "reimburses.html", {
         "request": request, "rows": rows, "batches": batches,
-        "batch_id": batch_id, "q": q, "columns": columns,
+        "batch_id": batch_id, "q": q, "status": status, "columns": columns,
     })
 
 

@@ -42,7 +42,7 @@
     {% if r.unmatched_reimburses %}
     <table><tr><th>ID</th><th>单号</th><th>金额</th><th>提交人</th><th>登记发票号</th></tr>
     {% for i in r.unmatched_reimburses %}
-      <tr><td>#{{ i.id }}</td><td>{{ i.reimburse_no }}</td><td>{{ i.amount }}</td>
+      <tr class="clickable" title="点击定位到报销单管理" onclick="location.href='/reimburses?status=unmatched&focus_id={{ i.id }}'"><td>#{{ i.id }}</td><td>{{ i.reimburse_no }}</td><td>{{ i.amount }}</td>
           <td>{{ i.submitter }}</td><td>{{ i.invoice_no or '—' }}</td></tr>
     {% endfor %}</table>
     {% else %}<p class="muted">无</p>{% endif %}
@@ -52,7 +52,7 @@
     {% if r.unmatched_invoices %}
     <table><tr><th>ID</th><th>发票号</th><th>价税合计</th><th>开票日期</th></tr>
     {% for i in r.unmatched_invoices %}
-      <tr><td>#{{ i.id }}</td><td>{{ i.invoice_no or '—' }}</td>
+      <tr class="clickable" title="点击定位到发票管理" onclick="location.href='/invoices?status=unmatched&focus_id={{ i.id }}'"><td>#{{ i.id }}</td><td>{{ i.invoice_no or '—' }}</td>
           <td>{{ i.total_amount or '—' }}</td><td>{{ i.invoice_date or '—' }}</td></tr>
     {% endfor %}</table>
     {% else %}<p class="muted">无</p>{% endif %}
