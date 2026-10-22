@@ -314,7 +314,7 @@ _RE_CODE = re.compile(r"发票代码\s*[:：]?\s*(\d{10,12})")
 _RE_DATE = re.compile(r"开票日期\s*[:：]?\s*(\d{4}[年\-/.]\d{1,2}[月\-/.]\d{1,2}日?)")
 _RE_TOTAL = re.compile(r"[（(]小写[）)]\s*[:：]?\s*[¥￥]?\s*([0-9,，.]+)")
 _RE_TOTAL2 = re.compile(r"价税合计\s*[:：]?\s*[¥￥]?\s*([0-9,，.]+)")
-_RE_SUM_ROW = re.compile(r"合\s*计\s*[¥￥]?\s*([0-9,，.]+)\s*[¥￥]?\s*([0-9,，.]+)")
+_RE_SUM_ROW = re.compile(r"(?:合|计)\s*(?:合|计)?\s*[¥￥]?\s*([0-9,，.]+)\s*[¥￥]?\s*([0-9,，.]+)")
 
 
 def extract_fields_from_text(text: str) -> InvoiceDTO:

@@ -226,10 +226,16 @@ def _digits_suspicious(dto: InvoiceDTO) -> bool:
 def _run_ocr_once(content: bytes, max_side: int):
     """跑一遍 OCR 并抽取字段，返回 (dto, 行数, elapse)。"""
     # 引擎非线程安全且 4 核机器并发 OCR 只会互相抢 CPU：串行化，让其它请求（删除等）仍能响应
-    with _OCR_LOCK:
-        engine = _load_engine(warmup=False, max_side=max_side)
-        arr = _image_to_array(content)
-        result, elapse = engine(arr)
+    try:
+        with _OCR_LOCK:
+            engine = _load_engine(warmup=False, max_side=max_side)
+            arr = _image_to_array(content)
+            result, elapse = engine(arr)
+    except ParseSkip:
+        raise
+    except Exception as e:
+        logger.warning("OCR 引擎调用失败 (max_side=%s): %s", max_side, e)
+        raise ParseSkip(f"OCR 引擎调用失败 (max_side={max_side}): {e}") from e
     if not result:
         raise ParseSkip("OCR 未识别到文字（图片可能过于模糊）")
 
@@ -239,7 +245,8 @@ def _run_ocr_once(content: bytes, max_side: int):
         text = (item[1] or "").strip() if len(item) > 1 else ""
         if text:
             lines.append(text)
-    dto = extract_fields_from_text("\n".join(lines))
+    full_text = "\n".join(lines)
+    dto = extract_fields_from_text(full_text)
     return dto, len(lines), elapse
 
 
@@ -262,6 +269,8 @@ def parse_image(content: bytes) -> InvoiceDTO:
             dto2, n_lines2, elapse2 = _run_ocr_once(content, HIRES_SIDE_LEN)
         except ParseSkip:
             logger.warning("OCR 高清复检未识别到文字，保留首轮结果")
+        except Exception as e:
+            logger.warning("OCR 高清复检异常（%s），保留首轮结果", e)
         else:
             hires = True
             q2 = _digit_quality(dto2)
