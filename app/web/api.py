@@ -3,6 +3,7 @@ import json
 from typing import List, Optional
 
 from fastapi import APIRouter, File, Form, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import Response
 
 from app.service import (invoice_service, match_service, reimburse_service,
@@ -22,11 +23,14 @@ def _j(data):
 
 # ---------------------------------------------------------------- 发票
 @api.post("/invoices/upload")
-async def upload_invoices(files: List[UploadFile] = File(...)):
+async def upload_invoices(files: List[UploadFile] = File(...), no_match: int = Form(0)):
     payload = []
     for f in files:
         payload.append((f.filename, f.content_type or "", await f.read()))
-    return _j(invoice_service.import_files(payload))
+    # no_match=1: 前端逐文件上传以显示进度，导入完成后由前端统一触发一次匹配
+    # 解析（尤其 OCR）耗时数秒，放线程池执行：事件循环保持畅通，删除等请求不被卡住
+    return _j(await run_in_threadpool(
+        invoice_service.import_files, payload, None, bool(no_match)))
 
 
 @api.post("/invoices/manual")
@@ -100,7 +104,9 @@ async def import_reimburses(file: UploadFile = File(...),
     except json.JSONDecodeError:
         return {"ok": False, "message": "fields_config 必须是合法 JSON"}
     try:
-        result = reimburse_service.import_excel(
+        # Excel 解析+落库为阻塞操作，放线程池执行，避免卡住事件循环
+        result = await run_in_threadpool(
+            reimburse_service.import_excel,
             file.filename or "reimburses.xlsx", content,
             template_id=template_id,
             fields_config=fc,
@@ -234,10 +240,20 @@ async def delete_batch(batch_id: str, operator: str = Form("admin")):
     return _j(reimburse_service.delete_batch(batch_id, operator))
 
 
+@api.get("/reimburses/batch/{batch_id}/ids")
+async def list_batch_ids(batch_id: str):
+    """批次内报销单 id 列表（前端逐条删除、显示进度用）。"""
+    from app.repository import db
+    from app.repository.repos import reimburse_repo
+    with db.tx() as conn:
+        rows = reimburse_repo.list(conn, batch_id=batch_id, limit=100000)
+    return _j([r["id"] for r in rows])
+
+
 # ---------------------------------------------------------------- 匹配
 @api.post("/match/run")
 async def run_match(operator: str = Form("admin")):
-    return _j(match_service.run_matching(operator))
+    return _j(await run_in_threadpool(match_service.run_matching, operator))
 
 
 @api.post("/match/{match_id}/confirm")

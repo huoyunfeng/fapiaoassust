@@ -62,7 +62,7 @@
 const INV_ID = {{ inv.id }};
 async function delInv(){
   if(!await confirmDlg('确认删除该发票？关联匹配记录将级联删除（I8）。'))return;
-  post(`/api/invoices/${INV_ID}/delete`).then(()=>location.href='/invoices');
+  post(`/api/invoices/${INV_ID}/delete`, null, {title:'正在删除发票…'}).then(()=>location.href='/invoices');
 }
 async function confirmDup(){
   const reason = await promptDlg('确认非重复的原因：','经人工核对为不同发票');

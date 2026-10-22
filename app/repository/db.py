@@ -210,6 +210,9 @@ def connect() -> sqlite3.Connection:
     conn = sqlite3.connect(settings.db_path, timeout=30)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    # 同步级别默认 FULL（断电安全）；受限环境可经 FAPIAO_SYNC 降级（见 config.py 注释）
+    if settings.db_synchronous in ("FULL", "NORMAL", "OFF"):
+        conn.execute(f"PRAGMA synchronous = {settings.db_synchronous}")
     return conn
 
 

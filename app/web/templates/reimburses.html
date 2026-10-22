@@ -465,6 +465,7 @@ async function buildFieldsConfig(headers, mapping, headerRow){
 async function wizConfirm(){
   const btn = document.getElementById('wizConfirmBtn');
   btn.disabled = true; btn.textContent = '导入中…';
+  busyIndet('正在导入报销单…', wizState.mode === 'template' ? '使用模板导入' : '使用自定义映射导入');
   try{
     const fd = new FormData();
     fd.append('file', wizState.file);
@@ -485,6 +486,7 @@ async function wizConfirm(){
   }catch(e){
     renderFailure('导入过程出错：' + e.message, []);
   }finally{
+    busyDone();
     btn.disabled = false; btn.textContent = '确认导入';
   }
 }
@@ -534,6 +536,7 @@ async function fallbackClassic(){
   if(!classic){ toast('未找到内置经典模板', false); return; }
   if(!wizState.file){ toast('原文件已丢失，请重新上传', false); setStep(1); return; }
   const btn = document.getElementById('wizConfirmBtn');
+  busyIndet('正在导入报销单…', '使用经典模板重新导入');
   try{
     const fd = new FormData();
     fd.append('file', wizState.file);
@@ -555,6 +558,7 @@ async function fallbackClassic(){
       toast('经典模板仍无法解析', false);
     }
   }catch(e){ toast('重试失败：' + e.message, false); }
+  finally{ busyDone(); }
 }
 
 // ============================================================
@@ -700,13 +704,27 @@ async function delTemplate(id){
 // ============================================================
 async function delReimburse(id){
   if(!await confirmDlg('确认删除该报销单？关联匹配将级联删除，已匹配发票回到 NORMAL。')) return;
-  await post(`/api/reimburses/${id}/delete`);
+  await post(`/api/reimburses/${id}/delete`, null, {title:'正在删除报销单…'});
   location.reload();
 }
 async function delBatch(bid){
-  if(!await confirmDlg(`确认删除批次 ${bid} 的全部报销单？`)) return;
-  await post(`/api/reimburses/batch/${bid}/delete`);
-  location.reload();
+  // 逐条调用单条删除接口（每条独立事务），显示真实进度条；中途失败不影响已删条目
+  const r = await fetch(`/api/reimburses/batch/${encodeURIComponent(bid)}/ids`);
+  const j = await r.json();
+  const ids = Array.isArray(j.data) ? j.data : [];
+  if(!ids.length){ toast('该批次没有报销单', false); return; }
+  if(!await confirmDlg(`确认删除批次 ${bid} 的 ${ids.length} 张报销单？\n关联匹配将级联删除，已匹配发票回到 NORMAL。`)) return;
+  busyIndet('正在删除报销单批次…', `共 ${ids.length} 张`);
+  let fail = 0;
+  for(let i = 0; i < ids.length; i++){
+    busyProgress(Math.round(i / ids.length * 100), `正在删除第 ${i + 1}/${ids.length} 张报销单`);
+    try{
+      await fetch(`/api/reimburses/${ids[i]}/delete`, {method:'POST', body:new FormData()});
+    }catch(err){ fail++; }
+  }
+  busyDone();
+  if(fail) toast(`删除完成：${ids.length - fail} 张成功，${fail} 张失败`, false);
+  setTimeout(()=>location.reload(), 400);
 }
 
 // 点击遮罩关闭面板（不干扰 base.html 的 closeModal）

@@ -15,10 +15,20 @@
   发票里长短行混排，批内其它行有相当比例的算力花在补零上；单条送检则按自身宽度算。
   实测低分辨率图反而更准（税号 J/U 一个易混字符），高清图逐字一致。
 - 启动时用一张 960x617、20 行的合成发票图预热 det+rec，消除首单冷启动延迟。
+
+准确率保险（两遍策略）：
+- 960 缩放对连续长串相同字符不友好——实测手机拍摄的发票照片（1706x1279），
+  20 位全电发票号码「…00000…」被 rec 压缩丢字（读成 18 位，score 0.898）；
+  仅提高 rec 裁剪分辨率（crop 取自原图）无效，必须 det 也用高分辨率
+  （max_side_len=2000，score 0.990，20 位全对）。
+- 因此 parse_image 默认走 960 快速档；若关键长数字字段位数不合法
+  （发票号码应为 8/20 位纯数字、税号应为 15/18/20 位），自动用 2000 高清档重识别，
+  取字段质量更高的结果。正常发票不付额外开销，问题照片多花约 3s。
 """
 import io
 import re
 import tempfile
+import threading
 from pathlib import Path
 
 from app.domain.dto import InvoiceDTO
@@ -29,12 +39,21 @@ logger = get_logger(__name__)
 
 _engine = None          # RapidOCR 实例（惰性加载，register_ocr_backend 时预热）
 _backend_registered = False
-_CONFIG_PATH: Path | None = None   # 我们生成的优化版配置文件
+_CONFIG_PATHS: dict[int, Path] = {}   # max_side -> 我们生成的优化配置文件
+_ENGINES: dict[int, object] = {}      # max_side -> RapidOCR 实例
+_OCR_LOCK = threading.Lock()          # 识别全程串行（引擎非线程安全 + 4 核并发只会互相抢 CPU）
 
 # 图像长边上限：超过则等比缩放后再识别。
 # 960 是实测平衡点——det 像素量大幅下降，而 A4 发票正文在缩放后仍有 ~18px，
 # 识别结果与不缩放逐字一致；再小会开始丢字。
 MAX_SIDE_LEN = 960
+# 高清复检档：长数字字段位数可疑时的重识别配置（见模块 docstring 两遍策略）。
+HIRES_SIDE_LEN = 2000
+
+# 关键长数字字段的合法位数：发票号码（传统 8 位 / 全电 20 位）、
+# 税号（老 15 位纯数字 / 统一社会信用代码 18 位等）
+_RE_INVOICE_NO = re.compile(r"^\d{8}$|^\d{20}$")
+_RE_TAX_NO = re.compile(r"^[0-9A-Z]{15}$|^[0-9A-Z]{18}$|^[0-9A-Z]{20}$")
 
 
 def _locate_default_yaml() -> Path:
@@ -76,18 +95,18 @@ def _patch_yaml(raw: str, patches: dict) -> str:
     return "".join(out)
 
 
-def _build_config() -> Path:
-    """从已安装包的 config.yaml 复制并微调，生成优化配置（进程内只生成一次）。"""
-    global _CONFIG_PATH
-    if _CONFIG_PATH is not None and _CONFIG_PATH.exists():
-        return _CONFIG_PATH
+def _build_config(max_side: int) -> Path:
+    """从已安装包的 config.yaml 复制并微调，生成优化配置（每个档位只生成一次）。"""
+    cached = _CONFIG_PATHS.get(max_side)
+    if cached is not None and cached.exists():
+        return cached
 
     raw = _locate_default_yaml().read_text(encoding="utf-8")
     patches = {
         "Global.use_cls": "false",              # 发票方向固定，跳过方向分类
-        "Global.max_side_len": MAX_SIDE_LEN,    # 大图先等比缩小，det 像素量骤降
+        "Global.max_side_len": max_side,        # 大图先等比缩小，det 像素量骤降
         "Det.limit_type": "max",                # 默认 min 只在短边过小时放大，几乎不缩图
-        "Det.limit_side_len": MAX_SIDE_LEN,
+        "Det.limit_side_len": max_side,
         # 逐条送 rec：同批 crop 要补零到批内最宽那条，长短行混排时大半算力是零
         "Rec.rec_batch_num": 1,
     }
@@ -97,10 +116,10 @@ def _build_config() -> Path:
         mode="w", suffix=".yaml", delete=False, encoding="utf-8"
     )
     f.write(raw); f.close()
-    _CONFIG_PATH = Path(f.name)
+    _CONFIG_PATHS[max_side] = Path(f.name)
     logger.info("OCR 配置已生成 (use_cls=false, max_side_len=%s, rec_batch=1): %s",
-                MAX_SIDE_LEN, _CONFIG_PATH)
-    return _CONFIG_PATH
+                max_side, _CONFIG_PATHS[max_side])
+    return _CONFIG_PATHS[max_side]
 
 
 def _warmup(engine) -> None:
@@ -144,22 +163,26 @@ def _warmup(engine) -> None:
         logger.warning("OCR 预热跳过: %s", e)
 
 
-def _load_engine(warmup: bool = True):
-    """惰性加载 RapidOCR；未安装时抛 ParseSkip 走降级链。"""
+def _load_engine(warmup: bool = True, max_side: int = MAX_SIDE_LEN):
+    """惰性加载 RapidOCR（按 max_side 分档缓存）；未安装时抛 ParseSkip 走降级链。"""
     global _engine
-    if _engine is not None:
-        return _engine
+    eng = _ENGINES.get(max_side)
+    if eng is not None:
+        return eng
     try:
         from rapidocr_onnxruntime import RapidOCR
     except ImportError as e:
         raise ParseSkip(
             f"OCR 引擎 RapidOCR 未安装（pip install rapidocr-onnxruntime）: {e}"
         ) from e
-    cfg = _build_config()
-    _engine = RapidOCR(config_path=str(cfg))
-    if warmup:
-        _warmup(_engine)
-    return _engine
+    cfg = _build_config(max_side)
+    eng = RapidOCR(config_path=str(cfg))
+    _ENGINES[max_side] = eng
+    if max_side == MAX_SIDE_LEN:
+        _engine = eng
+        if warmup:
+            _warmup(eng)
+    return eng
 
 
 def _image_to_array(content: bytes):
@@ -178,13 +201,35 @@ def _image_to_array(content: bytes):
     return np.array(img)
 
 
-def parse_image(content: bytes) -> InvoiceDTO:
-    """OCR 解析图片发票，返回未标准化 DTO。"""
-    import time as _t
-    t0 = _t.time()
-    engine = _load_engine(warmup=False)
-    arr = _image_to_array(content)
-    result, elapse = engine(arr)
+def _digit_quality(dto: InvoiceDTO) -> int:
+    """关键字段位数质量分：已填且位数合法的字段数（用于两遍结果取舍）。"""
+    score = 0
+    if dto.invoice_no and _RE_INVOICE_NO.match(dto.invoice_no):
+        score += 1
+    for tax in (dto.buyer_tax_no, dto.seller_tax_no):
+        if tax and _RE_TAX_NO.match(tax):
+            score += 1
+    return score
+
+
+def _digits_suspicious(dto: InvoiceDTO) -> bool:
+    """存在「已识别但位数不合法」的长数字字段 -> 触发高清复检。"""
+    checks = []
+    if dto.invoice_no:
+        checks.append(bool(_RE_INVOICE_NO.match(dto.invoice_no)))
+    for tax in (dto.buyer_tax_no, dto.seller_tax_no):
+        if tax:
+            checks.append(bool(_RE_TAX_NO.match(tax)))
+    return bool(checks) and not all(checks)
+
+
+def _run_ocr_once(content: bytes, max_side: int):
+    """跑一遍 OCR 并抽取字段，返回 (dto, 行数, elapse)。"""
+    # 引擎非线程安全且 4 核机器并发 OCR 只会互相抢 CPU：串行化，让其它请求（删除等）仍能响应
+    with _OCR_LOCK:
+        engine = _load_engine(warmup=False, max_side=max_side)
+        arr = _image_to_array(content)
+        result, elapse = engine(arr)
     if not result:
         raise ParseSkip("OCR 未识别到文字（图片可能过于模糊）")
 
@@ -194,20 +239,45 @@ def parse_image(content: bytes) -> InvoiceDTO:
         text = (item[1] or "").strip() if len(item) > 1 else ""
         if text:
             lines.append(text)
-    text_all = "\n".join(lines)
+    dto = extract_fields_from_text("\n".join(lines))
+    return dto, len(lines), elapse
 
-    dto = extract_fields_from_text(text_all)
+
+def parse_image(content: bytes) -> InvoiceDTO:
+    """OCR 解析图片发票，返回未标准化 DTO（两遍策略，见模块 docstring）。"""
+    import time as _t
+    t0 = _t.time()
+    dto, n_lines, elapse = _run_ocr_once(content, MAX_SIDE_LEN)
     if not dto.invoice_no and not dto.total_amount:
         raise ParseSkip(
             "OCR 已识别文字，但未提取到关键字段（发票号码/价税合计）"
         )
+
+    hires = False
+    if _digits_suspicious(dto):
+        q1 = _digit_quality(dto)
+        logger.info("OCR 首轮长数字字段位数可疑（发票号=%s, 质量=%s），改用 %s 高清复检",
+                    dto.invoice_no, q1, HIRES_SIDE_LEN)
+        try:
+            dto2, n_lines2, elapse2 = _run_ocr_once(content, HIRES_SIDE_LEN)
+        except ParseSkip:
+            logger.warning("OCR 高清复检未识别到文字，保留首轮结果")
+        else:
+            hires = True
+            q2 = _digit_quality(dto2)
+            if q2 >= q1:
+                dto, n_lines, elapse = dto2, n_lines2, elapse2
+            logger.info("OCR 高清复检完成: 发票号=%s (质量 %s -> %s，采用%s)",
+                        dto2.invoice_no, q1, q2, "复检" if q2 >= q1 else "首轮")
+
     total_ms = (_t.time() - t0) * 1000
     det_ms = cls_ms = rec_ms = 0
     if isinstance(elapse, (list, tuple)) and len(elapse) >= 3:
         det_ms, cls_ms, rec_ms = elapse[0] * 1000, elapse[1] * 1000, elapse[2] * 1000
     logger.info(
-        "OCR 识别完成: 行数=%s  发票号=%s  总耗时=%.0fms (det=%.0f cls=%.0f rec=%.0f)",
-        len(lines), dto.invoice_no, total_ms, det_ms, cls_ms, rec_ms,
+        "OCR 识别完成: 行数=%s 发票号=%s%s 总耗时=%.0fms (det=%.0f cls=%.0f rec=%.0f)",
+        n_lines, dto.invoice_no, "（高清复检）" if hires else "",
+        total_ms, det_ms, cls_ms, rec_ms,
     )
     return dto
 

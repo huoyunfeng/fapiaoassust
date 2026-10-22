@@ -1,4 +1,5 @@
 """全局配置（基础设施层可替换的参数集中在此）。"""
+import os
 from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
@@ -28,6 +29,11 @@ class Settings:
 
     # 默认操作人（本系统为单机工具，无登录体系）
     default_operator: str = "admin"
+
+    # SQLite 同步级别（FULL/NORMAL/OFF）：默认 FULL 保证断电安全。
+    # FAPIAO_SYNC=OFF 供特定受限环境（工具沙箱内 E: 盘 fsync 一次 400ms+）启动时降级，
+    # 正常终端运行无需设置。
+    db_synchronous: str = field(default_factory=lambda: os.getenv("FAPIAO_SYNC", "FULL"))
 
 
 settings = Settings()

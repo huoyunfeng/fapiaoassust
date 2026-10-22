@@ -72,6 +72,18 @@ pre{background:#0f172a;color:#e2e8f0;padding:14px;border-radius:8px;font-size:12
 .tabs .tab.active{color:var(--primary);border-color:var(--primary);font-weight:600;}
 .tabpane{display:none;}.tabpane.active{display:block;}
 .toast{position:fixed;top:70px;right:24px;background:#111827;color:#fff;padding:10px 18px;border-radius:8px;z-index:99;display:none;max-width:420px;font-size:13px;}
+/* 全局忙碌遮罩：导入/删除等耗时操作期间显示进度并阻挡一切点击（z-index 高于弹窗/下拉/提示） */
+.busy-bg{display:none;position:fixed;inset:0;background:rgba(15,23,42,.5);z-index:999;align-items:center;justify-content:center;}
+.busy-bg.on{display:flex;}
+.busy-card{background:#fff;border-radius:12px;padding:26px 34px;width:380px;text-align:center;box-shadow:0 8px 30px rgba(0,0,0,.25);}
+.spinner{width:34px;height:34px;border:4px solid #e5e7eb;border-top-color:var(--primary);border-radius:50%;margin:0 auto 14px;animation:busySpin .8s linear infinite;}
+@keyframes busySpin{to{transform:rotate(360deg)}}
+.busy-title{font-size:14px;font-weight:600;margin-bottom:12px;}
+.progress-track{height:8px;background:#e5e7eb;border-radius:6px;overflow:hidden;}
+.progress-bar{height:100%;width:0;background:var(--primary);border-radius:6px;transition:width .25s;}
+.progress-bar.indet{width:36%;transition:none;animation:busySlide 1.1s ease-in-out infinite;}
+@keyframes busySlide{0%{margin-left:-40%}100%{margin-left:110%}}
+.busy-detail{margin-top:10px;color:var(--muted);font-size:12px;min-height:16px;word-break:break-all;}
 </style>
 </head>
 <body>
@@ -88,6 +100,14 @@ pre{background:#0f172a;color:#e2e8f0;padding:14px;border-radius:8px;font-size:12
 <div class="modal-bg" id="modalBg" onclick="closeModal()"></div>
 <div class="modal" id="modal">{% block modal %}{% endblock %}</div>
 <div class="toast" id="toast"></div>
+<div class="busy-bg" id="busyBg">
+  <div class="busy-card">
+    <div class="spinner"></div>
+    <div class="busy-title" id="busyTitle">正在处理…</div>
+    <div class="progress-track"><div class="progress-bar indet" id="busyBar"></div></div>
+    <div class="busy-detail" id="busyDetail"></div>
+  </div>
+</div>
 <script>
 function toast(msg, ok=true){
   const t=document.getElementById('toast');
@@ -95,15 +115,37 @@ function toast(msg, ok=true){
   t.style.background=ok?'#059669':'#dc2626';
   setTimeout(()=>t.style.display='none',3500);
 }
-async function post(url, data){
-  const fd = data instanceof FormData ? data : new FormData(data);
-  const r = await fetch(url,{method:'POST',body:fd});
-  const j = await r.json();
-  if(j.ok===false || j.data && j.data.ok===false){toast(j.data?.message||j.message||'操作失败',false);}
-  else{toast('操作成功');}
-  return j;
+// ---- 忙碌遮罩：显示期间覆盖全页，用户无法点击其它按钮 ----
+function busyShow(title,detail){
+  document.getElementById('busyTitle').textContent = title || '正在处理…';
+  document.getElementById('busyDetail').textContent = detail || '';
+  document.getElementById('busyBg').classList.add('on');
 }
-function submitForm(e,url,after){e.preventDefault();post(url,e.target).then(j=>{if(!j.data||j.data.ok!==false){if(after)after(j);else location.reload();}});return false;}
+function busyDetail(text){ document.getElementById('busyDetail').textContent = text || ''; }
+function busyProgress(pct, detail){
+  const bar = document.getElementById('busyBar');
+  bar.classList.remove('indet'); bar.style.width = Math.max(0,Math.min(100,pct)) + '%';
+  if(detail !== undefined) busyDetail(detail);
+}
+function busyIndet(title,detail){
+  const bar = document.getElementById('busyBar');
+  bar.classList.add('indet'); bar.style.width = '';
+  busyShow(title,detail);
+}
+function busyDone(){ document.getElementById('busyBg').classList.remove('on'); }
+async function post(url, data, opts){
+  const fd = data instanceof FormData ? data : new FormData(data);
+  // 250ms 内完成的快操作不闪遮罩；慢操作出现「正在处理…」并阻挡点击
+  const timer = setTimeout(()=>busyIndet(opts && opts.title), 250);
+  try{
+    const r = await fetch(url,{method:'POST',body:fd});
+    const j = await r.json();
+    if(j.ok===false || j.data && j.data.ok===false){toast(j.data?.message||j.message||'操作失败',false);}
+    else{toast('操作成功');}
+    return j;
+  }finally{ clearTimeout(timer); busyDone(); }
+}
+function submitForm(e,url,after,title){e.preventDefault();post(url,e.target,{title}).then(j=>{if(!j.data||j.data.ok!==false){if(after)after(j);else location.reload();}});return false;}
 function openModal(){document.getElementById('modalBg').style.display='block';document.getElementById('modal').style.display='block';}
 function closeModal(){document.getElementById('modalBg').style.display='none';document.getElementById('modal').style.display='none';}
 // 下拉菜单：操作列【操作】按钮展开，挂载到 body 用 fixed 定位（避免被表格 overflow 截断），点击外部/滚动时收起

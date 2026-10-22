@@ -97,10 +97,12 @@ def _raw_json(row: dict) -> dict:
 
 
 # ---------------------------------------------------------------- 导入
-def import_files(files: List[tuple[str, str, bytes]], operator: str = None) -> List[dict]:
+def import_files(files: List[tuple[str, str, bytes]], operator: str = None,
+                 skip_match: bool = False) -> List[dict]:
     """导入发票文件（每个文件独立事务，互不阻塞）。
 
     files: [(文件名, content_type, 字节内容)]
+    skip_match: 跳过导入后的自动匹配（前端逐文件上传显示进度时用，最后统一触发一次）
     返回: [{file_name, ok, invoice_id, status, message}]
     """
     operator = operator or settings.default_operator
@@ -118,7 +120,7 @@ def import_files(files: List[tuple[str, str, bytes]], operator: str = None) -> L
                             "invoice_id": None, "status": None,
                             "message": f"导入异常: {e}"})
     # 有新发票导入成功后自动执行一轮匹配，报销单页状态随之刷新
-    if any(r.get("ok") for r in results):
+    if not skip_match and any(r.get("ok") for r in results):
         try:
             from app.service import match_service
             t0 = time.perf_counter()
