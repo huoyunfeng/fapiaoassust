@@ -22,6 +22,20 @@ STATUS_BADGE = {
 templates.env.filters["badge"] = lambda s: STATUS_BADGE.get(s, "badge-gray")
 # 需求2：SUSPICIOUS 状态已废弃，存量记录在前端统一按 UNMATCHED 展示
 templates.env.filters["dstatus"] = lambda s: "UNMATCHED" if s == "SUSPICIOUS" else s
+# 状态码统一转中文显示（发票状态 + 匹配状态）
+STATUS_CN = {
+    "PARSING": "解析中", "PARSED": "已解析", "NORMAL": "未匹配",
+    "ABNORMAL": "异常", "DUPLICATE": "重复", "MATCHED": "已匹配",
+    "PENDING": "匹配中", "SUSPICIOUS": "无候选", "CONFLICT": "字段冲突",
+    "UNMATCHED": "无候选", "CONFIRMED": "已确认", "REJECTED": "已拒绝",
+}
+templates.env.filters["status_cn"] = lambda s: STATUS_CN.get(s, s)
+# 匹配类型统一转中文显示
+MATCH_TYPE_CN = {
+    "exact": "精确匹配", "fuzzy": "模糊匹配", "composite": "组合匹配",
+    "many_to_one": "多对一", "manual": "人工指定",
+}
+templates.env.filters["match_type_cn"] = lambda s: MATCH_TYPE_CN.get(s, s)
 templates.env.filters["fromjson"] = lambda s: (json.loads(s) if isinstance(s, str) and s else (s if isinstance(s, dict) else {}))
 
 

@@ -294,6 +294,42 @@ class MatchRepo:
             out.setdefault(r["match_id"], []).append(_row_to_dict(r))
         return out
 
+    def delete_for_invoice(self, conn: sqlite3.Connection, invoice_id: int) -> int:
+        """显式清理某发票的全部匹配记录（match_pair + match_result）。
+
+        与表结构 ON DELETE CASCADE 双保险：即使外键未生效也不留悬空脏数据。
+        返回删除的 match_result 行数。
+        """
+        conn.execute(
+            "DELETE FROM match_pair WHERE match_id IN "
+            "(SELECT id FROM match_result WHERE invoice_id = ?)",
+            (invoice_id,),
+        )
+        conn.execute("DELETE FROM match_pair WHERE invoice_id = ?", (invoice_id,))
+        cur = conn.execute("DELETE FROM match_result WHERE invoice_id = ?", (invoice_id,))
+        return cur.rowcount
+
+    def delete_for_reimburse(self, conn: sqlite3.Connection, reimburse_id: int) -> int:
+        """显式清理某报销单的全部匹配记录（match_pair + match_result 直接引用）。"""
+        conn.execute(
+            "DELETE FROM match_pair WHERE match_id IN "
+            "(SELECT id FROM match_result WHERE reimburse_id = ?)",
+            (reimburse_id,),
+        )
+        conn.execute("DELETE FROM match_pair WHERE reimburse_id = ?", (reimburse_id,))
+        cur = conn.execute("DELETE FROM match_result WHERE reimburse_id = ?", (reimburse_id,))
+        return cur.rowcount
+
+    def delete_unpaired_summary(self, conn: sqlite3.Connection) -> int:
+        """清理孤儿的汇总匹配：match_pair 已删空、reimburse_id 为 NULL 的 match_result。"""
+        cur = conn.execute(
+            """DELETE FROM match_result
+               WHERE reimburse_id IS NULL
+                 AND match_type IN ('many_to_one','one_to_many')
+                 AND NOT EXISTS (SELECT 1 FROM match_pair p WHERE p.match_id = match_result.id)"""
+        )
+        return cur.rowcount
+
     def delete_non_active(self, conn: sqlite3.Connection) -> int:
         """清理上一轮的评估痕迹（非生效态记录），生效记录保留。"""
         cur = conn.execute(
@@ -324,6 +360,11 @@ class LogRepo:
             "SELECT * FROM invoice_status_log WHERE invoice_id = ? ORDER BY id DESC",
             (invoice_id,),
         ))
+
+    def delete_for_invoice(self, conn: sqlite3.Connection, invoice_id: int) -> int:
+        """显式清理某发票的状态日志（外键级联的双保险）。"""
+        cur = conn.execute("DELETE FROM invoice_status_log WHERE invoice_id = ?", (invoice_id,))
+        return cur.rowcount
 
 
 # =====================================================================

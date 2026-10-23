@@ -11,6 +11,9 @@ data/logs/
 
 # 数据库（按需，不想提交db就取消注释）
 #data/fapiao.db
+# 恢复保底备份与备份 zip 目录，不提交
+data/fapiao.db.bak
+data/backups/
 
 # 虚拟环境
 venv/

@@ -4,10 +4,11 @@ from typing import List, Optional
 
 from fastapi import APIRouter, File, Form, UploadFile
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import Response
+from fastapi.responses import FileResponse, Response
+from starlette.background import BackgroundTask
 
-from app.service import (invoice_service, match_service, reimburse_service,
-                         report_service)
+from app.service import (backup_service, invoice_service, match_service,
+                         reimburse_service, report_service)
 from app.service.mapping_service import mapping_service
 from app.service.template_service import template_service
 from app.infra.logger import get_logger
@@ -364,3 +365,29 @@ async def delete_rule(rule_id: int):
     with db.tx() as conn:
         rule_repo.delete(conn, rule_id)
     return _j({"deleted": rule_id})
+
+
+# ---------------------------------------------------------------- 数据备份与恢复
+@api.get("/backup")
+async def download_backup():
+    """一键备份：数据库 + 全部发票附件打包为 zip 并触发浏览器下载。"""
+    zip_path = await run_in_threadpool(backup_service.create_backup)
+    return FileResponse(
+        zip_path,
+        media_type="application/zip",
+        filename=zip_path.name,
+        background=BackgroundTask(zip_path.unlink, True),  # 发送完成后清理临时 zip
+    )
+
+
+@api.post("/backup/restore")
+async def restore_backup(file: UploadFile = File(...)):
+    """恢复数据：上传 zip 覆盖数据库与附件（旧数据自动 .bak 保底，失败回滚）。"""
+    content = await file.read()
+    if not content:
+        return _j({"ok": False, "message": "未收到备份文件，请重新选择"})
+    if not (file.filename or "").lower().endswith(".zip"):
+        return _j({"ok": False, "message": "仅支持 .zip 格式的备份文件"})
+    # 覆盖解压为阻塞 IO，放线程池执行
+    result = await run_in_threadpool(backup_service.restore_backup, content)
+    return _j(result)

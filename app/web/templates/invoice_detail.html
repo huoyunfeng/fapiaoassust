@@ -2,7 +2,7 @@
 {% block content %}
 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
   <h1 style="font-size:20px;">发票 #{{ inv.id }}
-    <span class="badge {{ inv.status|badge }}" style="vertical-align:middle;">{{ inv.status }}</span>
+    <span class="badge {{ inv.status|badge }}" style="vertical-align:middle;">{{ inv.status|status_cn }}</span>
     {% if inv.is_red_flush %}<span class="badge badge-red">红冲</span>{% endif %}
   </h1>
   <div>
@@ -48,8 +48,8 @@
     <tr><th>时间</th><th>从</th><th>到</th><th>原因</th><th>操作人</th></tr>
     {% for l in inv.status_log %}
     <tr><td>{{ l.created_at }}</td>
-        <td><span class="badge {{ (l.from_status or '')|badge }}">{{ l.from_status or '—' }}</span></td>
-        <td><span class="badge {{ l.to_status|badge }}">{{ l.to_status }}</span></td>
+        <td><span class="badge {{ (l.from_status or '')|badge }}">{{ (l.from_status or '—')|status_cn }}</span></td>
+        <td><span class="badge {{ l.to_status|badge }}">{{ l.to_status|status_cn }}</span></td>
         <td class="wrap muted">{{ l.reason }}</td><td>{{ l.operator }}</td></tr>
     {% else %}<tr><td colspan="5" class="muted">暂无日志</td></tr>{% endfor %}
   </table>
@@ -72,7 +72,7 @@ async function confirmDup(){
 }
 function openFix(){
   document.getElementById('modal').innerHTML = `
-  <h2 style="margin-bottom:14px;">人工修正（ABNORMAL → NORMAL）</h2>
+  <h2 style="margin-bottom:14px;">人工修正（异常 → 未匹配）</h2>
   <form onsubmit="submitForm(event,\`/api/invoices/${INV_ID}/fix\`)">
     <input type="hidden" name="operator" value="admin">
     <div class="grid g2" style="gap:10px;">

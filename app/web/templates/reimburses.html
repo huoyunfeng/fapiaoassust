@@ -636,9 +636,9 @@ function addTplField(excel_header='', system_key='', required=false, type='strin
     </select></td>
     <td><input type="checkbox" class="tpl-req" ${required?'checked':''}></td>
     <td><select class="tpl-type" style="width:100%;">
-      <option value="string" ${type==='string'?'selected':''}>string</option>
-      <option value="decimal" ${type==='decimal'?'selected':''}>decimal</option>
-      <option value="date" ${type==='date'?'selected':''}>date</option>
+      <option value="string" ${type==='string'?'selected':''}>文本</option>
+      <option value="decimal" ${type==='decimal'?'selected':''}>数值</option>
+      <option value="date" ${type==='date'?'selected':''}>日期</option>
     </select></td>
     <td><button class="btn btn-sm btn-outline" onclick="this.closest('tr').remove()">删除</button></td>`;
   document.getElementById('tplFieldsBody').appendChild(tr);

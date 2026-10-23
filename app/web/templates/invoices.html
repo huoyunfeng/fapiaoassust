@@ -4,7 +4,13 @@
 /* ===== 与报销单页一致的 PRD 视觉规范 ===== */
 .card{box-shadow:0 2px 12px rgba(0,0,0,.06);}
 .table-scroll{overflow-x:auto;}
-.invoice-table{min-width:1200px;}
+/* 固定布局：固定列 width 精确生效，无 width 的列平分剩余空间 */
+.invoice-table{table-layout:fixed!important;width:100%;}
+/* 格子边框：每行每列都有竖线分隔 */
+.invoice-table th,.invoice-table td{border-right:1px solid var(--border);text-align:center;}
+.invoice-table th:last-child,.invoice-table td:last-child{border-right:none;}
+/* 覆盖 base.html 中数字列的右对齐，统一居中 */
+.invoice-table .col-number,.invoice-table .cell-amount{text-align:center;}
 .invoice-table tbody td{background:#fff;}
 .invoice-table tbody tr:nth-child(even) td{background:#fafbfc;}
 .invoice-table tbody tr.row-unmatched td,
@@ -12,7 +18,56 @@
 .invoice-table tbody tr:hover td{background:#e8f0fe;}
 .invoice-table tbody tr.row-unmatched:hover td{background:#fdd8d8;}
 .cell-amount{color:#1677ff;font-weight:500;text-align:right;font-variant-numeric:tabular-nums;}
-.invoice-table .col-state,.invoice-table .col-action{border-left:1px solid var(--border);text-align:center;}
+.invoice-table .col-state,.invoice-table .col-action{text-align:center;}
+
+/* ===== 列宽策略：JS 按权重动态分配百分比宽度，CSS 仅设 min-width 下限 ===== */
+/* 所有列的 width 由 applyColVisibility() 根据权重动态计算（百分比） */
+.invoice-table .col-check{min-width:40px;}
+.invoice-table .col-invoice_no{min-width:150px;}
+.invoice-table .col-invoice_date{min-width:100px;}
+.invoice-table .col-amount{min-width:70px;}
+.invoice-table .col-tax_amount{min-width:70px;}
+.invoice-table .col-total_amount{min-width:80px;}
+.invoice-table .col-status{min-width:80px;}
+.invoice-table .col-action{min-width:70px;overflow:visible;}
+/* 文本列：min-width 防止被压到无法阅读（统一居中由全局规则控制） */
+.invoice-table .col-buyer{min-width:120px;}
+.invoice-table .col-seller{min-width:120px;}
+.invoice-table .col-item_summary{min-width:80px;}
+
+/* 隐藏列 */
+.col-hidden{display:none!important;}
+
+/* 固定左右核心列（水平滚动时不动） */
+.invoice-table th.fixed-left,.invoice-table td.fixed-left{position:sticky;left:0;z-index:3;background:#fff;}
+.invoice-table th.fixed-right,.invoice-table td.fixed-right{position:sticky;right:0;z-index:3;background:#fff;}
+/* 多列固定：第二列左固定偏移第一列宽度，第二列右固定偏移最右列宽度（静态兜底，JS 会动态重算） */
+.invoice-table .col-invoice_no{left:40px;}
+.invoice-table .col-status{right:80px;}
+/* 表头统一单色：固定列（fixed-left/right）也必须与普通列同色，否则一行白白灰灰无规律 */
+.invoice-table thead th{position:sticky;top:0;z-index:4;background:#eef2f7;color:#475569;font-weight:600;}
+.invoice-table thead th.fixed-left,.invoice-table thead th.fixed-right{z-index:5;background:#eef2f7;}
+.invoice-table thead th{box-shadow:inset 0 -2px 0 var(--border);}
+.invoice-table tbody tr:nth-child(even) td.fixed-left,
+.invoice-table tbody tr:nth-child(even) td.fixed-right{background:#fafbfc;}
+.invoice-table tbody tr:hover td.fixed-left,
+.invoice-table tbody tr:hover td.fixed-right{background:#e8f0fe;}
+.invoice-table tbody tr.row-unmatched td.fixed-left,
+.invoice-table tbody tr.row-unmatched td.fixed-right{background:#fef2f2;}
+.invoice-table tbody tr.row-unmatched:hover td.fixed-left,
+.invoice-table tbody tr.row-unmatched:hover td.fixed-right{background:#fdd8d8;}
+
+/* 购买方/销售方双行：上名称，下税号灰字 */
+.cell-dual .c-name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.cell-dual .c-tax{font-size:12px;color:#9ca3af;margin-top:2px;}
+
+/* 列设置面板 */
+.col-settings{position:relative;display:inline-block;}
+.col-settings-panel{position:absolute;right:0;top:110%;background:#fff;border:1px solid var(--border);
+  border-radius:8px;box-shadow:0 6px 20px rgba(0,0,0,.12);padding:10px;min-width:180px;z-index:20;display:none;}
+.col-settings.open .col-settings-panel{display:block;}
+.col-settings-panel label{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:4px;cursor:pointer;}
+.col-settings-panel label:hover{background:#f4f6f9;}
 </style>
 
 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
@@ -40,43 +95,69 @@
   {% if rows %}
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
     <span class="muted" id="selInfo">已选 0 张</span>
-    <div>
+    <div style="display:flex;gap:8px;align-items:center;">
       <a class="btn btn-outline btn-sm" href="/api/invoices/export?status={{ status }}&q={{ q }}">导出 Excel</a>
+      <div class="col-settings" id="colSettings">
+        <button class="btn btn-outline btn-sm" type="button" onclick="toggleColPanel(event)" title="列设置">⚙ 列设置</button>
+        <div class="col-settings-panel" id="colSettingsPanel" onclick="event.stopPropagation()"></div>
+      </div>
       <button class="btn btn-danger btn-sm" id="btnBatchDel" onclick="batchDelete()" disabled>批量删除</button>
     </div>
   </div>
   <div class="table-scroll">
   <table class="invoice-table">
     <colgroup>
-      <col style="width:46px">
-      <col style="width:210px"><col style="width:100px">
-      <col style="width:140px"><col style="width:150px"><col style="width:140px"><col style="width:150px">
-      <col style="width:130px">
-      <col style="width:85px"><col style="width:85px"><col style="width:95px">
-      <col style="width:75px"><col style="width:75px">
+      <col class="col-check">
+      <col class="col-invoice_no">
+      <col class="col-invoice_date">
+      <col class="col-buyer">
+      <col class="col-seller">
+      <col class="col-item_summary">
+      <col class="col-amount">
+      <col class="col-tax_amount">
+      <col class="col-total_amount">
+      <col class="col-status">
+      <col class="col-action">
     </colgroup>
-    <tr><th><input type="checkbox" id="chkAll" onchange="toggleAll(this)"></th>
-        <th>发票号</th><th>开票日期</th>
-        <th>购买方</th><th>购买方税号</th><th>销售方</th><th>销售方税号</th>
-        <th>货物名称</th>
-        <th class="col-number">金额</th><th class="col-number">税额</th><th class="col-number">价税合计</th>
-        <th class="col-state">状态</th><th class="col-action">操作</th></tr>
+    <thead>
+    <tr>
+      <th class="col-check fixed-left"><input type="checkbox" id="chkAll" onchange="toggleAll(this)"></th>
+      <th class="col-invoice_no fixed-left">发票号</th>
+      <th class="col-invoice_date">开票日期</th>
+      <th class="col-buyer">购买方</th>
+      <th class="col-seller">销售方</th>
+      <th class="col-item_summary">项目名称</th>
+      <th class="col-amount col-number">金额</th>
+      <th class="col-tax_amount col-number">税额</th>
+      <th class="col-total_amount col-number">价税合计</th>
+      <th class="col-status fixed-right col-state">状态</th>
+      <th class="col-action fixed-right">操作</th>
+    </tr>
+    </thead>
     <tbody>
     {% for i in rows %}
     <tr id="row-{{ i.id }}"{% if i.status == 'NORMAL' %} class="row-unmatched"{% endif %}>
-      <td><input type="checkbox" class="chk-inv" value="{{ i.id }}" onchange="refreshSel()"></td>
-      <td title="{{ i.invoice_no or '' }}">{{ i.invoice_no or '—' }}</td>
-      <td>{{ i.invoice_date or '—' }}</td>
-      <td title="{{ i.buyer_name }}">{{ i.buyer_name }}</td>
-      <td>{{ i.buyer_tax_no or '—' }}</td>
-      <td title="{{ i.seller_name }}">{{ i.seller_name }}</td>
-      <td>{{ i.seller_tax_no or '—' }}</td>
-      <td title="{{ i.item_summary }}">{{ i.item_summary or '—' }}</td>
-      <td class="col-number cell-amount">{{ i.amount or '—' }}</td>
-      <td class="col-number cell-amount">{{ i.tax_amount or '—' }}</td>
-      <td class="col-number cell-amount"><b>{{ i.total_amount or '—' }}</b></td>
-      <td class="col-state">{% if i.status == 'NORMAL' %}<span class="badge badge-red">未匹配</span>{% else %}<span class="badge {{ i.status|badge }}">{{ i.status }}</span>{% endif %}</td>
-      <td class="col-action">
+      <td class="col-check fixed-left"><input type="checkbox" class="chk-inv" value="{{ i.id }}" onchange="refreshSel()"></td>
+      <td class="col-invoice_no fixed-left" title="{{ i.invoice_no or '' }}">{{ i.invoice_no or '—' }}</td>
+      <td class="col-invoice_date">{{ i.invoice_date or '—' }}</td>
+      <td class="col-buyer">
+        <div class="cell-dual">
+          <div class="c-name" title="{{ i.buyer_name or '' }}">{{ i.buyer_name or '—' }}</div>
+          <div class="c-tax">{{ i.buyer_tax_no or '—' }}</div>
+        </div>
+      </td>
+      <td class="col-seller">
+        <div class="cell-dual">
+          <div class="c-name" title="{{ i.seller_name or '' }}">{{ i.seller_name or '—' }}</div>
+          <div class="c-tax">{{ i.seller_tax_no or '—' }}</div>
+        </div>
+      </td>
+      <td class="col-item_summary" title="{{ i.item_summary or '' }}">{{ i.item_summary or '—' }}</td>
+      <td class="col-amount col-number cell-amount">{% if i.amount %}{{ '%.2f'|format(i.amount|float) }}{% else %}—{% endif %}</td>
+      <td class="col-tax_amount col-number cell-amount">{% if i.tax_amount %}{{ '%.2f'|format(i.tax_amount|float) }}{% else %}—{% endif %}</td>
+      <td class="col-total_amount col-number cell-amount"><b>{% if i.total_amount %}{{ '%.2f'|format(i.total_amount|float) }}{% else %}—{% endif %}</b></td>
+      <td class="col-status fixed-right col-state"><span class="badge {% if i.status == 'NORMAL' %}badge-red{% else %}{{ i.status|badge }}{% endif %}">{{ i.status|status_cn }}</span></td>
+      <td class="col-action fixed-right">
         <button class="btn btn-sm btn-danger" onclick="delOne({{ i.id }}, '{{ i.invoice_no or i.id }}')">删除</button>
       </td>
     </tr>
@@ -101,6 +182,104 @@
 
 {% block scripts %}
 <script>
+/* ===== 动态列配置 + localStorage 持久化 ===== */
+const columnsConfig = [
+  {key:'check',        title:'选择',    default:true,  fixed:'left',  weight:0.5},
+  {key:'invoice_no',   title:'发票号',  default:true,  fixed:'left',  weight:2.8},
+  {key:'invoice_date', title:'开票日期',default:true,                 weight:1.5},
+  {key:'buyer',        title:'购买方',  default:true,                 weight:2.6},
+  {key:'seller',       title:'销售方',  default:true,                 weight:2.6},
+  {key:'item_summary', title:'项目名称',default:true,                 weight:1.5},
+  {key:'amount',       title:'金额',    default:false,                weight:1.1},
+  {key:'tax_amount',   title:'税额',    default:false,                weight:1.1},
+  {key:'total_amount', title:'价税合计',default:true,                 weight:1.2},
+  {key:'status',       title:'状态',    default:true,  fixed:'right', weight:1.2},
+  {key:'action',       title:'操作',    default:true,  fixed:'right', weight:1.0},
+];
+const COL_STORAGE_KEY = 'invoice_columns_visible';
+
+function loadColVisibility(){
+  let saved = null;
+  try{ saved = JSON.parse(localStorage.getItem(COL_STORAGE_KEY)); }catch(e){ saved = null; }
+  const map = {};
+  columnsConfig.forEach(c=>{ map[c.key] = (saved && typeof saved[c.key]==='boolean') ? saved[c.key] : c.default; });
+  return map;
+}
+function applyColVisibility(map){
+  // 1. 切换列显隐
+  columnsConfig.forEach(c=>{
+    const cells = document.querySelectorAll('.col-' + c.key);
+    cells.forEach(el=>{
+      if(map[c.key]) el.classList.remove('col-hidden');
+      else el.classList.add('col-hidden');
+    });
+  });
+  // 2. 按权重动态分配宽度（百分比），保证所有可见列均匀撑满表格
+  const visible = columnsConfig.filter(c=>map[c.key]);
+  const totalWeight = visible.reduce((s,c)=>s + c.weight, 0) || 1;
+  columnsConfig.forEach(c=>{
+    const colEl = document.querySelector('col.col-' + c.key);
+    if(!colEl) return;
+    if(map[c.key]){
+      const pct = (c.weight / totalWeight * 100).toFixed(3);
+      colEl.style.width = pct + '%';
+    } else {
+      colEl.style.width = '0';
+    }
+  });
+  // 3. 重新计算固定列偏移（某列被隐藏时，相邻固定列要贴边）
+  const leftCols = columnsConfig.filter(c=>c.fixed==='left');
+  let leftOffset = 0;
+  leftCols.forEach(c=>{
+    document.querySelectorAll('.col-' + c.key).forEach(el=>{ el.style.left = leftOffset + 'px'; });
+    if(map[c.key]){
+      const w = document.querySelector('.col-' + c.key)?.offsetWidth || 0;
+      leftOffset += w;
+    }
+  });
+  const rightCols = columnsConfig.filter(c=>c.fixed==='right').reverse();
+  let rightOffset = 0;
+  rightCols.forEach(c=>{
+    document.querySelectorAll('.col-' + c.key).forEach(el=>{ el.style.right = rightOffset + 'px'; });
+    if(map[c.key]){
+      const w = document.querySelector('.col-' + c.key)?.offsetWidth || 0;
+      rightOffset += w;
+    }
+  });
+}
+function saveColVisibility(map){
+  try{ localStorage.setItem(COL_STORAGE_KEY, JSON.stringify(map)); }catch(e){}
+}
+function renderColPanel(){
+  const map = loadColVisibility();
+  const panel = document.getElementById('colSettingsPanel');
+  if(!panel) return;
+  panel.innerHTML = columnsConfig.map(c=>`
+    <label><input type="checkbox" data-key="${c.key}" ${map[c.key]?'checked':''}>
+    <span>${c.title}${c.fixed?` <span class="muted" style="font-size:11px">(${c.fixed==='left'?'固定左':'固定右'})</span>`:''}</span></label>
+  `).join('');
+  panel.querySelectorAll('input[type=checkbox]').forEach(cb=>{
+    cb.addEventListener('change', ()=>{
+      const m = loadColVisibility();
+      m[cb.dataset.key] = cb.checked;
+      applyColVisibility(m);
+      saveColVisibility(m);
+    });
+  });
+}
+function toggleColPanel(e){
+  e.stopPropagation();
+  const wrap = document.getElementById('colSettings');
+  if(!wrap.classList.contains('open')){ renderColPanel(); wrap.classList.add('open'); }
+  else wrap.classList.remove('open');
+}
+document.addEventListener('click', (e)=>{
+  const wrap = document.getElementById('colSettings');
+  if(wrap && !wrap.contains(e.target)) wrap.classList.remove('open');
+});
+// 初始化列显隐
+applyColVisibility(loadColVisibility());
+
 function selectedIds(){
   return [...document.querySelectorAll('.chk-inv:checked')].map(c=>c.value);
 }

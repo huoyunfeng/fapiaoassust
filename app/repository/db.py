@@ -11,6 +11,7 @@ DDL 与设计文档 §5 一致，含两处已标注的最小调整：
 """
 import json
 import sqlite3
+import threading
 from contextlib import contextmanager
 from typing import Iterator
 
@@ -18,6 +19,11 @@ from app.config import settings
 from app.infra.logger import get_logger
 
 logger = get_logger(__name__)
+
+# 活跃连接注册表（sqlite3.Connection 不支持弱引用，用普通集合 + 关闭时移除）：
+# 供 dispose() 在数据恢复前强制断连
+_open_conns: "set[sqlite3.Connection]" = set()
+_open_conns_lock = threading.Lock()
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS invoice (
@@ -213,7 +219,33 @@ def connect() -> sqlite3.Connection:
     # 同步级别默认 FULL（断电安全）；受限环境可经 FAPIAO_SYNC 降级（见 config.py 注释）
     if settings.db_synchronous in ("FULL", "NORMAL", "OFF"):
         conn.execute(f"PRAGMA synchronous = {settings.db_synchronous}")
+    with _open_conns_lock:
+        _open_conns.add(conn)
     return conn
+
+
+def dispose() -> int:
+    """强制关闭所有活跃数据库连接，返回关闭数量。
+
+    数据恢复（覆盖 .db 文件）前必须调用：Windows 下打开的连接会锁定
+    数据库文件，导致重命名/覆盖失败。本架构连接为按调用创建、用完即关，
+    正常情况此处为 0；异常残留的连接在此被兜底强制释放。
+    """
+    with _open_conns_lock:
+        conns = list(_open_conns)
+    n = 0
+    for conn in conns:
+        try:
+            conn.close()
+            n += 1
+        except Exception:
+            pass
+        finally:
+            with _open_conns_lock:
+                _open_conns.discard(conn)
+    if n:
+        logger.info("dispose: 强制关闭了 %s 个残留数据库连接", n)
+    return n
 
 
 @contextmanager
@@ -229,6 +261,8 @@ def tx() -> Iterator[sqlite3.Connection]:
         raise
     finally:
         conn.close()
+        with _open_conns_lock:
+            _open_conns.discard(conn)
 
 
 @contextmanager
@@ -239,6 +273,8 @@ def read() -> Iterator[sqlite3.Connection]:
         yield conn
     finally:
         conn.close()
+        with _open_conns_lock:
+            _open_conns.discard(conn)
 
 
 def init_schema() -> None:

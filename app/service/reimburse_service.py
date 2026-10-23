@@ -239,23 +239,39 @@ def _release_active_matches(conn, reimburse_ids: List[int], operator: str) -> Li
 
 
 def delete_reimburse(reimburse_id: int, operator: str = None) -> dict:
+    """删除报销单：同一事务内释放发票 -> 显式清理匹配记录 -> 删报销单（失败整体回滚）。
+
+    报销单为 Excel 导入解析后的数据行，原始 Excel 未落盘，无物理文件需清理。
+    """
     operator = operator or settings.default_operator
     with db.tx() as conn:
         row = reimburse_repo.get(conn, reimburse_id)
         if row is None:
             return {"ok": False, "message": f"报销单 #{reimburse_id} 不存在"}
         _release_active_matches(conn, [reimburse_id], operator)
+        n_match = match_repo.delete_for_reimburse(conn, reimburse_id)
         reimburse_repo.delete(conn, reimburse_id)
+        # 汇总匹配的 match_pair 删空后，清理悬空的父级 match_result，防脏数据
+        n_orphan = match_repo.delete_unpaired_summary(conn)
+        logger.info("报销单 #%s 已删除 (清理匹配记录 %s 条、孤儿汇总匹配 %s 条, by %s)",
+                    reimburse_id, n_match, n_orphan, operator)
         return {"ok": True, "message": "报销单已删除（关联匹配已级联删除）"}
 
 
 def delete_batch(batch_id: str, operator: str = None) -> dict:
+    """删除导入批次：同一事务内连带清理批次内全部报销单产生的匹配记录。"""
     operator = operator or settings.default_operator
     with db.tx() as conn:
         ids = [r["id"] for r in reimburse_repo.list(conn, batch_id=batch_id, limit=100000)]
         _release_active_matches(conn, ids, operator)
+        n_match = 0
+        for rid in ids:
+            n_match += match_repo.delete_for_reimburse(conn, rid)
         n = reimburse_repo.delete_batch(conn, batch_id)
-        return {"ok": True, "message": f"批次 {batch_id} 已删除 {n} 行"}
+        n_orphan = match_repo.delete_unpaired_summary(conn)
+        logger.info("批次 %s 已删除 %s 行 (清理匹配记录 %s 条、孤儿汇总匹配 %s 条, by %s)",
+                    batch_id, n, n_match, n_orphan, operator)
+        return {"ok": True, "message": f"批次 {batch_id} 已删除 {n} 行（关联匹配已级联删除）"}
 
 
 def list_reimburses(batch_id: str = None, keyword: str = None,

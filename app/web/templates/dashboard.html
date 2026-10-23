@@ -15,14 +15,14 @@
 
 <div class="grid g2 mt">
   <div class="card">
-    <h2>待人工处理（SUSPICIOUS / CONFLICT）</h2>
+    <h2>待人工处理（待确认 / 冲突）</h2>
     {% if suspicious %}
     <table><tr><th>匹配</th><th>发票号</th><th>报销单号</th><th>分数</th><th>状态</th><th>差异</th><th>操作</th></tr>
     {% for d in suspicious %}
       <tr class="clickable" title="点击定位到匹配中心处理" onclick="location.href='/matches?tab=pending&focus_id={{ d.match.id }}'"><td>#{{ d.match.id }}</td><td>{{ d.match.invoice_no }}</td>
           <td>{{ d.reimburse.reimburse_no if d.reimburse else (d.match.reimburse_no or '汇总') }}</td>
           <td>{{ '%.2f'|format(d.match.match_score) }}</td>
-          <td><span class="badge {{ d.match.status|badge }}">{{ d.match.status }}</span></td>
+          <td><span class="badge {{ d.match.status|badge }}">{{ d.match.status|dstatus|status_cn }}</span></td>
           <td class="wrap muted">{{ d.match.message }}</td>
           <td><a class="btn btn-sm btn-outline" href="/matches?tab=pending&focus_id={{ d.match.id }}" onclick="event.stopPropagation()">去处理</a></td></tr>
     {% endfor %}</table>
@@ -31,7 +31,7 @@
   </div>
 
   <div class="card">
-    <h2>异常发票（ABNORMAL，可人工修正）</h2>
+    <h2>异常发票（可人工修正）</h2>
     {% if abnormal %}
     <table><tr><th>ID</th><th>发票号</th><th>文件</th><th>原因</th><th>操作</th></tr>
     {% for i in abnormal %}

@@ -23,7 +23,7 @@ from app.infra.filestore import FileStore
 from app.infra.logger import get_logger
 from app.infra.ocr import register_ocr_backend
 from app.repository import db
-from app.repository.repos import invoice_repo, log_repo, rule_repo
+from app.repository.repos import invoice_repo, log_repo, match_repo, rule_repo
 from app.service.status_flow import change_invoice_status
 
 logger = get_logger(__name__)
@@ -375,6 +375,8 @@ def confirm_not_duplicate(invoice_id: int, operator: str = None, reason: str = "
 def delete_invoice(invoice_id: int, operator: str = None) -> dict:
     """删除发票（I8: 匹配记录级联删除；若已匹配，报销单自动释放）。
 
+    安全顺序（业务规则）：先查物理文件路径 -> 事务内删数据库（含级联，失败整体回滚）
+    -> 事务提交后删物理文件（容错，仅记日志，绝不回滚数据库）。
     删除后自动扫描 DUPLICATE 状态的孤儿记录（dup_of == 被删 id），
     对它们重新跑校验+去重，条件满足时恢复为 NORMAL。
     """
@@ -384,8 +386,16 @@ def delete_invoice(invoice_id: int, operator: str = None) -> dict:
         row = invoice_repo.get(conn, invoice_id)
         if row is None:
             return {"ok": False, "message": f"发票 #{invoice_id} 不存在"}
+        # 规则 2/3：删除前先查出物理文件路径（人工录入的发票无文件，为 None）
+        source_path = row.get("source_path")
+
+        # 规则 1：同一事务内显式清理关联数据（匹配记录、状态日志），
+        # 与外键 ON DELETE CASCADE 双保险，任何一步失败整个事务回滚
+        n_match = match_repo.delete_for_invoice(conn, invoice_id)
+        log_repo.delete_for_invoice(conn, invoice_id)
         invoice_repo.delete(conn, invoice_id)
-        logger.info("发票 #%s 已删除 (status=%s, by %s)", invoice_id, row["status"], operator)
+        logger.info("发票 #%s 已删除 (status=%s, 清理匹配记录 %s 条, by %s)",
+                    invoice_id, row["status"], n_match, operator)
 
         # 恢复孤儿 DUPLICATE：raw_json.dup_of == 被删 id 的 DUPLICATE 记录重新去重
         dup_rows = conn.execute(
@@ -404,7 +414,12 @@ def delete_invoice(invoice_id: int, operator: str = None) -> dict:
                 logger.info("删除发票 #%s 后，孤儿 DUPLICATE #%s 恢复为 %s",
                             invoice_id, dup_id, new_status)
 
+    # 规则 3：数据库确认删除成功后，再删物理文件；文件删除失败仅记日志
+    file_cleaned = _file_store.delete(source_path) if source_path else False
+
     msg = "发票已删除（匹配记录已级联删除）"
+    if source_path and file_cleaned:
+        msg += "，物理文件已清理"
     if recovered:
         msg += f"；{len(recovered)} 张重复发票已自动恢复: " + \
                ", ".join(f"#{i}->{s}" for i, s in recovered)

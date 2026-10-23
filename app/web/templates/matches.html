@@ -31,8 +31,8 @@
       {% for m in pending %}
       <tr id="row-{{ m.id }}">
         <td>#{{ m.id }}</td>
-        <td><span class="badge {{ m.status|badge }}">{{ m.status|dstatus }}</span></td>
-        <td class="muted">{{ m.match_type }}</td>
+        <td><span class="badge {{ m.status|badge }}">{{ m.status|dstatus|status_cn }}</span></td>
+        <td class="muted">{{ m.match_type|match_type_cn }}</td>
         <td><b>{{ '%.2f'|format(m.match_score) }}</b></td>
         <td>{{ m.invoice_no or '—' }}</td><td>{{ m.total_amount or '—' }}</td>
         <td>{% if m.reimburse_no %}{{ m.reimburse_no }}{% elif m.pair_reimburses %}汇总: {% for r in m.pair_reimburses %}{{ r.reimburse_no }} {% endfor %}{% else %}—{% endif %}</td>
@@ -63,8 +63,8 @@
       {% for m in active %}
       <tr id="row-{{ m.id }}">
         <td>#{{ m.id }}</td>
-        <td><span class="badge {{ m.status|badge }}">{{ m.status }}</span></td>
-        <td class="muted">{{ m.match_type }}</td>
+        <td><span class="badge {{ m.status|badge }}">{{ m.status|dstatus|status_cn }}</span></td>
+        <td class="muted">{{ m.match_type|match_type_cn }}</td>
         <td>{{ '%.2f'|format(m.match_score) }}</td>
         <td>{{ m.invoice_no }}</td><td>{{ m.total_amount }}</td>
         <td>{% if m.reimburse_no %}{{ m.reimburse_no }}{% elif m.pair_reimburses %}汇总: {% for r in m.pair_reimburses %}{{ r.reimburse_no }} {% endfor %}{% endif %}</td>
@@ -95,10 +95,10 @@
 
 <div class="tabpane" id="paneManual">
   <div class="card">
-    <h2>人工指定匹配（manual，直接生效）</h2>
+    <h2>人工指定匹配（直接生效）</h2>
     <form class="inline" onsubmit="submitForm(event,'/api/match/manual')">
       <select name="invoice_id" required style="min-width:280px;">
-        <option value="">选择发票（NORMAL 且未匹配）</option>
+        <option value="">选择发票（状态为未匹配）</option>
         {% for i in opt_invoices %}
         <option value="{{ i.id }}">#{{ i.id }} {{ i.invoice_no or '(无号)' }} ¥{{ i.total_amount or '?' }} {{ i.invoice_date or '' }}</option>
         {% endfor %}

@@ -21,8 +21,8 @@
     {% for d in r.details %}
     <tr>
       <td>#{{ d.match.id }}</td>
-      <td><span class="badge {{ d.match.status|badge }}">{{ d.match.status }}</span></td>
-      <td class="muted">{{ d.match.match_type }}</td>
+      <td><span class="badge {{ d.match.status|badge }}">{{ d.match.status|dstatus|status_cn }}</span></td>
+      <td class="muted">{{ d.match.match_type|match_type_cn }}</td>
       <td>{{ '%.2f'|format(d.match.match_score) }}</td>
       <td>{{ d.reimburse.reimburse_no if d.reimburse else '—' }}</td>
       <td>{{ d.reimburse_amount if d.reimburse_amount is not none else '—' }}</td>
@@ -66,7 +66,7 @@
     <table><tr><th>ID</th><th>发票号</th><th>状态</th></tr>
     {% for i in r.abnormal %}
       <tr><td><a class="link" href="/invoices/{{ i.id }}">#{{ i.id }}</a></td>
-          <td>{{ i.invoice_no or '—' }}</td><td><span class="badge {{ i.status|badge }}">{{ i.status }}</span></td></tr>
+          <td>{{ i.invoice_no or '—' }}</td><td><span class="badge {{ i.status|badge }}">{{ i.status|status_cn }}</span></td></tr>
     {% endfor %}</table>
     {% else %}<p class="muted">无</p>{% endif %}
   </div>
@@ -76,7 +76,7 @@
     <table><tr><th>ID</th><th>发票号</th><th>状态</th></tr>
     {% for i in r.duplicates %}
       <tr><td><a class="link" href="/invoices/{{ i.id }}">#{{ i.id }}</a></td>
-          <td>{{ i.invoice_no or '—' }}</td><td><span class="badge {{ i.status|badge }}">{{ i.status }}</span></td></tr>
+          <td>{{ i.invoice_no or '—' }}</td><td><span class="badge {{ i.status|badge }}">{{ i.status|status_cn }}</span></td></tr>
     {% endfor %}</table>
     {% else %}<p class="muted">无</p>{% endif %}
   </div>
