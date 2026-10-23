@@ -96,7 +96,13 @@
   <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
     <span class="muted" id="selInfo">已选 0 张</span>
     <div style="display:flex;gap:8px;align-items:center;">
-      <a class="btn btn-outline btn-sm" href="/api/invoices/export?status={{ status }}&q={{ q }}">导出 Excel</a>
+      <div class="col-settings" id="exportMenu">
+        <button class="btn btn-outline btn-sm" type="button" onclick="toggleExportPanel(event)">导出 Excel ▾</button>
+        <div class="col-settings-panel" id="exportPanel">
+          <div onclick="exportSelected()" style="padding:6px 10px;cursor:pointer;border-radius:4px;" onmouseover="this.style.background='#f4f6f9'" onmouseout="this.style.background=''">📋 导出选中数据</div>
+          <div onclick="exportAll()" style="padding:6px 10px;cursor:pointer;border-radius:4px;" onmouseover="this.style.background='#f4f6f9'" onmouseout="this.style.background=''">📊 导出全部数据</div>
+        </div>
+      </div>
       <div class="col-settings" id="colSettings">
         <button class="btn btn-outline btn-sm" type="button" onclick="toggleColPanel(event)" title="列设置">⚙ 列设置</button>
         <div class="col-settings-panel" id="colSettingsPanel" onclick="event.stopPropagation()"></div>
@@ -273,15 +279,34 @@ function toggleColPanel(e){
   if(!wrap.classList.contains('open')){ renderColPanel(); wrap.classList.add('open'); }
   else wrap.classList.remove('open');
 }
+function toggleExportPanel(e){
+  e.stopPropagation();
+  const wrap = document.getElementById('exportMenu');
+  wrap.classList.toggle('open');
+}
 document.addEventListener('click', (e)=>{
-  const wrap = document.getElementById('colSettings');
-  if(wrap && !wrap.contains(e.target)) wrap.classList.remove('open');
+  document.querySelectorAll('.col-settings.open').forEach(wrap => {
+    if(!wrap.contains(e.target)) wrap.classList.remove('open');
+  });
 });
 // 初始化列显隐
 applyColVisibility(loadColVisibility());
 
 function selectedIds(){
   return [...document.querySelectorAll('.chk-inv:checked')].map(c=>c.value);
+}
+function _closeExportMenu(){
+  document.getElementById('exportMenu').classList.remove('open');
+}
+function exportSelected(){
+  _closeExportMenu();
+  const ids = selectedIds();
+  if(!ids.length){ toast('请先选择要导出的发票', false); return; }
+  window.location.href = '/api/invoices/export?ids=' + ids.join(',');
+}
+function exportAll(){
+  _closeExportMenu();
+  window.location.href = '/api/invoices/export';
 }
 function refreshSel(){
   const ids = selectedIds();

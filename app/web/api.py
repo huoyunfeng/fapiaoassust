@@ -285,9 +285,11 @@ async def manual_match(invoice_id: int = Form(...), reimburse_id: int = Form(...
 
 # ---------------------------------------------------------------- 报告
 @api.get("/invoices/export")
-def export_invoices(status: str = "", q: str = ""):
+def export_invoices(status: str = "", q: str = "", ids: str = ""):
     from datetime import datetime
-    content = invoice_service.export_excel(status=status or None, keyword=q or None)
+    id_list = [int(x) for x in ids.split(",") if x.strip().isdigit()] if ids else None
+    content = invoice_service.export_excel(
+        status=status or None, keyword=q or None, ids=id_list)
     fname = f"invoices_{datetime.now():%Y%m%d_%H%M}.xlsx"
     return Response(
         content,

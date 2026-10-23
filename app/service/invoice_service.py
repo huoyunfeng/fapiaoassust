@@ -463,12 +463,12 @@ def invoice_status_counts() -> Dict[str, int]:
         return invoice_repo.count_by_status(conn)
 
 
-def export_excel(status: str = None, keyword: str = None) -> bytes:
-    """导出发票清单 Excel（支持按当前筛选条件导出，上限 10 万条）。"""
+def export_excel(status: str = None, keyword: str = None, ids: list = None) -> bytes:
+    """导出发票清单 Excel（支持按当前筛选条件或指定 ids 导出，上限 10 万条）。"""
     import io
     from openpyxl import Workbook
     with db.read() as conn:
-        rows = invoice_repo.list(conn, status=status, keyword=keyword, limit=100000)
+        rows = invoice_repo.list(conn, status=status, keyword=keyword, limit=100000, ids=ids)
     wb = Workbook()
     ws = wb.active
     ws.title = "发票清单"

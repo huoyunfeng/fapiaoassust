@@ -64,7 +64,8 @@ class InvoiceRepo:
         return _row_to_dict(row)
 
     def list(self, conn: sqlite3.Connection, status: str = None,
-             keyword: str = None, limit: int = 500, offset: int = 0) -> List[dict]:
+             keyword: str = None, limit: int = 500, offset: int = 0,
+             ids: List[int] = None) -> List[dict]:
         sql, params = "SELECT * FROM invoice WHERE 1=1", []
         if status:
             sql += " AND status = ?"
@@ -73,6 +74,10 @@ class InvoiceRepo:
             sql += " AND (invoice_no LIKE ? OR invoice_code LIKE ? OR buyer_name LIKE ? OR seller_name LIKE ? OR item_summary LIKE ?)"
             kw = f"%{keyword}%"
             params += [kw, kw, kw, kw, kw]
+        if ids:
+            marks = ", ".join("?" for _ in ids)
+            sql += f" AND id IN ({marks})"
+            params += ids
         sql += " ORDER BY id ASC LIMIT ? OFFSET ?"
         params += [limit, offset]
         return _rows_to_dicts(conn.execute(sql, params))
