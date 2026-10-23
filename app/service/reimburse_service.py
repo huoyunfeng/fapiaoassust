@@ -292,3 +292,77 @@ def list_batches() -> List[dict]:
 def reimburse_count() -> int:
     with db.read() as conn:
         return reimburse_repo.count(conn)
+
+
+def expense_breakdown(date_from: str = None, date_to: str = None, top_n: int = 5) -> dict:
+    """费用构成统计（基于 reimburse 表）。
+
+    返回结构：
+    {
+        "total_amount": float,          # 时间段内总金额（元）
+        "total_count": int,              # 时间段内总笔数
+        "label_when_all": str,           # 中心标签（历史总报销/本月总报销）
+        "items": [                       # 按金额降序，超过 top_n 合并为 "其他"
+            {"name": str, "amount": float, "count": int, "percent": float},
+            ...
+        ]
+    }
+    """
+    with db.read() as conn:
+        rows = reimburse_repo.aggregate_by_expense_type(conn, date_from, date_to)
+
+    total_amount = sum((r["amount"] or 0) for r in rows)
+    total_count = sum((r["count"] or 0) for r in rows)
+
+    top = rows[:top_n]
+    rest = rows[top_n:]
+    items = []
+    for r in top:
+        amt = float(r["amount"] or 0)
+        pct = (amt / total_amount * 100) if total_amount > 0 else 0
+        items.append({
+            "name": r["name"],
+            "amount": round(amt, 2),
+            "count": int(r["count"] or 0),
+            "percent": round(pct, 2),
+        })
+    if rest:
+        other_amt = sum(float(r["amount"] or 0) for r in rest)
+        other_cnt = sum(int(r["count"] or 0) for r in rest)
+        other_pct = (other_amt / total_amount * 100) if total_amount > 0 else 0
+        items.append({
+            "name": "其他",
+            "amount": round(other_amt, 2),
+            "count": other_cnt,
+            "percent": round(other_pct, 2),
+        })
+
+    # 中心标签：按前端 filter 口径推断
+    from datetime import date
+    label_when_all = "历史总报销"
+    if date_from and date_to:
+        today = date.today()
+        # 本月
+        if (date_from == today.replace(day=1).isoformat()
+                and date_to == today.isoformat()):
+            label_when_all = "本月总报销"
+        # 上月
+        else:
+            first_of_month = today.replace(day=1)
+            import datetime as _dt
+            last_month_end = first_of_month - _dt.timedelta(days=1)
+            last_month_start = last_month_end.replace(day=1)
+            if (date_from == last_month_start.isoformat()
+                    and date_to == last_month_end.isoformat()):
+                label_when_all = "上月总报销"
+            # 今年
+            elif (date_from == f"{today.year}-01-01"
+                  and date_to == today.isoformat()):
+                label_when_all = "今年总报销"
+
+    return {
+        "total_amount": round(total_amount, 2),
+        "total_count": total_count,
+        "label_when_all": label_when_all,
+        "items": items,
+    }

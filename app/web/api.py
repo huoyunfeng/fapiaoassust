@@ -309,6 +309,17 @@ def export_report():
     )
 
 
+# ---------------------------------------------------------------- 仪表盘
+@api.get("/dashboard/expense-breakdown")
+def dashboard_expense_breakdown(date_from: str = "", date_to: str = ""):
+    data = reimburse_service.expense_breakdown(
+        date_from=date_from or None,
+        date_to=date_to or None,
+        top_n=5,
+    )
+    return _j(data)
+
+
 # ---------------------------------------------------------------- 设置
 @api.post("/companies")
 async def add_company(name: str = Form(...), tax_no: str = Form(...),

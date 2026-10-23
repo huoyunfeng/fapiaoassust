@@ -185,6 +185,32 @@ class ReimburseRepo:
                 d["extra_data"] = {}
         return d
 
+    def aggregate_by_expense_type(
+        self, conn: sqlite3.Connection,
+        date_from: str = None, date_to: str = None,
+    ) -> List[dict]:
+        """按 expense_type 分组聚合金额/笔数，返回 [{'name','amount','count'}...]。
+
+        过滤口径：reimburse_date BETWEEN date_from AND date_to（含边界，含当天）；
+        当 date_from/date_to 任一传入时，reimburse_date 为 NULL 的记录不计入。
+        """
+        sql = (
+            "SELECT COALESCE(NULLIF(expense_type,''), '未分类') AS name, "
+            "SUM(CAST(amount AS REAL)) AS amount, COUNT(*) AS count "
+            "FROM reimburse WHERE 1=1"
+        )
+        params: list = []
+        if date_from:
+            sql += " AND reimburse_date IS NOT NULL AND reimburse_date >= ?"
+            params.append(date_from)
+        if date_to:
+            # 结束日期含当天全部：用户传 '2026-10-31' 则按前缀匹配 YYYY-MM-DD 或 datetime
+            sql += " AND reimburse_date IS NOT NULL AND reimburse_date <= ?"
+            params.append(date_to)
+        sql += " GROUP BY name ORDER BY amount DESC"
+        cur = conn.execute(sql, params)
+        return _rows_to_dicts(cur)
+
 
 # =====================================================================
 # 匹配
