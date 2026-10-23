@@ -37,7 +37,6 @@ CREATE TABLE IF NOT EXISTS invoice (
     total_amount     TEXT,
     tax_rate         TEXT NOT NULL DEFAULT '',
     item_summary     TEXT NOT NULL DEFAULT '',
-    items_detail     TEXT NOT NULL DEFAULT '[]',
     check_code       TEXT NOT NULL DEFAULT '',
     raw_json         TEXT NOT NULL DEFAULT '{}',
     parse_engine     TEXT NOT NULL CHECK(parse_engine IN ('xml','ofd','pdf_text','ocr','manual')),
@@ -265,14 +264,14 @@ def _migrate(conn: sqlite3.Connection) -> None:
             conn.execute(ddl)
             logger.info("迁移: reimburse 表新增列 %s", col)
 
-    # 1b. invoice 表新增列
+    # 1b. invoice 表移除冗余列（items_detail 已合并为 item_summary）
     inv_cols = {r[1] for r in conn.execute("PRAGMA table_info(invoice)").fetchall()}
     for col, ddl in [
-        ("items_detail", "ALTER TABLE invoice ADD COLUMN items_detail TEXT NOT NULL DEFAULT '[]'"),
+        ("items_detail", "ALTER TABLE invoice DROP COLUMN items_detail"),
     ]:
-        if col not in inv_cols:
+        if col in inv_cols:
             conn.execute(ddl)
-            logger.info("迁移: invoice 表新增列 %s", col)
+            logger.info("迁移: invoice 表移除列 %s", col)
 
     # 2. 内置经典模板（个人版默认模板）
     from app.domain.field_registry import default_fields_config

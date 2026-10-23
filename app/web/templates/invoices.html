@@ -49,14 +49,16 @@
   <table class="invoice-table">
     <colgroup>
       <col style="width:46px">
-      <col style="width:220px"><col style="width:110px">
-      <col style="width:180px"><col style="width:180px"><col style="width:170px">
-      <col style="width:90px"><col style="width:90px"><col style="width:100px">
-      <col style="width:90px"><col style="width:100px">
+      <col style="width:210px"><col style="width:100px">
+      <col style="width:140px"><col style="width:150px"><col style="width:140px"><col style="width:150px">
+      <col style="width:130px">
+      <col style="width:85px"><col style="width:85px"><col style="width:95px">
+      <col style="width:75px"><col style="width:75px">
     </colgroup>
     <tr><th><input type="checkbox" id="chkAll" onchange="toggleAll(this)"></th>
         <th>发票号</th><th>开票日期</th>
-        <th>购买方</th><th>销售方</th><th>货物名称</th>
+        <th>购买方</th><th>购买方税号</th><th>销售方</th><th>销售方税号</th>
+        <th>货物名称</th>
         <th class="col-number">金额</th><th class="col-number">税额</th><th class="col-number">价税合计</th>
         <th class="col-state">状态</th><th class="col-action">操作</th></tr>
     <tbody>
@@ -66,8 +68,10 @@
       <td title="{{ i.invoice_no or '' }}">{{ i.invoice_no or '—' }}</td>
       <td>{{ i.invoice_date or '—' }}</td>
       <td title="{{ i.buyer_name }}">{{ i.buyer_name }}</td>
+      <td>{{ i.buyer_tax_no or '—' }}</td>
       <td title="{{ i.seller_name }}">{{ i.seller_name }}</td>
-      <td title="{{ i.item_summary }}">{{ i.item_summary | truncate(12, true) if i.item_summary else '—' }}</td>
+      <td>{{ i.seller_tax_no or '—' }}</td>
+      <td title="{{ i.item_summary }}">{{ i.item_summary or '—' }}</td>
       <td class="col-number cell-amount">{{ i.amount or '—' }}</td>
       <td class="col-number cell-amount">{{ i.tax_amount or '—' }}</td>
       <td class="col-number cell-amount"><b>{{ i.total_amount or '—' }}</b></td>
@@ -76,7 +80,6 @@
         <div class="dropdown">
           <button class="btn btn-sm btn-outline action-btn" onclick="toggleDropdown(this)">操作 ▾</button>
           <div class="dropdown-menu">
-            <button onclick="showDetail({{ i.id }})">详情</button>
             <button class="danger" onclick="delOne({{ i.id }}, '{{ i.invoice_no or i.id }}')">删除</button>
           </div>
         </div>
@@ -103,28 +106,6 @@
 
 {% block scripts %}
 <script>
-// 各发票的明细数据（服务端渲染时内嵌，避免额外请求）
-const INV_ITEMS = {
-  {% for i in rows %}{{ i.id }}: {{ (i.items_detail or '[]') | safe }}{{ ',' if not loop.last }}
-  {% endfor %}
-};
-function esc(s){const d=document.createElement('div');d.textContent=String(s??'');return d.innerHTML;}
-function showDetail(id){
-  const items = INV_ITEMS[id] || [];
-  const rows = items.map(it =>
-    '<tr><td class="wrap">'+esc(it.name)+'</td><td class="col-number">'+esc(it.quantity ?? '—')+'</td>'+
-    '<td class="col-number">'+esc(it.price ?? '—')+'</td><td>'+esc(it.tax_rate || '—')+'</td>'+
-    '<td class="col-number">'+esc(it.amount ?? '—')+'</td></tr>').join('')
-    || '<tr><td colspan="5" class="muted">该发票导入时未抽取到明细（存量旧数据可重新导入获取）</td></tr>';
-  document.getElementById('modal').innerHTML =
-    '<h2 style="margin-bottom:14px;">发票明细 <span class="muted">#'+id+'</span></h2>'+
-    '<div class="table-scroll"><table><tr><th>货物/项目名称</th><th class="col-number" style="width:80px;">数量</th>'+
-    '<th class="col-number" style="width:110px;">单价</th><th style="width:90px;">税率</th>'+
-    '<th class="col-number" style="width:110px;">金额</th></tr>'+rows+'</table></div>'+
-    '<div class="mt"><a class="btn btn-outline btn-sm" href="/invoices/'+id+'">完整详情页</a> '+
-    '<button class="btn btn-outline btn-sm" onclick="closeModal()">关闭</button></div>';
-  openModal();
-}
 function selectedIds(){
   return [...document.querySelectorAll('.chk-inv:checked')].map(c=>c.value);
 }

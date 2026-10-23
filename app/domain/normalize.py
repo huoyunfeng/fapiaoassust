@@ -90,7 +90,6 @@ class NormalizeEngine:
             total_amount=self._to_decimal(dto.total_amount),
             tax_rate=self._clean(dto.tax_rate),
             item_summary=self._clean_summary(dto.item_summary),
-            items_detail=list(dto.items_detail or []),
             is_red_flush=bool(dto.is_red_flush),
         )
 

@@ -42,23 +42,6 @@
   </div>
 </div>
 
-{% set items = (inv.items_detail or '[]') | fromjson %}
-{% if items %}
-<div class="card">
-  <h2>发票明细（{{ items|length }} 项）</h2>
-  <table>
-    <tr><th>货物/项目名称</th><th class="col-number">数量</th><th class="col-number">单价</th><th>税率</th><th class="col-number">金额</th></tr>
-    {% for it in items %}
-    <tr><td class="wrap">{{ it.name }}</td>
-        <td class="col-number">{{ it.quantity or '—' }}</td>
-        <td class="col-number">{{ it.price or '—' }}</td>
-        <td>{{ it.tax_rate or '—' }}</td>
-        <td class="col-number">{{ it.amount or '—' }}</td></tr>
-    {% endfor %}
-  </table>
-</div>
-{% endif %}
-
 <div class="card">
   <h2>状态日志（invoice_status_log）</h2>
   <table>

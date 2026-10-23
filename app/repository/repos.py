@@ -27,7 +27,6 @@ class InvoiceRepo:
         "file_hash", "source_path", "file_type", "invoice_code", "invoice_no",
         "invoice_date", "buyer_name", "buyer_tax_no", "seller_name", "seller_tax_no",
         "amount", "tax_amount", "total_amount", "tax_rate", "item_summary",
-        "items_detail",
         "check_code", "raw_json", "parse_engine", "parse_confidence", "status",
         "is_red_flush",
     ]

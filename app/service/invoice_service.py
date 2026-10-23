@@ -78,7 +78,6 @@ def _row_fields_from_dto(dto: InvoiceDTO) -> dict:
         "total_amount": s(dto.total_amount),
         "tax_rate": dto.tax_rate,
         "item_summary": dto.item_summary,
-        "items_detail": json.dumps(dto.items_detail or [], ensure_ascii=False),
         "is_red_flush": 1 if dto.is_red_flush else 0,
     }
 
