@@ -321,6 +321,263 @@ _RE_TOTAL = re.compile(r"[（(]小写[）)]\s*[:：]?\s*[¥￥]?\s*([0-9,，.]+)
 _RE_TOTAL2 = re.compile(r"价税合计\s*[:：]?\s*[¥￥]?\s*([0-9,，.]+)")
 _RE_SUM_ROW = re.compile(r"(?:合|计)\s*(?:合|计)?\s*[¥￥]?\s*([0-9,，.]+)\s*[¥￥]?\s*([0-9,，.]+)")
 
+# 常见计量单位（发票"单位"列取值）
+_ITEM_UNITS = (
+    "台", "件", "套", "包", "个", "箱", "米", "张", "份", "组",
+    "对", "副", "片", "瓶", "桶", "卷", "本", "把", "只", "辆", "次",
+    "项", "年", "月", "日", "小时", "公里", "千克", "公斤", "克", "升", "盒",
+)
+
+
+def _strip_tax_cat(line: str) -> str:
+    """剥掉行首的 *税收分类*（可能多层：*大类*中类*小类*）。"""
+    return re.sub(r"^(?:\*[^*\n]+\*\s*)+", "", line, count=1).strip()
+
+
+def _cut_off_amount_col(line: str) -> str:
+    """切掉从「规格/数量/单价/金额/税率/税额」列开始的尾部。
+
+    策略：用「税率% + 税额」做稳定锚点，向左回溯切掉所有数量/单价/金额。
+    这样无论有没有单位词、有没有规格型号列都能正确切掉。
+    兼容红冲发票的负号金额（如 -16.75 6% -1.01）。
+    """
+    # 通用数字模式（含可选负号）
+    _NUM = r"[-+]?\d[\d.,，]*"
+    unit_alt = "|".join(_ITEM_UNITS)
+    # 主模式：单位词 + 数量 + 单价 + 金额 + 税率 + 税额（完整 7 列）
+    pat_full = rf"\s+(?:{unit_alt})\s+{_NUM}\s+{_NUM}\s+{_NUM}\s+\d+%\s+{_NUM}.*$"
+    out = re.sub(pat_full, "", line).strip()
+    if out != line.strip():
+        return out
+    # 通用锚点：以「税率% 税额」为基准，向左切掉所有数值列
+    pat_tax = rf"(?:\s+(?:{unit_alt}))?\s*{_NUM}\s*{_NUM}\s*{_NUM}\s*\d+%\s+{_NUM}.*$"
+    out = re.sub(pat_tax, "", line).strip()
+    if out != line.strip():
+        return out
+    # 兜底：只找税率%，切掉它及以后所有内容
+    pat_fallback = rf"\s*\d+%\s+{_NUM}.*$"
+    out = re.sub(pat_fallback, "", line).strip()
+    if out != line.strip():
+        # 兜底切掉税率%之前残留的金额数字
+        out = re.sub(rf"\s+{_NUM}\s*$", "", out).strip()
+        return out
+    return line.strip()
+
+
+def _merge_with_overlap(first: str, second: str) -> str:
+    """折行合并：second 是 first 被折到下一行的延续，可能有重复前缀/规格。
+
+    策略：
+    1. 对 first 和 second 分别做"子串包含去重"（A 包含 B → 丢 B）
+    2. 整串级别找 first 的最长后缀 == second 的最长前缀（≥2 字符才算有效重叠）
+       例：first="美的电 美的电热水器 F"  second="热水器 F50-20A3Pro(HE)"
+       → 后缀 "热水器 F" == 前缀 "热水器 F"（5 字符重叠）
+       → first 截掉重叠部分 → "美的电 美的" + second → "美的电 美的热水器 F50-20A3Pro(HE)"
+    3. 拼接后再做一轮包含去重 + 连续相同去重
+    """
+    fir = first.strip()
+    sec = second.strip()
+
+    # --- 步骤 1：各自内部做子串包含去重 ---
+    fir = _dedupe_substring_tokens(fir)
+    sec = _dedupe_substring_tokens(sec)
+
+    if not fir:
+        return sec
+    if not sec:
+        return fir
+
+    # --- 步骤 2：整串级别找最长重叠 ---
+    # 约束：overlap 的最后一个字符不能是 ASCII 字母/数字（避免切断型号前缀如 "F" in "F50-..."）
+    # 只有以中文字符或空格结尾的 overlap 才算有效
+    max_overlap = 0
+    max_possible = min(len(fir), len(sec))
+    for n in range(max_possible, 1, -1):
+        if fir.endswith(sec[:n]):
+            last_ch = sec[n - 1]
+            # 有效边界：中文、空格、或 n==2 兜底
+            if n == 2 or re.match(r"[\u4e00-\u9fa5\s]", last_ch):
+                max_overlap = n
+                break
+            # 如果全是 ASCII 字母数字，跳过继续找更短的中文边界重叠
+            # （不设 max_overlap 兜底，避免拿 " F" 这种切型号的当有效重叠）
+
+    if max_overlap >= 2 and max_overlap < len(fir) and max_overlap < len(sec):
+        # 从 longer side 切重叠，保留 shorter side 完整
+        # 例：fir="美的电热水器 F"(8) sec="热水器 F50-20A3Pro(HE)"(22)
+        # overlap="热水器 F"(5) → 切 sec，保留 fir 完整
+        if len(fir) <= len(sec):
+            sec = sec[max_overlap:].lstrip()
+        else:
+            fir = fir[:-max_overlap].rstrip()
+
+    # --- 步骤 3：拼接 + 最终去重 ---
+    merged = f"{fir} {sec}".strip()
+    merged = _dedupe_substring_tokens(merged)
+    # 连续完全相同 token 去重
+    toks = merged.split()
+    deduped: List[str] = []
+    for w in toks:
+        if not deduped or deduped[-1] != w:
+            deduped.append(w)
+    return " ".join(deduped)
+
+
+def _dedupe_substring_tokens(s: str) -> str:
+    """token 列表中，如果 A 是 B 的子串（且 A != B），去掉 A。
+
+    例：["热水器", "F50-20A3Pro(HE)", "50-20A3Pro(HE)"]
+    → "50-20A3Pro(HE)" 是 "F50-20A3Pro(HE)" 的子串 → 去掉
+    → 结果 ["热水器", "F50-20A3Pro(HE)"]
+    """
+    tokens = s.split()
+    if len(tokens) <= 1:
+        return s
+
+    # 按长度降序排：长的优先保留，短的如果被长的包含就丢
+    indexed = list(enumerate(tokens))  # [(orig_idx, token), ...]
+    indexed.sort(key=lambda x: len(x[1]), reverse=True)
+
+    kept_indices: set = set()
+    kept_tokens: List[str] = []
+    for orig_idx, tok in indexed:
+        # 如果这个 token 是某个已保留更长 token 的子串 → 跳过
+        is_sub = False
+        for kt in kept_tokens:
+            if tok in kt and tok != kt:
+                is_sub = True
+                break
+        if not is_sub:
+            kept_indices.add(orig_idx)
+            kept_tokens.append(tok)
+
+    # 恢复原始顺序
+    result = [tokens[i] for i in sorted(kept_indices)]
+    return " ".join(result)
+
+
+def _extract_item_summary_block(text: str) -> str:
+    """从发票文本里提取商品项（项目名称 + 规格型号）。
+
+    新策略（更鲁棒）：
+    - 找 *税收分类* 所在的商品块（从 *xxx* 到 "合 计" 之前的所有行）
+    - 把块内所有行拼成一个长串（空格连）
+    - 定位第一个"单位词"位置：单位词之后是 数量/单价/金额/税率/税额（都是数字噪音）
+    - pos 之前 = 项目名（含规格型号可能的前半段）
+    - pos 之后、合计之前的文本 → 过滤掉纯数字/¥/%/单位词/数量 → 剩余是规格型号的折行延续
+    - 两部分合并 + 去重连续相同 token
+    """
+    lines = text.split("\n")
+    results: List[str] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        if not line:
+            i += 1
+            continue
+        if "*" in line and re.search(r"\*[^*\s]+\*", line):
+            # 收集整个商品块
+            block_lines = [line]
+            j = i + 1
+            while j < len(lines):
+                nj = lines[j].strip()
+                if not nj:
+                    j += 1; continue
+                if re.search(r"\*[^*\s]+\*", nj): break   # 下一条商品
+                if ("合" in nj and "计" in nj) or "价税合计" in nj or "合计" in nj: break
+                if nj.startswith("税率") and "征收率" in nj: break
+                block_lines.append(nj); j += 1
+
+            # 合并所有块行为一个长串
+            block_joined = " ".join(l.strip() for l in block_lines if l.strip())
+            # 注意：不再在这里剥 *税收分类* 前缀 — 保留给 normalize._clean_summary 处理，
+            # 它会用 *xxx* 来决定显示税收分类名还是完整商品名（短摘要逻辑）
+
+            # 定位第一个单位词
+            unit_alt = "|".join(_ITEM_UNITS)
+            unit_match = re.search(rf"\s+(?:{unit_alt})\s+", block_joined)
+            if unit_match:
+                pos = unit_match.start()
+                before_unit = block_joined[:pos].strip()
+                after_unit = block_joined[unit_match.end():].strip()  # "1 542.96 542.96 13% 70.59 热水器 F50-20A3Pro(HE) 50-20A3Pro(HE)"
+                # 过滤 after_unit：去掉纯数字/¥/%/单位词/数量/单价/金额/税率/税额，保留规格型号折行
+                # 方法：切到第一个"合计"前，然后过滤掉"数量 单价 金额 税率 税额"格式（数字+%+¥ 等）
+                after_clean = _filter_away_amount_noise(after_unit)
+                merged = _merge_with_overlap(before_unit, after_clean)
+            else:
+                # 没找到单位词（OCR/图片发票），直接切掉可能的金额尾部
+                merged = _cut_off_amount_col(block_joined)
+
+            results.append(merged.strip())
+            i = j
+        else:
+            i += 1
+
+    if results:
+        unique = list(dict.fromkeys(x for x in results if x))
+        return ", ".join(unique[:5])
+
+    # Fallback
+    candidates: List[str] = []
+    for line in lines:
+        t = _cut_off_amount_col(line.strip())
+        if t and len(t) >= 2 and not re.match(r"^[\d.\s¥￥%/]+$", t):
+            # 排除明显非商品名词（PDF 标题、表头、字段标签）
+            if not _is_known_noise(t):
+                candidates.append(t)
+    if candidates:
+        candidates.sort(key=len, reverse=True)
+        return candidates[0].strip()
+    return ""
+
+
+# 明显非商品名词 — 用来排除 PDF 标题/表头被误识别为 item_summary
+_NOISE_WORDS = (
+    "电子发票", "普通发票", "增值税", "发票代码", "发票号码", "开票日期",
+    "统一社会信用代码", "纳税人识别号", "项目名称", "规格型号",
+    "价税合计", "合计", "备注", "开票人", "收款人", "复核人",
+    "税率征收率", "税率/征收率", "税额", "金额", "单价",
+    "购买方", "销售方", "买", "售", "方", "息",
+)
+
+
+def _is_known_noise(s: str) -> bool:
+    """检查文本是否为明显的 PDF 标题/表头（非商品名）。"""
+    if not s:
+        return False
+    for kw in _NOISE_WORDS:
+        if kw in s:
+            return True
+    return False
+
+
+def _filter_away_amount_noise(s: str) -> str:
+    """过滤掉 after_unit 里的数字噪音（数量 单价 金额 税率 税额），保留规格型号折行。
+
+    数字噪音模式（发票常见）：
+    - 纯整数或小数：1 / 542.96
+    - 金额前缀 ¥ / ￥
+    - 税率后缀 %
+    - 连续数字+空格+数字 的组合
+
+    方法：保留所有"含至少一个中文字母/字母/括号/型号字母"的 token，丢弃纯数字/¥/% token。
+    """
+    tokens = s.split()
+    kept: List[str] = []
+    for t in tokens:
+        # 纯数字或数字+¥/% → 丢
+        if re.match(r"^[¥￥]?[\d.,，]+%?$", t):
+            continue
+        if re.match(r"^[\d.,，]+%?[¥￥]?$", t):
+            continue
+        # 是单位词本身 → 丢（这里是 pos 之后的，单位词已经在 pos 切分点切掉了第一个，可能残留"台"等）
+        if t in _ITEM_UNITS:
+            continue
+        # 含至少一个中文或字母才保留（排除掉空/纯标点）
+        if re.search(r"[\u4e00-\u9fa5A-Za-z]", t):
+            kept.append(t)
+    return " ".join(kept)
+
 
 def extract_fields_from_text(text: str) -> InvoiceDTO:
     """从发票文本（PDF 文本层 / OCR 结果）中抽取字段。
@@ -352,9 +609,13 @@ def extract_fields_from_text(text: str) -> InvoiceDTO:
     # 购买方/销售方块：数电票 PDF 为左右双栏，文本提取后名称与税号按出现顺序
     # 交错排列（购名 售名 ... 购税号 售税号），按块截取会错配，必须按顺序配对：
     # 第 1 个名称=购买方，第 2 个名称=销售方；税号同理。
-    names = re.findall(r"名称\s*[:：]\s*([^\s]+)", text)
+    # 兼容两类版式：
+    #   a) "名称: XXX" / "名称：XXX"     （旧版，带冒号）
+    #   b) "名 称 XXX" / "名称 XXX"      （数电票竖排拆字版，无冒号直接跟值）
+    names = re.findall(r"名\s*称\s*[:：]?\s*([^\s\n]{2,40})", text)
+    # 税号：统一社会信用代码/纳税人识别号 后跟 15-20 位字母数字，兼容有冒号或无冒号
     taxes = re.findall(
-        r"(?:统一社会信用代码|纳税人识别号)\s*[/／]?\s*(?:纳税人识别号)?\s*[:：]\s*([0-9A-Z]{15,20})",
+        r"(?:统一社会信用代码|纳税人识别号)\s*[/／]?\s*(?:纳税人识别号)?\s*[:：]?\s*([0-9A-Z]{15,20})",
         text)
     if names:
         dto.buyer_name = dto.buyer_name or names[0]
@@ -365,10 +626,9 @@ def extract_fields_from_text(text: str) -> InvoiceDTO:
         if len(taxes) > 1:
             dto.seller_tax_no = dto.seller_tax_no or taxes[1]
 
-    # 项目名称（取 *税收分类*名称 中的名称部分，多行用逗号拼接，截断前 5 项）
-    items = re.findall(r"\*[^*\n]+\*\s*([^\s*0-9][^\s*]{1,29})", text)
-    if items:
-        dto.item_summary = ", ".join(dict.fromkeys(x.strip() for x in items[:5]))
+    # 项目名称（完整处理折行 + 多商品 + 金额列剥离）
+    # 策略：找到所有 *税收分类* 所在行，向下收集折行，剥掉金额列后合并
+    dto.item_summary = _extract_item_summary_block(text)
     return dto
 
 
@@ -435,6 +695,11 @@ class ParserEngine:
         for parser in chain:
             try:
                 dto = parser.parse(task)
+                # normalize 之前 capture 完整串（保留 *xxx* 前缀供 normalize 选 short summary），
+                # 同时生成 clean version 存 raw_json（tooltip 不应有星号）
+                item_summary_raw = dto.item_summary or ""
+                item_summary_raw_clean = re.sub(
+                    r"^(?:\*[^*\n]+\*\s*)+", "", item_summary_raw).strip()
                 dto = self._normalize.normalize(dto)
                 missing = [f for f in REQUIRED_FIELDS if _is_missing(getattr(dto, f))]
                 if not missing:
@@ -442,6 +707,7 @@ class ParserEngine:
                     return ParseResult(
                         success=True, dto=dto, engine=parser.name,
                         confidence=parser.confidence, degrade_chain=degrade_chain,
+                        item_summary_raw=item_summary_raw_clean,
                     )
                 last_error = f"{parser.name}: 缺失字段: {missing}"
                 logger.warning(last_error)

@@ -173,6 +173,8 @@ def _import_one(file_name: str, content: bytes, operator: str) -> dict:
 
         if result.success:
             raw["degrade_chain"] = result.degrade_chain
+            if result.item_summary_raw:
+                raw["item_summary_raw"] = result.item_summary_raw
             t_u = time.perf_counter()
             invoice_repo.update(conn, invoice_id, {
                 **_row_fields_from_dto(result.dto),
@@ -354,6 +356,40 @@ def fix_abnormal(invoice_id: int, fields: dict, operator: str = None,
         return {"ok": True, "message": "修正成功，发票已转为 NORMAL"}
 
 
+def update_item_summary(invoice_id: int, item_summary: str, operator: str = None) -> dict:
+    """用户手动修改"报销内容"（任意状态都允许，不改状态机）。
+
+    保存逻辑：
+    - item_summary 字段存清洗后的截断版（去星号、去多余空白、≤30 字）
+    - raw_json.item_summary_user 存用户输入的原始串（前端 tooltip 展示用）
+    - raw_json.item_summary_user_edit 标记为 True，后续重解析时不再覆盖
+    """
+    operator = operator or settings.default_operator
+    with db.tx() as conn:
+        row = invoice_repo.get(conn, invoice_id)
+        if row is None:
+            return {"ok": False, "message": f"发票 #{invoice_id} 不存在"}
+
+        # 清洗（去星号/多余空白/截断），复用与解析同一套规则
+        cleaned = _normalize._clean_summary(item_summary or "")
+        if not cleaned:
+            cleaned = clean(item_summary or "")[:30]
+
+        # 更新 raw_json：保留原始值 + 标记为用户编辑
+        raw = _raw_json(row)
+        raw["item_summary_user"] = clean(item_summary or "")
+        raw["item_summary_user_edit"] = True
+
+        invoice_repo.update(conn, invoice_id, {
+            "item_summary": cleaned,
+            "raw_json": json.dumps(raw, ensure_ascii=False),
+            "updated_at": "datetime('now','localtime')",
+        })
+        logger.info("发票 #%s 报销内容已由 %s 修改: %r -> %r",
+                    invoice_id, operator, row.get("item_summary"), cleaned)
+        return {"ok": True, "message": "已保存", "item_summary": cleaned}
+
+
 def confirm_not_duplicate(invoice_id: int, operator: str = None, reason: str = "") -> dict:
     """人工确认 DUPLICATE 发票并非重复 -> NORMAL。"""
     operator = operator or settings.default_operator
@@ -455,12 +491,99 @@ def invoice_detail(invoice_id: int) -> Optional[dict]:
 
 def list_invoices(status: str = None, keyword: str = None) -> List[dict]:
     with db.read() as conn:
-        return invoice_repo.list(conn, status=status, keyword=keyword)
+        rows = invoice_repo.list(conn, status=status, keyword=keyword)
+    # 给每条补上 item_summary_raw（优先用户编辑值，其次解析原始值，最后清洗后值兜底）
+    for r in rows:
+        raw = _raw_json(r)
+        user_val = raw.get("item_summary_user") or ""
+        parsed_val = raw.get("item_summary_raw") or ""
+        r["item_summary_raw"] = user_val or parsed_val or r.get("item_summary") or ""
+    return rows
 
 
 def invoice_status_counts() -> Dict[str, int]:
     with db.read() as conn:
         return invoice_repo.count_by_status(conn)
+
+
+def expense_breakdown(date_from: str = None, date_to: str = None, top_n: int = 5) -> dict:
+    """费用构成统计（基于 invoice 表，按 item_summary 分组）。
+
+    业务规则：
+    - 分类依据：发票明细里的 item_summary（报销内容/摘要名称）
+    - 金额计算：发票的价税合计 total_amount
+    - 时间过滤：基于发票的开票日期 invoice_date
+    - 空 item_summary 统一归类为 "其他"
+
+    返回结构：
+    {
+        "total_amount": float,          # 时间段内价税合计总额（元）
+        "total_count": int,              # 时间段内总发票张数
+        "label_when_all": str,           # 中心标签（历史总发票/本月总发票）
+        "items": [                       # 按金额降序，超过 top_n 合并为 "其他"
+            {"name": str, "amount": float, "count": int, "percent": float},
+            ...
+        ]
+    }
+    """
+    with db.read() as conn:
+        rows = invoice_repo.aggregate_by_item_summary(conn, date_from, date_to)
+
+    total_amount = sum((r["amount"] or 0) for r in rows)
+    total_count = sum((r["count"] or 0) for r in rows)
+
+    top = rows[:top_n]
+    rest = rows[top_n:]
+    items = []
+    for r in top:
+        amt = float(r["amount"] or 0)
+        pct = (amt / total_amount * 100) if total_amount > 0 else 0
+        items.append({
+            "name": r["name"],
+            "amount": round(amt, 2),
+            "count": int(r["count"] or 0),
+            "percent": round(pct, 2),
+        })
+    if rest:
+        other_amt = sum(float(r["amount"] or 0) for r in rest)
+        other_cnt = sum(int(r["count"] or 0) for r in rest)
+        other_pct = (other_amt / total_amount * 100) if total_amount > 0 else 0
+        items.append({
+            "name": "其他",
+            "amount": round(other_amt, 2),
+            "count": other_cnt,
+            "percent": round(other_pct, 2),
+        })
+
+    # 中心标签：按前端 filter 口径推断（"总支出" 业务表述）
+    from datetime import date
+    import datetime as _dt
+    label_when_all = "历史总支出"
+    if date_from and date_to:
+        today = date.today()
+        # 本月
+        if (date_from == today.replace(day=1).isoformat()
+                and date_to == today.isoformat()):
+            label_when_all = "本月总支出"
+        # 上月
+        else:
+            first_of_month = today.replace(day=1)
+            last_month_end = first_of_month - _dt.timedelta(days=1)
+            last_month_start = last_month_end.replace(day=1)
+            if (date_from == last_month_start.isoformat()
+                    and date_to == last_month_end.isoformat()):
+                label_when_all = "上月总支出"
+            # 今年
+            elif (date_from == f"{today.year}-01-01"
+                  and date_to == today.isoformat()):
+                label_when_all = "今年总支出"
+
+    return {
+        "total_amount": round(total_amount, 2),
+        "total_count": total_count,
+        "label_when_all": label_when_all,
+        "items": items,
+    }
 
 
 def export_excel(status: str = None, keyword: str = None, ids: list = None) -> bytes:
@@ -474,7 +597,7 @@ def export_excel(status: str = None, keyword: str = None, ids: list = None) -> b
     ws.title = "发票清单"
     ws.append(["ID", "状态", "发票号码", "开票日期",
                "购买方名称", "购买方税号", "销售方名称", "销售方税号",
-               "金额", "税额", "价税合计", "税率", "开票内容",
+               "金额", "税额", "价税合计", "税率", "报销内容",
                "导入时间"])
     for i in rows:
         ws.append([

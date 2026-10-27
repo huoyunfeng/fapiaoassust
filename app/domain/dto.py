@@ -96,6 +96,7 @@ class ParseResult:
     confidence: float = 0.0                # [0,1]
     degrade_chain: list = field(default_factory=list)   # [{engine, status, reason}]
     error: str = ""
+    item_summary_raw: str = ""             # normalize 之前的完整项目名（带 *税收分类*、型号等）
 
 
 # ---------------------------------------------------------------- 规则

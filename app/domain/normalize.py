@@ -98,8 +98,59 @@ class NormalizeEngine:
         return clean(v)
 
     def _clean_summary(self, v) -> str:
-        """项目摘要去除税收分类编码前缀（*xx*名称 → 名称），OFD/XML 来源可能带星号段。"""
-        return re.sub(r"\*[^*\n]+\*\s*", "", clean(v))
+        """项目摘要清洗 + 短摘要智能选择（表格显示用）。
+
+        输入示例："*家用清洁电器具*美的电热水器 F50-20A3Pro(HE)"
+                  "*生产生活服务*餐饮服务"
+                  "电子发票（普通发票）"  ← 脏数据（PDF 标题 fallback 误用）
+
+        策略：
+        1) 解析 *税收分类* 前缀 → category（去掉星号）
+        2) 剥掉所有 *xxx* → product（商品名+规格型号）
+        3) 智能选择：
+           - product 有意义且 ≤15 字 → 直接用 product（如 "餐饮服务"）
+           - product >15 字 → 用 category（如美的产品名太长 → "家用清洁电器具"）
+           - 无 category → product 截断到 15 字
+        4) 防御性过滤：最终结果若含明显非商品关键词（PDF 标题/表头）→ 返回空
+        5) 压缩内部多余空白
+        """
+        s = clean(v)
+        if not s:
+            return ""
+
+        # 多商品逗号分隔：先处理第一个 item，后续 item 的 category 取相同值
+        parts = [p.strip() for p in s.split(",") if p.strip()]
+        first_part = parts[0]
+
+        # 提取 category：第一个 *xxx* 里的内容
+        cat_match = re.search(r"^\*([^*\n]+)\*", first_part)
+        category = cat_match.group(1).strip() if cat_match else ""
+
+        # 剥掉所有 *xxx* 前缀 → product
+        product = re.sub(r"^(?:\*[^*\n]+\*\s*)+", "", first_part).strip()
+
+        # 选短摘要
+        if category:
+            # 有税收分类 → product 短就用 product，长就用 category
+            if product and len(product) <= 15:
+                result = product
+            else:
+                result = category
+        else:
+            # 无税收分类 → product 截断到 15 字
+            result = product[:15] if len(product) > 15 else product
+
+        # 压缩多余空白
+        result = re.sub(r"\s{2,}", " ", result).strip()
+
+        # 防御性过滤：排除明显的 PDF 标题/表头被误识别
+        _noise_kw = ("电子发票", "普通发票", "增值税", "发票代码", "发票号码",
+                     "开票日期", "价税合计", "统一社会信用代码", "纳税人识别号")
+        for kw in _noise_kw:
+            if kw in result:
+                return ""
+
+        return result
 
     def _to_decimal(self, v) -> Optional[Decimal]:
         return to_decimal(v)

@@ -98,6 +98,33 @@ class InvoiceRepo:
         rows = conn.execute("SELECT status, COUNT(*) AS n FROM invoice GROUP BY status")
         return {r["status"]: r["n"] for r in rows}
 
+    def aggregate_by_item_summary(
+        self, conn: sqlite3.Connection,
+        date_from: str = None, date_to: str = None,
+    ) -> List[dict]:
+        """按 item_summary 分组聚合价税合计/笔数，返回 [{'name','amount','count'}...]。
+
+        过滤口径：
+        - 排除 ABNORMAL / DUPLICATE 状态（异常/重复发票不计入费用统计）
+        - 时间筛选基于 invoice_date（开票日期）
+        - item_summary 为空或 NULL 统一归类为 "其他"
+        """
+        sql = (
+            "SELECT COALESCE(NULLIF(TRIM(item_summary),''), '其他') AS name, "
+            "SUM(CAST(total_amount AS REAL)) AS amount, COUNT(*) AS count "
+            "FROM invoice WHERE status NOT IN ('ABNORMAL','DUPLICATE')"
+        )
+        params: list = []
+        if date_from:
+            sql += " AND invoice_date IS NOT NULL AND invoice_date >= ?"
+            params.append(date_from)
+        if date_to:
+            sql += " AND invoice_date IS NOT NULL AND invoice_date <= ?"
+            params.append(date_to)
+        sql += " GROUP BY name ORDER BY amount DESC"
+        cur = conn.execute(sql, params)
+        return _rows_to_dicts(cur)
+
     @staticmethod
     def _serialize(v):
         if isinstance(v, bool):

@@ -70,6 +70,13 @@ async def confirm_not_duplicate(invoice_id: int, operator: str = Form("admin"),
     return _j(invoice_service.confirm_not_duplicate(invoice_id, operator, reason))
 
 
+@api.post("/invoices/{invoice_id}/update-item-summary")
+async def update_item_summary(invoice_id: int, item_summary: str = Form(""),
+                              operator: str = Form("admin")):
+    """双击编辑"报销内容"专用，任意状态都允许。"""
+    return _j(invoice_service.update_item_summary(invoice_id, item_summary, operator))
+
+
 @api.post("/invoices/{invoice_id}/delete")
 async def delete_invoice(invoice_id: int, operator: str = Form("admin")):
     return _j(invoice_service.delete_invoice(invoice_id, operator))
@@ -312,7 +319,7 @@ def export_report():
 # ---------------------------------------------------------------- 仪表盘
 @api.get("/dashboard/expense-breakdown")
 def dashboard_expense_breakdown(date_from: str = "", date_to: str = ""):
-    data = reimburse_service.expense_breakdown(
+    data = invoice_service.expense_breakdown(
         date_from=date_from or None,
         date_to=date_to or None,
         top_n=5,
