@@ -39,6 +39,30 @@ templates.env.filters["match_type_cn"] = lambda s: MATCH_TYPE_CN.get(s, s)
 templates.env.filters["fromjson"] = lambda s: (json.loads(s) if isinstance(s, str) and s else (s if isinstance(s, dict) else {}))
 
 
+# ---------------------------------------------------------------- 分页
+PAGE_SIZES = (20, 50, 100, 200)   # 预设每页条数（前端下拉选项）
+MAX_PAGE_SIZE = 1000               # 自定义条数上限，防止一次渲染过多行卡死浏览器
+
+
+def _norm_page_size(page_size: int) -> int:
+    """每页条数：预设值或 1~1000 的自定义值，非法值回退 20。"""
+    try:
+        n = int(page_size)
+    except (TypeError, ValueError):
+        return 20
+    return n if 1 <= n <= MAX_PAGE_SIZE else 20
+
+
+def _paginate(items: list, page: int, page_size: int) -> tuple:
+    """内存分页：返回 (当前页数据, 分页信息)。页码越界自动收敛到合法范围。"""
+    total = len(items)
+    pages = max(1, (total + page_size - 1) // page_size)
+    page = min(max(1, page), pages)
+    start = (page - 1) * page_size
+    pager = {"total": total, "page": page, "pages": pages, "page_size": page_size}
+    return items[start:start + page_size], pager
+
+
 @pages.get("/", response_class=HTMLResponse)
 def dashboard(request: Request):
     inv_counts = invoice_service.invoice_status_counts()
@@ -59,15 +83,38 @@ def dashboard(request: Request):
 
 
 @pages.get("/invoices", response_class=HTMLResponse)
-def invoices_page(request: Request, status: str = "", q: str = ""):
+def invoices_page(request: Request, status: str = "", q: str = "",
+                  category: str = "", date_from: str = "", date_to: str = "",
+                  page: int = 1, page_size: int = 20, focus_id: int = 0):
     # 路由联动语义参数：unmatched 映射为 NORMAL（未匹配发票 = NORMAL 状态）
     if status == "unmatched":
         status = "NORMAL"
-    rows = invoice_service.list_invoices(status=status or None, keyword=q or None)
+    page_size = _norm_page_size(page_size)
+    status_f, kw = status or None, q or None
+    category_f = category or None
+    date_from_f, date_to_f = date_from or None, date_to or None
+    total = invoice_service.count_invoices(status=status_f, keyword=kw,
+                                           category=category_f,
+                                           date_from=date_from_f, date_to=date_to_f)
+    # focus 定位：目标行可能不在第 1 页，先算它所在的页码
+    if focus_id:
+        page = invoice_service.page_of_invoice(focus_id, status_f, kw, page_size,
+                                               category=category_f,
+                                               date_from=date_from_f,
+                                               date_to=date_to_f) or page
+    pages_n = max(1, (total + page_size - 1) // page_size)
+    page = min(max(1, page), pages_n)
+    rows = invoice_service.list_invoices(status=status_f, keyword=kw,
+                                         category=category_f,
+                                         date_from=date_from_f, date_to=date_to_f,
+                                         limit=page_size, offset=(page - 1) * page_size)
     return templates.TemplateResponse(request, "invoices.html", {
         "request": request, "rows": rows,
         "status": status, "q": q,
+        "category": category, "date_from": date_from, "date_to": date_to,
         "counts": invoice_service.invoice_status_counts(),
+        "pager": {"total": total, "page": page, "pages": pages_n,
+                  "page_size": page_size},
     })
 
 
@@ -82,7 +129,9 @@ def invoice_detail_page(request: Request, invoice_id: int):
 
 
 @pages.get("/reimburses", response_class=HTMLResponse)
-def reimburses_page(request: Request, batch_id: str = "", q: str = "", status: str = ""):
+def reimburses_page(request: Request, batch_id: str = "", q: str = "",
+                    status: str = "", page: int = 1, page_size: int = 20,
+                    focus_id: int = 0):
     rows = reimburse_service.list_reimburses(batch_id=batch_id or None, keyword=q or None)
     # 路由联动语义参数：按匹配状态过滤（matched 口径与差异报告一致）
     if status == "unmatched":
@@ -94,9 +143,17 @@ def reimburses_page(request: Request, batch_id: str = "", q: str = "", status: s
     for r in rows:
         r["cells"] = [_cell_value(r, c) for c in columns]
     _sort_rows(rows, columns)
+    # 分页（排序后切片；focus 定位先算目标行所在页码）
+    page_size = _norm_page_size(page_size)
+    if focus_id:
+        idx = next((i for i, r in enumerate(rows) if r.get("id") == focus_id), None)
+        if idx is not None:
+            page = idx // page_size + 1
+    rows, pager = _paginate(rows, page, page_size)
     return templates.TemplateResponse(request, "reimburses.html", {
         "request": request, "rows": rows, "batches": batches,
         "batch_id": batch_id, "q": q, "status": status, "columns": columns,
+        "pager": pager,
     })
 
 
@@ -175,9 +232,22 @@ def matches_page(request: Request):
 
 
 @pages.get("/report", response_class=HTMLResponse)
-def report_page(request: Request):
+def report_page(request: Request, page_size: int = 20,
+                dpage: int = 1, rpage: int = 1, ipage: int = 1,
+                apage: int = 1, xpage: int = 1):
     report = report_service.build_report()
-    return templates.TemplateResponse(request, "report.html", {"request": request, "r": report})
+    page_size = _norm_page_size(page_size)
+    # 各数据表格独立分页（互不影响的页码参数）
+    pagers = {}
+    for key, param, p in (("details", "dpage", dpage),
+                          ("unmatched_reimburses", "rpage", rpage),
+                          ("unmatched_invoices", "ipage", ipage),
+                          ("abnormal", "apage", apage),
+                          ("duplicates", "xpage", xpage)):
+        report[key], pagers[param] = _paginate(report[key], p, page_size)
+    return templates.TemplateResponse(request, "report.html", {
+        "request": request, "r": report, "pagers": pagers,
+    })
 
 
 @pages.get("/settings", response_class=HTMLResponse)

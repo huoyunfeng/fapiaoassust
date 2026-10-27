@@ -9,6 +9,7 @@ import time
 import uuid
 from datetime import datetime
 from decimal import Decimal
+from pathlib import Path
 from typing import Dict, List, Optional
 
 from app.config import settings
@@ -22,8 +23,10 @@ from app.domain.validator import InvoiceValidator
 from app.infra.filestore import FileStore
 from app.infra.logger import get_logger
 from app.infra.ocr import register_ocr_backend
+from app.domain.categorize import categorize_item
 from app.repository import db
-from app.repository.repos import invoice_repo, log_repo, match_repo, rule_repo
+from app.repository.repos import (alias_repo, invoice_repo, log_repo,
+                                  match_repo, reimburse_repo, rule_repo)
 from app.service.status_flow import change_invoice_status
 
 logger = get_logger(__name__)
@@ -41,6 +44,27 @@ register_ocr_backend()
 # 文件类型 -> 解析链首环节（作为 parse_engine 的初始占位，解析成功后更新）
 _CHAIN_HEAD = {"xml": "xml", "ofd": "ofd", "pdf": "pdf_text",
                "jpg": "ocr", "jpeg": "ocr", "png": "ocr"}
+
+
+def _friendly_parse_error(file_type: str, error: str) -> str:
+    """把解析失败的技术原因映射为面向用户的友好提示（不暴露代码/堆栈）。
+
+    具体技术原因仍完整记录在发票 raw_json 与状态日志中，供排查使用。
+    """
+    e = (error or "").lower()
+    if any(k in e for k in ("encrypt", "password", "decrypt")) or "密码" in (error or ""):
+        return "文件已加密或受密码保护，无法读取；请解除密码后重新上传"
+    if file_type in ("jpg", "jpeg", "png"):
+        return "图片无法识别，请确认照片清晰、完整、无遮挡反光后重新上传"
+    if file_type == "pdf":
+        if "扫描件" in (error or ""):
+            return "PDF 为扫描件且无可用文本层，请上传电子发票原件，或拍照后以图片格式上传"
+        return "PDF 文件损坏或内容无法识别，请重新导出，或截图后以图片格式上传"
+    if file_type == "ofd":
+        return "OFD 文件损坏或格式不正确，请从开票平台重新下载后上传"
+    if file_type == "xml":
+        return "XML 文件损坏或格式不正确，请确认是开票系统导出的发票原件后重新上传"
+    return "文件损坏或内容无法识别，请检查文件后重新上传"
 
 
 # ---------------------------------------------------------------- 转换工具
@@ -115,12 +139,13 @@ def import_files(files: List[tuple[str, str, bytes]], operator: str = None,
                         file_name, (time.perf_counter() - t0) * 1000, r.get("status"))
             results.append(r)
         except Exception as e:
+            # 单个文件失败不阻塞整批；给用户友好提示，不抛堆栈/代码错误（技术原因入日志）
             logger.exception("导入 %s 失败", file_name)
             results.append({"file_name": file_name, "ok": False,
                             "invoice_id": None, "status": None,
-                            "message": f"导入异常: {e}"})
+                            "message": _friendly_parse_error(_file_store.detect_type(file_name), str(e))})
     # 有新发票导入成功后自动执行一轮匹配，报销单页状态随之刷新
-    if not skip_match and any(r.get("ok") for r in results):
+    if not skip_match and any(r.get("ok") and not r.get("skipped") for r in results):
         try:
             from app.service import match_service
             t0 = time.perf_counter()
@@ -148,9 +173,9 @@ def _import_one(file_name: str, content: bytes, operator: str) -> dict:
         # 不变量 I1：同一文件 hash 只能存在一条发票 -> 直接拦截
         existed = invoice_repo.get_by_hash(conn, file_hash)
         if existed:
-            return {"file_name": file_name, "ok": False, "invoice_id": existed["id"],
-                    "status": existed["status"],
-                    "message": f"文件已存在（发票 #{existed['id']}，I1: 文件哈希唯一），未重复导入"}
+            return {"file_name": file_name, "ok": True, "skipped": True,
+                    "invoice_id": existed["id"], "status": existed["status"],
+                    "message": f"文件已存在（发票 #{existed['id']}），已自动跳过"}
 
         raw: dict = {"file_name": file_name, "degrade_chain": [], "issues": []}
         invoice_id = invoice_repo.insert(conn, {
@@ -172,9 +197,14 @@ def _import_one(file_name: str, content: bytes, operator: str) -> dict:
         logger.info("导入分段 %s: 存盘=%.0fms 解析=%.0fms", file_name, save_ms, parse_ms)
 
         if result.success:
+            # 重复发票（同号码）不跳过：照常导入，由 _validate_and_dedup 标记为 DUPLICATE 状态
             raw["degrade_chain"] = result.degrade_chain
             if result.item_summary_raw:
                 raw["item_summary_raw"] = result.item_summary_raw
+            # 用户词典记忆：报销内容命中自定义词典时直接展示用户改过的名字
+            alias = alias_repo.get(conn, result.dto.item_summary or "")
+            if alias:
+                result.dto.item_summary = alias
             t_u = time.perf_counter()
             invoice_repo.update(conn, invoice_id, {
                 **_row_fields_from_dto(result.dto),
@@ -203,7 +233,8 @@ def _import_one(file_name: str, content: bytes, operator: str) -> dict:
         change_invoice_status(conn, invoice_id, InvoiceStatus.ABNORMAL.value,
                               f"解析失败: {result.error}", operator)
         return {"file_name": file_name, "ok": False, "invoice_id": invoice_id,
-                "status": InvoiceStatus.ABNORMAL.value, "message": f"解析失败: {result.error}"}
+                "status": InvoiceStatus.ABNORMAL.value,
+                "message": _friendly_parse_error(file_type, result.error)}
 
 
 def _validate_and_dedup(conn, invoice_id: int, operator: str) -> tuple[str, str]:
@@ -380,14 +411,23 @@ def update_item_summary(invoice_id: int, item_summary: str, operator: str = None
         raw["item_summary_user"] = clean(item_summary or "")
         raw["item_summary_user_edit"] = True
 
+        old_summary = row.get("item_summary") or ""
         invoice_repo.update(conn, invoice_id, {
             "item_summary": cleaned,
             "raw_json": json.dumps(raw, ensure_ascii=False),
             "updated_at": "datetime('now','localtime')",
         })
+        # 词典记忆：记录 原始词 -> 新词，同步历史同名词条；以后导入自动套用
+        learned = False
+        if cleaned and old_summary and cleaned != old_summary:
+            alias_repo.upsert(conn, old_summary, cleaned)
+            renamed = invoice_repo.rename_item_summary(conn, old_summary, cleaned)
+            learned = True
+            logger.info("词典学习: %r -> %r（同步历史发票 %s 张）", old_summary, cleaned, renamed)
         logger.info("发票 #%s 报销内容已由 %s 修改: %r -> %r",
-                    invoice_id, operator, row.get("item_summary"), cleaned)
-        return {"ok": True, "message": "已保存", "item_summary": cleaned}
+                    invoice_id, operator, old_summary, cleaned)
+        msg = "已保存，系统已记住该修改，以后导入同类发票将自动应用" if learned else "已保存"
+        return {"ok": True, "message": msg, "item_summary": cleaned}
 
 
 def confirm_not_duplicate(invoice_id: int, operator: str = None, reason: str = "") -> dict:
@@ -489,9 +529,72 @@ def invoice_detail(invoice_id: int) -> Optional[dict]:
         return row
 
 
-def list_invoices(status: str = None, keyword: str = None) -> List[dict]:
+def invoice_preview(invoice_id: int) -> Optional[dict]:
+    """抽屉详情：结构化字段 + 生效匹配记录（报销单号/提交人/金额）+ 原件文件信息。"""
     with db.read() as conn:
-        rows = invoice_repo.list(conn, status=status, keyword=keyword)
+        row = invoice_repo.get(conn, invoice_id)
+        if row is None:
+            return None
+        row.pop("raw_json", None)
+        m = match_repo.active_for_invoice(conn, invoice_id)
+        match = None
+        if m:
+            reb = reimburse_repo.get(conn, m["reimburse_id"]) if m.get("reimburse_id") else None
+            match = {
+                "status": m.get("status"),
+                "match_type": m.get("match_type"),
+                "match_score": m.get("match_score"),
+                "reimburse_no": (reb or {}).get("reimburse_no") or m.get("reimburse_no"),
+                "submitter": (reb or {}).get("submitter"),
+                "amount": (reb or {}).get("amount"),
+            }
+        return {"invoice": row, "match": match,
+                "file_type": (row.get("file_type") or "").lower(),
+                "has_file": invoice_file_path(invoice_id) is not None}
+
+
+def invoice_file_path(invoice_id: int) -> Optional[Path]:
+    """发票原件的磁盘绝对路径（安全约束：仅允许上传目录内的文件）。"""
+    with db.read() as conn:
+        row = invoice_repo.get(conn, invoice_id)
+    if row is None:
+        return None
+    src = row.get("source_path") or ""
+    if not src:
+        return None
+    try:
+        p = Path(src).resolve()
+        root = Path(settings.upload_dir).resolve()
+        if p != root and root not in p.parents:
+            return None
+        return p if p.is_file() else None
+    except OSError:
+        return None
+
+
+def _category_of(item_summary: str, alias_map: Dict[str, str]) -> str:
+    """报销内容 -> 标准分类（先套用户词典，再走智能归类，与仪表盘口径一致）。"""
+    name = (item_summary or "").strip() or "其他"
+    return categorize_item(alias_map.get(name, name))
+
+
+def list_invoices(status: str = None, keyword: str = None,
+                  category: str = None, date_from: str = None, date_to: str = None,
+                  limit: int = 500, offset: int = 0) -> List[dict]:
+    with db.read() as conn:
+        if category:
+            # 分类是派生值（用户词典 + 智能归类），需全量取出后过滤再分页
+            rows = invoice_repo.list(conn, status=status, keyword=keyword,
+                                     date_from=date_from, date_to=date_to,
+                                     limit=100000, offset=0)
+            alias_map = alias_repo.all(conn)
+            rows = [r for r in rows
+                    if _category_of(r.get("item_summary"), alias_map) == category]
+            rows = rows[offset:offset + limit]
+        else:
+            rows = invoice_repo.list(conn, status=status, keyword=keyword,
+                                     date_from=date_from, date_to=date_to,
+                                     limit=limit, offset=offset)
     # 给每条补上 item_summary_raw（优先用户编辑值，其次解析原始值，最后清洗后值兜底）
     for r in rows:
         raw = _raw_json(r)
@@ -499,6 +602,42 @@ def list_invoices(status: str = None, keyword: str = None) -> List[dict]:
         parsed_val = raw.get("item_summary_raw") or ""
         r["item_summary_raw"] = user_val or parsed_val or r.get("item_summary") or ""
     return rows
+
+
+def count_invoices(status: str = None, keyword: str = None, category: str = None,
+                   date_from: str = None, date_to: str = None) -> int:
+    """发票总数（与 list_invoices 同筛选口径，分页用）。"""
+    with db.read() as conn:
+        if category:
+            rows = invoice_repo.list(conn, status=status, keyword=keyword,
+                                     date_from=date_from, date_to=date_to,
+                                     limit=100000, offset=0)
+            alias_map = alias_repo.all(conn)
+            return sum(1 for r in rows
+                       if _category_of(r.get("item_summary"), alias_map) == category)
+        return invoice_repo.count(conn, status=status, keyword=keyword,
+                                  date_from=date_from, date_to=date_to)
+
+
+def page_of_invoice(invoice_id: int, status: str = None, keyword: str = None,
+                    page_size: int = 20, category: str = None,
+                    date_from: str = None, date_to: str = None) -> Optional[int]:
+    """focus 定位：发票在筛选结果（id 升序）中所在的页码（1 起），不存在返回 None。"""
+    with db.read() as conn:
+        if invoice_repo.get(conn, invoice_id) is None:
+            return None
+        if category:
+            rows = invoice_repo.list(conn, status=status, keyword=keyword,
+                                     date_from=date_from, date_to=date_to,
+                                     limit=100000, offset=0)
+            alias_map = alias_repo.all(conn)
+            rows = [r for r in rows
+                    if _category_of(r.get("item_summary"), alias_map) == category]
+            pos = next((i for i, r in enumerate(rows) if r["id"] == invoice_id), None)
+            return (pos // page_size + 1) if pos is not None else None
+        pos = invoice_repo.position_of(conn, invoice_id, status=status, keyword=keyword,
+                                       date_from=date_from, date_to=date_to)
+    return pos // page_size + 1
 
 
 def invoice_status_counts() -> Dict[str, int]:
@@ -528,32 +667,28 @@ def expense_breakdown(date_from: str = None, date_to: str = None, top_n: int = 5
     """
     with db.read() as conn:
         rows = invoice_repo.aggregate_by_item_summary(conn, date_from, date_to)
+        alias_map = alias_repo.all(conn)
 
-    total_amount = sum((r["amount"] or 0) for r in rows)
-    total_count = sum((r["count"] or 0) for r in rows)
+    # 智能归类：先套用用户自定义词典（第一优先级，覆盖内置关键词），
+    # 再把报销内容映射为标准财务分类后汇总（严禁把原始发票词直接丢给图表）。
+    merged: Dict[str, dict] = {}
+    for r in rows:
+        cat = categorize_item(alias_map.get(r["name"], r["name"]))
+        m = merged.setdefault(cat, {"name": cat, "amount": 0.0, "count": 0})
+        m["amount"] += float(r["amount"] or 0)
+        m["count"] += int(r["count"] or 0)
+    rows = sorted(merged.values(), key=lambda x: x["amount"], reverse=True)
 
-    top = rows[:top_n]
-    rest = rows[top_n:]
-    items = []
-    for r in top:
-        amt = float(r["amount"] or 0)
-        pct = (amt / total_amount * 100) if total_amount > 0 else 0
-        items.append({
-            "name": r["name"],
-            "amount": round(amt, 2),
-            "count": int(r["count"] or 0),
-            "percent": round(pct, 2),
-        })
-    if rest:
-        other_amt = sum(float(r["amount"] or 0) for r in rest)
-        other_cnt = sum(int(r["count"] or 0) for r in rest)
-        other_pct = (other_amt / total_amount * 100) if total_amount > 0 else 0
-        items.append({
-            "name": "其他",
-            "amount": round(other_amt, 2),
-            "count": other_cnt,
-            "percent": round(other_pct, 2),
-        })
+    total_amount = sum(r["amount"] for r in rows)
+    total_count = sum(r["count"] for r in rows)
+
+    # 标准分类最多 6 个，无需 top_n 截断合并，全部展示（top_n 参数保留兼容）
+    items = [{
+        "name": r["name"],
+        "amount": round(r["amount"], 2),
+        "count": r["count"],
+        "percent": round(r["amount"] / total_amount * 100, 2) if total_amount > 0 else 0,
+    } for r in rows]
 
     # 中心标签：按前端 filter 口径推断（"总支出" 业务表述）
     from datetime import date

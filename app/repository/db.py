@@ -56,6 +56,14 @@ CREATE TABLE IF NOT EXISTS invoice (
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_invoice_file_hash ON invoice(file_hash);
 
+-- 报销内容自定义词典：用户手动改名记忆（原始词 -> 新词）
+CREATE TABLE IF NOT EXISTS item_alias (
+    raw_text   TEXT PRIMARY KEY,
+    alias      TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+
 -- 不变量 I2（部分唯一索引；含上述调整 1）
 CREATE UNIQUE INDEX IF NOT EXISTS uq_invoice_code_no
     ON invoice(invoice_code, invoice_no)

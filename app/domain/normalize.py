@@ -97,60 +97,62 @@ class NormalizeEngine:
     def _clean(self, v) -> str:
         return clean(v)
 
+    # 规格型号 token：同时含字母和数字的组合（如 F50、20A3Pro、F50-20A3Pro）
+    _MODEL_TOKEN = re.compile(r"^(?=.*[A-Za-z])(?=.*\d)[A-Za-z0-9][A-Za-z0-9\-./]*$")
+    # 纯数字/符号 token（数量、单价、税率等噪音；仅在存在其它 token 时剔除）
+    _NUMERIC_TOKEN = re.compile(r"^[\d.,\-/:%¥￥*]+$")
+    _PAREN_CHUNK = re.compile(r"[（(][^（）()]*[）)]")
+    _SUMMARY_NOISE_KW = ("电子发票", "普通发票", "增值税", "发票代码", "发票号码",
+                         "开票日期", "价税合计", "统一社会信用代码", "纳税人识别号")
+    # 表头/字段名停用词（整词匹配）：OCR 把表格表头并入商品行时剔除，如 "餐饮服务 金额"
+    _HEADER_STOPWORDS = frozenset({
+        "项目名称", "规格型号", "单位", "数量", "单价", "金额",
+        "税率", "税额", "价税合计", "合计", "税率/征收率", "税率征收率",
+    })
+
     def _clean_summary(self, v) -> str:
-        """项目摘要清洗 + 短摘要智能选择（表格显示用）。
+        """报销内容统一提取规则（商业化口径）：
 
-        输入示例："*家用清洁电器具*美的电热水器 F50-20A3Pro(HE)"
-                  "*生产生活服务*餐饮服务"
-                  "电子发票（普通发票）"  ← 脏数据（PDF 标题 fallback 误用）
-
-        策略：
-        1) 解析 *税收分类* 前缀 → category（去掉星号）
-        2) 剥掉所有 *xxx* → product（商品名+规格型号）
-        3) 智能选择：
-           - product 有意义且 ≤15 字 → 直接用 product（如 "餐饮服务"）
-           - product >15 字 → 用 category（如美的产品名太长 → "家用清洁电器具"）
-           - 无 category → product 截断到 15 字
-        4) 防御性过滤：最终结果若含明显非商品关键词（PDF 标题/表头）→ 返回空
-        5) 压缩内部多余空白
+        1) 优先提取第二类明细：`*税务大类*具体明细` -> 取第二个星号后面的内容
+        2) 剔除杂质：去首尾空格；去括号内容；去规格型号 token（字母+数字组合，
+           如 F50-20A3Pro），只保留核心商品名
+        3) 兜底：没有星号或提取后为空 -> 直接使用原文本去掉空格
+        4) 禁止只展示税务大类：除非发票真的只有大类没有明细（星号后为空）才用大类
         """
         s = clean(v)
         if not s:
             return ""
 
-        # 多商品逗号分隔：先处理第一个 item，后续 item 的 category 取相同值
-        parts = [p.strip() for p in s.split(",") if p.strip()]
-        first_part = parts[0]
+        # 多商品逗号分隔：取第一条做摘要（与历史行为一致）
+        first = s.split(",")[0].strip()
 
-        # 提取 category：第一个 *xxx* 里的内容
-        cat_match = re.search(r"^\*([^*\n]+)\*", first_part)
-        category = cat_match.group(1).strip() if cat_match else ""
-
-        # 剥掉所有 *xxx* 前缀 → product
-        product = re.sub(r"^(?:\*[^*\n]+\*\s*)+", "", first_part).strip()
-
-        # 选短摘要
-        if category:
-            # 有税收分类 → product 短就用 product，长就用 category
-            if product and len(product) <= 15:
-                result = product
-            else:
-                result = category
+        m = re.match(r"^\*([^*\n]+)\*(.*)$", first)
+        if m:
+            category, detail = m.group(1).strip(), m.group(2).strip()
+            s = detail or category           # 规则1 + 规则4的例外（只有大类时用大类）
         else:
-            # 无税收分类 → product 截断到 15 字
-            result = product[:15] if len(product) > 15 else product
+            s = first                        # 规则3 兜底
 
-        # 压缩多余空白
-        result = re.sub(r"\s{2,}", " ", result).strip()
+        # 规则2：剔除括号内容与规格型号/纯数字噪音 token，以及混入商品行的表头词
+        s = self._PAREN_CHUNK.sub(" ", s)
+        tokens = [t for t in s.split()
+                  if not self._MODEL_TOKEN.match(t)
+                  and not re.fullmatch(r"[A-Za-z]{1,2}", t)  # 孤立字母碎片（型号折行残留，如 "F"）
+                  and t not in self._HEADER_STOPWORDS]
+        if len(tokens) > 1:
+            tokens = [t for t in tokens if not self._NUMERIC_TOKEN.match(t)]
+        # 剔除双栏折行交叠产生的重复碎片：互为子串的 token 只保留最长者
+        # （如 [美的电, 美的电热水器, 热水器] -> [美的电热水器]）
+        tokens = [t for i, t in enumerate(tokens)
+                  if not any(i != j and t in u and (len(u) > len(t) or j < i)
+                             for j, u in enumerate(tokens))]
+        s = " ".join(tokens)
+        s = re.sub(r"\s{2,}", " ", s).strip(" ,，;；")
 
-        # 防御性过滤：排除明显的 PDF 标题/表头被误识别
-        _noise_kw = ("电子发票", "普通发票", "增值税", "发票代码", "发票号码",
-                     "开票日期", "价税合计", "统一社会信用代码", "纳税人识别号")
-        for kw in _noise_kw:
-            if kw in result:
-                return ""
-
-        return result
+        # 防御性过滤：PDF 标题/表头被误识别为商品名 -> 返回空
+        if any(kw in s for kw in self._SUMMARY_NOISE_KW):
+            return ""
+        return s[:30]
 
     def _to_decimal(self, v) -> Optional[Decimal]:
         return to_decimal(v)

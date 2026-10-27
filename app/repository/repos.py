@@ -63,10 +63,11 @@ class InvoiceRepo:
         ).fetchone()
         return _row_to_dict(row)
 
-    def list(self, conn: sqlite3.Connection, status: str = None,
-             keyword: str = None, limit: int = 500, offset: int = 0,
-             ids: List[int] = None) -> List[dict]:
-        sql, params = "SELECT * FROM invoice WHERE 1=1", []
+    @staticmethod
+    def _filter_sql(status: str = None, keyword: str = None,
+                    date_from: str = None, date_to: str = None) -> tuple:
+        """发票列表筛选条件片段（list/count/position_of 共用，保证口径一致）。"""
+        sql, params = "", []
         if status:
             sql += " AND status = ?"
             params.append(status)
@@ -74,6 +75,23 @@ class InvoiceRepo:
             sql += " AND (invoice_no LIKE ? OR invoice_code LIKE ? OR buyer_name LIKE ? OR seller_name LIKE ? OR item_summary LIKE ?)"
             kw = f"%{keyword}%"
             params += [kw, kw, kw, kw, kw]
+        # 开票日期范围（仪表盘下钻联动；口径与 aggregate_by_item_summary 一致）
+        if date_from:
+            sql += " AND invoice_date IS NOT NULL AND invoice_date >= ?"
+            params.append(date_from)
+        if date_to:
+            sql += " AND invoice_date IS NOT NULL AND invoice_date <= ?"
+            params.append(date_to)
+        return sql, params
+
+    def list(self, conn: sqlite3.Connection, status: str = None,
+             keyword: str = None, limit: int = 500, offset: int = 0,
+             ids: List[int] = None, date_from: str = None,
+             date_to: str = None) -> List[dict]:
+        sql, params = "SELECT * FROM invoice WHERE 1=1", []
+        f_sql, f_params = self._filter_sql(status, keyword, date_from, date_to)
+        sql += f_sql
+        params += f_params
         if ids:
             marks = ", ".join("?" for _ in ids)
             sql += f" AND id IN ({marks})"
@@ -81,6 +99,26 @@ class InvoiceRepo:
         sql += " ORDER BY id ASC LIMIT ? OFFSET ?"
         params += [limit, offset]
         return _rows_to_dicts(conn.execute(sql, params))
+
+    def count(self, conn: sqlite3.Connection, status: str = None,
+              keyword: str = None, date_from: str = None,
+              date_to: str = None) -> int:
+        """发票总数（与 list 同筛选口径，分页用）。"""
+        sql, params = "SELECT COUNT(*) AS n FROM invoice WHERE 1=1", []
+        f_sql, f_params = self._filter_sql(status, keyword, date_from, date_to)
+        sql += f_sql
+        params += f_params
+        return conn.execute(sql, params).fetchone()["n"]
+
+    def position_of(self, conn: sqlite3.Connection, invoice_id: int,
+                    status: str = None, keyword: str = None,
+                    date_from: str = None, date_to: str = None) -> Optional[int]:
+        """按 id ASC 排序时 invoice_id 之前的行数（用于计算 focus 行所在页码）。"""
+        sql, params = "SELECT COUNT(*) AS n FROM invoice WHERE id < ?", [invoice_id]
+        f_sql, f_params = self._filter_sql(status, keyword, date_from, date_to)
+        sql += f_sql
+        params += f_params
+        return conn.execute(sql, params).fetchone()["n"]
 
     def fingerprints(self, conn: sqlite3.Connection, exclude_id: int = None) -> List[tuple]:
         """用于去重引擎的指纹列表 [(id, file_hash, invoice_code, invoice_no)]。"""
@@ -93,6 +131,12 @@ class InvoiceRepo:
 
     def delete(self, conn: sqlite3.Connection, invoice_id: int) -> None:
         conn.execute("DELETE FROM invoice WHERE id = ?", (invoice_id,))
+
+    def rename_item_summary(self, conn: sqlite3.Connection, old: str, new: str) -> int:
+        """把库里所有同名报销内容批量改名（用户词典学习时同步历史数据）。"""
+        cur = conn.execute(
+            "UPDATE invoice SET item_summary = ? WHERE item_summary = ?", (new, old))
+        return cur.rowcount
 
     def count_by_status(self, conn: sqlite3.Connection) -> Dict[str, int]:
         rows = conn.execute("SELECT status, COUNT(*) AS n FROM invoice GROUP BY status")
@@ -503,12 +547,37 @@ class CompanyRepo:
         conn.execute("DELETE FROM company_profile WHERE id = ?", (cid,))
 
 
+# =====================================================================
+# 报销内容自定义词典（用户改名记忆）
+# =====================================================================
+class AliasRepo:
+    """item_alias 表：原始报销内容 -> 用户改名。"""
+
+    def get(self, conn: sqlite3.Connection, raw_text: str) -> Optional[str]:
+        row = conn.execute(
+            "SELECT alias FROM item_alias WHERE raw_text = ?", (raw_text,)).fetchone()
+        return row["alias"] if row else None
+
+    def upsert(self, conn: sqlite3.Connection, raw_text: str, alias: str) -> None:
+        conn.execute(
+            """INSERT INTO item_alias (raw_text, alias) VALUES (?, ?)
+               ON CONFLICT(raw_text) DO UPDATE SET alias = excluded.alias,
+               updated_at = datetime('now','localtime')""",
+            (raw_text, alias),
+        )
+
+    def all(self, conn: sqlite3.Connection) -> Dict[str, str]:
+        rows = conn.execute("SELECT raw_text, alias FROM item_alias")
+        return {r["raw_text"]: r["alias"] for r in rows}
+
+
 invoice_repo = InvoiceRepo()
 reimburse_repo = ReimburseRepo()
 match_repo = MatchRepo()
 log_repo = LogRepo()
 rule_repo = RuleRepo()
 company_repo = CompanyRepo()
+alias_repo = AliasRepo()
 
 
 # =====================================================================

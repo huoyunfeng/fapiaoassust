@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_pager.html" import render_pager %}
 {% block content %}
 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
   <h1 style="font-size:20px;">差异报告</h1>
@@ -33,52 +34,57 @@
     </tr>
     {% endfor %}
   </table>
-  {% else %}<p class="muted">暂无匹配数据，请先执行匹配</p>{% endif %}
+  {{ render_pager(pagers.dpage, 'dpage') }}
+  {% else %}<p class="empty-state">暂无相关数据</p>{% endif %}
 </div>
 
 <div class="grid g2">
   <div class="card">
-    <h2>未匹配报销单 ({{ r.unmatched_reimburses|length }})</h2>
+    <h2>未匹配报销单 ({{ pagers.rpage.total }})</h2>
     {% if r.unmatched_reimburses %}
     <table><tr><th>ID</th><th>单号</th><th>金额</th><th>提交人</th><th>登记发票号</th></tr>
     {% for i in r.unmatched_reimburses %}
       <tr class="clickable" title="点击定位到报销单管理" onclick="location.href='/reimburses?status=unmatched&focus_id={{ i.id }}'"><td>#{{ i.id }}</td><td>{{ i.reimburse_no }}</td><td>{{ i.amount }}</td>
           <td>{{ i.submitter }}</td><td>{{ i.invoice_no or '—' }}</td></tr>
     {% endfor %}</table>
-    {% else %}<p class="muted">无</p>{% endif %}
+    {{ render_pager(pagers.rpage, 'rpage') }}
+    {% else %}<p class="empty-state">暂无相关数据</p>{% endif %}
   </div>
   <div class="card">
-    <h2>未匹配发票 ({{ r.unmatched_invoices|length }})</h2>
+    <h2>未匹配发票 ({{ pagers.ipage.total }})</h2>
     {% if r.unmatched_invoices %}
     <table><tr><th>ID</th><th>发票号</th><th>价税合计</th><th>开票日期</th></tr>
     {% for i in r.unmatched_invoices %}
       <tr class="clickable" title="点击定位到发票管理" onclick="location.href='/invoices?status=unmatched&focus_id={{ i.id }}'"><td>#{{ i.id }}</td><td>{{ i.invoice_no or '—' }}</td>
           <td>{{ i.total_amount or '—' }}</td><td>{{ i.invoice_date or '—' }}</td></tr>
     {% endfor %}</table>
-    {% else %}<p class="muted">无</p>{% endif %}
+    {{ render_pager(pagers.ipage, 'ipage') }}
+    {% else %}<p class="empty-state">暂无相关数据</p>{% endif %}
   </div>
 </div>
 
 <div class="grid g2">
   <div class="card">
-    <h2>异常发票 ({{ r.abnormal|length }})</h2>
+    <h2>异常发票 ({{ pagers.apage.total }})</h2>
     {% if r.abnormal %}
     <table><tr><th>ID</th><th>发票号</th><th>状态</th></tr>
     {% for i in r.abnormal %}
       <tr><td><a class="link" href="/invoices/{{ i.id }}">#{{ i.id }}</a></td>
           <td>{{ i.invoice_no or '—' }}</td><td><span class="badge {{ i.status|badge }}">{{ i.status|status_cn }}</span></td></tr>
     {% endfor %}</table>
-    {% else %}<p class="muted">无</p>{% endif %}
+    {{ render_pager(pagers.apage, 'apage') }}
+    {% else %}<p class="empty-state">暂无相关数据</p>{% endif %}
   </div>
   <div class="card">
-    <h2>重复发票 ({{ r.duplicates|length }})</h2>
+    <h2>重复发票 ({{ pagers.xpage.total }})</h2>
     {% if r.duplicates %}
     <table><tr><th>ID</th><th>发票号</th><th>状态</th></tr>
     {% for i in r.duplicates %}
       <tr><td><a class="link" href="/invoices/{{ i.id }}">#{{ i.id }}</a></td>
           <td>{{ i.invoice_no or '—' }}</td><td><span class="badge {{ i.status|badge }}">{{ i.status|status_cn }}</span></td></tr>
     {% endfor %}</table>
-    {% else %}<p class="muted">无</p>{% endif %}
+    {{ render_pager(pagers.xpage, 'xpage') }}
+    {% else %}<p class="empty-state">暂无相关数据</p>{% endif %}
   </div>
 </div>
 {% endblock %}

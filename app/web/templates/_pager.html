@@ -1,0 +1,33 @@
+{# 统一底部分页组件：共 X 条 | 每页 20/50/100/200/自定义 | 上一页 第 i/n 页 下一页。
+   用法：{% from "_pager.html" import render_pager %} {{ render_pager(pager) }}
+   多表格页面用 param 区分页码参数，如 {{ render_pager(pagers.dpage, 'dpage') }} #}
+{% macro render_pager(p, param='page') %}
+{% if p and p.total > 0 %}
+{% set presets = [20, 50, 100, 200] %}
+{% set is_custom = p.page_size not in presets %}
+<div class="pager">
+  <span class="muted">共 {{ p.total }} 条</span>
+  <span class="muted">每页</span>
+  <select onchange="pagerSizeSel(this)" title="每页显示条数">
+    {% for n in presets %}
+    <option value="{{ n }}" {% if p.page_size == n %}selected{% endif %}>{{ n }}</option>
+    {% endfor %}
+    <option value="custom" {% if is_custom %}selected{% endif %}>自定义</option>
+  </select>
+  <span class="muted">条</span>
+  <span class="pager-custom" {% if not is_custom %}style="display:none;"{% endif %}>
+    {# 用 text + inputmode 而非 number：内嵌 WebView 的 number 控件会限制输入且占位过窄 #}
+    <input type="text" class="pager-custom-input" inputmode="numeric" maxlength="4"
+           value="{% if is_custom %}{{ p.page_size }}{% endif %}" placeholder="每页条数"
+           oninput="pagerDigits(this)"
+           onkeydown="if(event.key==='Enter'){event.preventDefault();pagerCustom(this);}">
+    <button class="btn btn-outline btn-sm" type="button" onclick="pagerCustom(this)">确定</button>
+  </span>
+  <button class="btn btn-outline btn-sm" {% if p.page <= 1 %}disabled{% endif %}
+          onclick="pagerGo('{{ param }}', {{ p.page - 1 }})">上一页</button>
+  <span class="muted">第 {{ p.page }} / {{ p.pages }} 页</span>
+  <button class="btn btn-outline btn-sm" {% if p.page >= p.pages %}disabled{% endif %}
+          onclick="pagerGo('{{ param }}', {{ p.page + 1 }})">下一页</button>
+</div>
+{% endif %}
+{% endmacro %}

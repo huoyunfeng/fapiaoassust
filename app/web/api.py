@@ -316,6 +316,41 @@ def export_report():
     )
 
 
+# ---------------------------------------------------------------- 发票详情抽屉
+# 注意：必须声明在 GET /invoices/export 之后，避免 "export" 被当作 int 路径参数
+@api.get("/invoices/{invoice_id}")
+def invoice_preview_api(invoice_id: int):
+    """抽屉详情：结构化字段 + 生效匹配记录 + 原件文件信息。"""
+    data = invoice_service.invoice_preview(invoice_id)
+    if data is None:
+        return {"ok": False, "message": "发票不存在或已删除"}
+    return _j(data)
+
+
+# 可内联预览的原件类型（图片直接渲染，PDF 用浏览器内置查看器）
+_FILE_INLINE_MIME = {
+    ".pdf": "application/pdf",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+}
+
+
+@api.get("/invoices/{invoice_id}/file")
+def invoice_file_api(invoice_id: int):
+    """发票原件文件流：图片/PDF 内联预览，XML/OFD 走附件下载。"""
+    p = invoice_service.invoice_file_path(invoice_id)
+    if p is None:
+        return Response("原件文件不存在", status_code=404)
+    ext = p.suffix.lower()
+    mime = _FILE_INLINE_MIME.get(ext)
+    if mime:
+        return FileResponse(p, media_type=mime,
+                            content_disposition_type="inline")
+    return FileResponse(p, media_type="application/octet-stream",
+                        filename=p.name, content_disposition_type="attachment")
+
+
 # ---------------------------------------------------------------- 仪表盘
 @api.get("/dashboard/expense-breakdown")
 def dashboard_expense_breakdown(date_from: str = "", date_to: str = ""):

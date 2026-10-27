@@ -34,7 +34,8 @@ def env(tmp_path, monkeypatch):
 
 
 def xml_invoice(no, total, amount=None, tax=None, date="2026-09-01",
-                code="", seller="测试供应商", buyer_tax="91110108MA01AAAA1A"):
+                code="", seller="测试供应商", buyer_tax="91110108MA01AAAA1A",
+                item_name="*测试*项目"):
     amt = amount if amount is not None else total
     tx = tax if tax is not None else "0.00"
     return (f"""<?xml version="1.0" encoding="UTF-8"?>
@@ -42,7 +43,7 @@ def xml_invoice(no, total, amount=None, tax=None, date="2026-09-01",
 <InvoiceDate>{date}</InvoiceDate></Header>
 <Buyer><BuyerName>北京示例科技有限公司</BuyerName><BuyerTaxID>{buyer_tax}</BuyerTaxID></Buyer>
 <Seller><SellerName>{seller}</SellerName><SellerTaxID>91310000MA01BBBB2B</SellerTaxID></Seller>
-<Items><Item><ItemName>*测试*项目</ItemName><Amount>{amt}</Amount><TaxRate>13%</TaxRate><TaxAmount>{tx}</TaxAmount></Item></Items>
+<Items><Item><ItemName>{item_name}</ItemName><Amount>{amt}</Amount><TaxRate>13%</TaxRate><TaxAmount>{tx}</TaxAmount></Item></Items>
 <Settlement><TotalTaxInclAmount>{total}</TotalTaxInclAmount></Settlement></Invoice>""").encode("utf-8")
 
 
@@ -67,14 +68,16 @@ class TestInvariants:
         r1 = env["inv"].import_files([("a.xml", "", content)])[0]
         r2 = env["inv"].import_files([("a.xml", "", content)])[0]
         assert r1["ok"] and r1["status"] == "NORMAL"
-        assert not r2["ok"] and r2["invoice_id"] == r1["invoice_id"] and "已存在" in r2["message"]
+        assert r2["skipped"] and r2["invoice_id"] == r1["invoice_id"] and "已存在" in r2["message"]
 
     def test_i2_same_invoice_no_marked_duplicate(self, env):
         r1 = env["inv"].import_files([("a.xml", "", xml_invoice("I2000000001", "100.00"))])[0]
-        # 同号不同内容（金额不同 -> 文件 hash 不同）
+        # 同号不同内容（金额不同 -> 文件 hash 不同）-> 照常导入，状态标记为重复
         r2 = env["inv"].import_files([("b.xml", "", xml_invoice("I2000000001", "100.00", seller="另一家供应商"))])[0]
         assert r1["status"] == "NORMAL"
-        assert r2["status"] == "DUPLICATE"
+        assert r2["status"] == "DUPLICATE" and not r2.get("skipped")
+        with env["db"].read() as conn:
+            assert len(env["invoice_repo"].list(conn)) == 2
 
     def test_i3_one_invoice_cannot_match_two_reimburses(self, env):
         env["inv"].import_files([("a.xml", "", xml_invoice("I3000000001", "100.00"))])
@@ -235,7 +238,8 @@ class TestBoundary:
 
     def test_blurry_image_no_ocr(self, env):
         r = env["inv"].import_files([("blurry.jpg", "", b"\xff\xd8\xff" + os.urandom(2048))])[0]
-        assert r["status"] == "ABNORMAL" and "OCR" in r["message"]
+        # 用户侧只收到友好提示（不暴露 OCR/堆栈等技术细节）
+        assert r["status"] == "ABNORMAL" and "图片无法识别" in r["message"]
 
     def test_encrypted_or_corrupt_pdf(self, env):
         r = env["inv"].import_files([("encrypted.pdf", "", b"%PDF-1.7 encrypted-garbage" + os.urandom(1024))])[0]
@@ -361,3 +365,113 @@ class TestIntegration:
             total = conn.execute("SELECT COUNT(*) n FROM invoice").fetchone()["n"]
         assert not dup_inv and not dup_reb
         assert total == 100
+
+
+# =====================================================================
+# 报销内容提取规则 + 智能归类 + 词典记忆（商业化重构）
+# =====================================================================
+class TestItemSummaryRules:
+
+    def test_clean_summary_prefers_detail(self):
+        from app.domain.normalize import NormalizeEngine
+        n = NormalizeEngine()
+        # 规则1：提取第二个星号后的明细
+        assert n._clean_summary("*生产生活服务*餐饮服务") == "餐饮服务"
+        # 规则2：剔除括号与规格型号
+        assert n._clean_summary("*家用清洁电器具*美的电热水器 F50-20A3Pro(HE)") == "美的电热水器"
+        # 规则4 例外：只有大类没有明细时才用大类
+        assert n._clean_summary("*办公用品*") == "办公用品"
+        # 规则3 兜底：无星号用原文
+        assert n._clean_summary("住宿费") == "住宿费"
+        # 绝不因品名过长退化为大类
+        assert "电器具" not in n._clean_summary("*家用清洁电器具*海尔双开门智能变频电冰箱家用大容量")
+        # OCR 把表头并入商品行：剔除"金额"等表头词
+        assert n._clean_summary("*餐饮服务*餐饮服务 金额") == "餐饮服务"
+        assert n._clean_summary("餐饮服务 金额") == "餐饮服务"
+        assert n._clean_summary("*运输服务*高速通行费 单价 金额") == "高速通行费"
+        # 项目名称/规格型号双栏折行交叠：剔除重复碎片与孤立字母，只保留最完整名称
+        assert n._clean_summary(
+            "*家用清洁电器具*美的电 美的电热水器 F 热水器 F50-20A3Pro(HE) 50-20A3Pro(HE)"
+        ) == "美的电热水器"
+        # 无重复碎片时不受影响
+        assert n._clean_summary("*餐饮服务*餐饮服务") == "餐饮服务"
+
+    def test_categorize_item(self):
+        from app.domain.categorize import categorize_item
+        assert categorize_item("餐饮服务") == "餐饮费"
+        assert categorize_item("奶茶茶饮") == "餐饮费"
+        assert categorize_item("火车票") == "差旅费"      # 差旅优先于交通（含"车"）
+        assert categorize_item("酒店住宿") == "差旅费"
+        assert categorize_item("高速通行费") == "交通费"
+        assert categorize_item("加油费") == "交通费"
+        assert categorize_item("办公用品") == "办公费"
+        assert categorize_item("电器设备") == "办公费"
+        assert categorize_item("美的电热水器") == "办公费"  # 家电实体词（含"热水器"）
+        assert categorize_item("电饭煲") == "办公费"      # 家电优先，不被"饭"吞进餐饮费
+        assert categorize_item("格力空调") == "办公费"
+        # 实体品名词典：具体品名不含类目词也能归类
+        assert categorize_item("海底捞火锅") == "餐饮费"   # 不含"餐/饭/食品/茶饮"
+        assert categorize_item("珍珠奶茶") == "餐饮费"
+        assert categorize_item("高铁票") == "差旅费"       # 不含"火车"
+        assert categorize_item("如家宾馆") == "差旅费"
+        assert categorize_item("动车票") == "差旅费"       # 差旅优先，不被"车"吞进交通费
+        assert categorize_item("地铁出行") == "交通费"
+        assert categorize_item("ETC通行费") == "交通费"
+        assert categorize_item("手机流量包") == "通讯费"
+        assert categorize_item("宽带费") == "通讯费"
+        assert categorize_item("鲜花") == "其他费用"
+        assert categorize_item("") == "其他费用"
+
+    def test_category_drill_filter(self, env):
+        """仪表盘下钻：发票列表按分类 + 日期范围过滤（分类口径与仪表盘一致）。"""
+        env["inv"].import_files([("c2.xml", "", xml_invoice("CAT0000002", "100.00", item_name="*餐饮服务*餐饮服务"))])
+        env["inv"].import_files([("c3.xml", "", xml_invoice("CAT0000003", "200.00", date="2026-10-05", item_name="*家用电器*美的电热水器"))])
+        rows = env["inv"].list_invoices(category="餐饮费")
+        assert len(rows) == 1 and rows[0]["invoice_no"] == "CAT0000002"
+        rows = env["inv"].list_invoices(category="办公费", date_from="2026-10-01", date_to="2026-10-31")
+        assert len(rows) == 1 and rows[0]["invoice_no"] == "CAT0000003"
+        # 日期范围排除：9 月的餐饮发票不在 10 月范围内
+        assert env["inv"].count_invoices(category="餐饮费", date_from="2026-10-01", date_to="2026-10-31") == 0
+        assert env["inv"].count_invoices(category="办公费") == 1
+        # focus 定位同样支持分类过滤
+        with env["db"].read() as conn:
+            inv = [r for r in env["invoice_repo"].list(conn) if r["invoice_no"] == "CAT0000003"][0]
+        assert env["inv"].page_of_invoice(inv["id"], category="办公费") == 1
+
+    def test_invoice_preview(self, env):
+        """抽屉详情：结构化字段 + 无匹配记录 + 文件类型。"""
+        r = env["inv"].import_files([("c4.xml", "", xml_invoice("CAT0000004", "100.00"))])[0]
+        d = env["inv"].invoice_preview(r["invoice_id"])
+        assert d and d["invoice"]["invoice_no"] == "CAT0000004"
+        assert d["match"] is None and d["file_type"] == "xml"
+        # has_file 依赖真实文件路径（模块级 FileStore 不随测试隔离的 upload_dir 变化），此处不断言
+        assert env["inv"].invoice_preview(999999) is None
+
+    def test_alias_memory_on_import(self, env):
+        """用户手动改名后，再次导入同类发票自动应用新名字。"""
+        item = "*家用清洁电器具*美的电热水器 F50-20A3Pro(HE)"
+        r1 = env["inv"].import_files([("w1.xml", "", xml_invoice("AL10000001", "100.00", item_name=item))])[0]
+        with env["db"].read() as conn:
+            row1 = env["invoice_repo"].get(conn, r1["invoice_id"])
+        assert row1["item_summary"] == "美的电热水器"
+
+        # 用户双击修改为"办公设备" -> 记录词典
+        res = env["inv"].update_item_summary(r1["invoice_id"], "办公设备")
+        assert res["ok"] and "已记住" in res["message"]
+
+        # 再次导入同内容发票（不同发票号）-> 自动展示"办公设备"
+        r2 = env["inv"].import_files([("w2.xml", "", xml_invoice("AL10000002", "200.00", item_name=item))])[0]
+        with env["db"].read() as conn:
+            row2 = env["invoice_repo"].get(conn, r2["invoice_id"])
+        assert row2["item_summary"] == "办公设备"
+
+    def test_expense_breakdown_uses_standard_categories(self, env):
+        env["inv"].import_files([("c1.xml", "", xml_invoice("CAT0000001", "100.00", item_name="*餐饮服务*餐饮服务"))])
+        env["inv"].import_files([("c2.xml", "", xml_invoice("CAT0000002", "200.00", item_name="*运输服务*高速通行费"))])
+        env["inv"].import_files([("c3.xml", "", xml_invoice("CAT0000003", "50.00", item_name="*鲜花*鲜花"))])
+        data = env["inv"].expense_breakdown()
+        names = {i["name"] for i in data["items"]}
+        assert "餐饮费" in names and "交通费" in names and "其他费用" in names
+        # 严禁原始发票词/税务大类直接出现在图表
+        assert "餐饮服务" not in names and "鲜花" not in names and "生产生活服务" not in names
+        assert abs(sum(i["percent"] for i in data["items"]) - 100) < 0.1
