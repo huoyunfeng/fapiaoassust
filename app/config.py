@@ -24,7 +24,7 @@ class Settings:
     amount_tolerance: Decimal = Decimal("0.01")
 
     # 汇总匹配（多对一）组合搜索上限
-    many_to_one_max_invoices: int = 4
+    many_to_one_max_invoices: int = 5
     many_to_one_pool_size: int = 20
 
     # 默认操作人（本系统为单机工具，无登录体系）

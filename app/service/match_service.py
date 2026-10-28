@@ -3,6 +3,7 @@
 流程（核心闭环 §1.2）：去重后 NORMAL 发票 x 未占用报销单 -> 评分 -> 状态机。
 所有写操作在单事务内（I9）；发票状态变更经 status_flow（I7）。
 """
+import difflib
 import json
 from typing import Dict, List, Optional
 
@@ -28,16 +29,20 @@ NOTE_MARK = "【不匹配】"
 
 
 def _inv_dto(row: dict) -> InvoiceDTO:
+    """发票 DTO：带销方名称与项目摘要，供「文本/抬头」维度做相似度比对。"""
     return InvoiceDTO(
         invoice_code=row.get("invoice_code") or "",
         invoice_no=row.get("invoice_no") or "",
         invoice_date=row.get("invoice_date"),
         buyer_tax_no=row.get("buyer_tax_no") or "",
+        seller_name=row.get("seller_name") or "",
+        item_summary=row.get("item_summary") or "",
         total_amount=to_decimal(row.get("total_amount")),
     )
 
 
 def _reb_dto(row: dict) -> ReimburseDTO:
+    """报销单 DTO：备注剥离系统写入的【不匹配】说明，只留用户原文。"""
     return ReimburseDTO(
         reimburse_no=row.get("reimburse_no") or "",
         reimburse_date=row.get("reimburse_date"),
@@ -45,6 +50,7 @@ def _reb_dto(row: dict) -> ReimburseDTO:
         period_end=row.get("period_end"),
         amount=to_decimal(row.get("amount")),
         invoice_no=row.get("invoice_no") or "",
+        remark=_strip_note(row.get("remark")),
     )
 
 
@@ -68,6 +74,37 @@ def _write_note(conn, reb_row: dict, notes: Optional[List[str]]) -> None:
         reimburse_repo.update_remark(conn, reb_row["id"], text)
 
 
+def _detect_conflict(conn, reimburse_id: Optional[int]) -> bool:
+    """匹配生效后校验双方分类，不一致则落「分类差异」（模块四）。"""
+    if reimburse_id is None:
+        return False
+    from app.service import category_service   # 惰性导入，避免服务层循环依赖
+    return category_service.detect_conflict(conn, reimburse_id) is not None
+
+
+def _ambiguity_note(tied_ids: List[int], inv_rows: Dict[int, dict], reb_row: dict) -> str:
+    """并列候选说明 + 销售方/摘要弱相似度提示（仅作展示参考，不影响判定）。
+
+    典型场景：报销单未填发票号，且多张发票金额、日期完全相同（如连号打车票）。
+    """
+    reb_text = "".join([
+        reb_row.get("expense_type") or "",
+        reb_row.get("remark") or "",
+        reb_row.get("submitter") or "",
+    ])
+    parts = []
+    for iid in sorted(tied_ids):
+        r = inv_rows.get(iid) or {}
+        inv_text = (r.get("seller_name") or "") + (r.get("item_summary") or "")
+        ratio = (difflib.SequenceMatcher(None, reb_text, inv_text).ratio()
+                 if reb_text and inv_text else 0.0)
+        label = r.get("invoice_no") or f"#{iid}"
+        seller = r.get("seller_name") or "销售方未知"
+        parts.append(f"{label}（{seller}，文本相似度 {ratio:.0%}）")
+    return (f"存在 {len(tied_ids)} 张金额/日期相同的发票，无法自动区分，"
+            f"请人工在匹配中心指定（候选：{'、'.join(parts)}）")
+
+
 # ---------------------------------------------------------------- 执行匹配
 def run_matching(operator: str = None) -> dict:
     """执行一轮匹配（全量重评估）。
@@ -77,7 +114,8 @@ def run_matching(operator: str = None) -> dict:
     """
     operator = operator or settings.default_operator
     summary = {"cleared": 0, "auto_matched": 0, "pending": 0, "conflict": 0,
-               "unmatched": 0, "many_to_one": 0, "evaluated_reimburses": 0}
+               "unmatched": 0, "many_to_one": 0, "evaluated_reimburses": 0,
+               "category_conflict": 0}
 
     with db.tx() as conn:
         summary["cleared"] = match_repo.delete_non_active(conn)
@@ -95,71 +133,162 @@ def run_matching(operator: str = None) -> dict:
         inv_rows = {r["id"]: r for r in invoices}
         inv_dtos = {r["id"]: _inv_dto(r) for r in invoices}
         available: set = set(inv_dtos.keys())     # 本轮尚未被占用的发票
-        has_candidate: set = set()                # 有过 >=0.7 候选/冲突的发票
+        has_candidate: set = set()                # 已产过候选（含低置信度兜底）的发票
+        reb_map = {r["id"]: r for r in reimburses}
 
+        done: set = set()          # 已在前序轮次完成分配的报销单
+
+        # ================================================================
+        # 第一轮：高置信度直配
+        #   双方都有发票号且一致 + 金额一致 + 未被安全锁封顶 -> MATCHED
+        #   注：无号场景必然触发安全锁封顶 0.94，不可能进入本轮
+        # ================================================================
         for reb_row in reimburses:
             summary["evaluated_reimburses"] += 1
             reb = _reb_dto(reb_row)
-
-            # ---- 单发票候选：取最高分；总分相同时优先发票号相似度更高（错位更少）的 ----
-            best_id, best_ps = None, None
-            for inv_id in list(available):
-                ps = _engine.score_pair(inv_dtos[inv_id], reb, company_tax_nos)
-                meaningful = ps.score >= settings.suspicious_threshold or (
-                    ps.conflict_fields and "amount" in ps.conflict_fields)
-                if meaningful and (best_ps is None or ps.score > best_ps.score
-                                   or (ps.score == best_ps.score and ps.no_ratio > best_ps.no_ratio)):
-                    best_id, best_ps = inv_id, ps
-
-            notes: List[str] = []
-            if best_id is not None:
-                has_candidate.add(best_id)
-                status = _engine.decide_status(best_ps)
-                if status == "SUSPICIOUS":
-                    # 需求2：报销单填写的发票号在发票库中找不到精确对应时，
-                    # 记录状态统一为 UNMATCHED，不再生成 SUSPICIOUS
-                    status = "UNMATCHED"
-                mid = _persist_pair(conn, best_id, reb_row["id"], best_ps, status, best_ps.match_type)
-                if status == "MATCHED":
-                    change_invoice_status(conn, best_id, "MATCHED",
-                                          f"自动匹配（score={best_ps.score}, match#{mid}）", operator)
-                    available.discard(best_id)
-                    summary["auto_matched"] += 1
-                else:
-                    # 未自动通过：把双方同类型字段的不一致项写进报销单备注
-                    notes = list(best_ps.field_notes)
-                    if status == "CONFLICT":
-                        summary["conflict"] += 1
-                    else:
-                        summary["pending"] += 1    # 待人工处理的 UNMATCHED（有候选但未自动通过）
-                _write_note(conn, reb_row, notes)
+            reb_no = (reb.invoice_no or "").strip()
+            if not reb_no:
+                continue                      # 无号：安全锁封顶，交第三轮人工确认
+            best = None
+            for inv_id in sorted(available):
+                inv = inv_dtos[inv_id]
+                if (inv.invoice_no or "").strip() != reb_no:
+                    continue
+                if inv.total_amount is None or reb.amount is None:
+                    continue
+                if abs(inv.total_amount - reb.amount) > settings.amount_tolerance:
+                    continue
+                ps = _engine.score_pair(inv, reb, company_tax_nos)
+                if ps.is_rejected or ps.capped:
+                    continue                  # 淘汰或安全锁未通过 -> 留待人工
+                best = (inv_id, ps)
+                break
+            if best is None:
                 continue
+            inv_id, ps = best
+            mid = _persist_pair(conn, inv_id, reb_row["id"], ps, "MATCHED", ps.match_type)
+            change_invoice_status(conn, inv_id, "MATCHED",
+                                  f"第一轮高置信直配（score={ps.score}, match#{mid}）", operator)
+            available.discard(inv_id)
+            done.add(reb_row["id"])
+            summary["auto_matched"] += 1
+            if _detect_conflict(conn, reb_row["id"]):
+                summary["category_conflict"] += 1
+            _write_note(conn, reb_row, [])
 
-            # ---- 无单票候选：尝试汇总匹配（多对一）----
-            pool = [inv_dtos[i] for i in available]
+        # ================================================================
+        # 第二轮：多对一组合凑数
+        #   仅对第一轮未匹配的报销单；2~5 张发票合计 == 报销金额，且发票在期间内
+        #   固定得分 0.90 -> SUSPICIOUS（软锁定，交人工确认）
+        # ================================================================
+        for reb_row in reimburses:
+            if reb_row["id"] in done:
+                continue
+            reb = _reb_dto(reb_row)
+            pool = [inv_dtos[i] for i in sorted(available)]
             combo = _engine.find_many_to_one(pool, reb)
-            if combo:
-                # 按对象身份匹配：InvoiceDTO 是值相等的 dataclass，用 `in` 会把
-                # 字段值完全相同的另一张发票也误选进来（导致重复计入汇总）
-                ids = [i for i in available if any(inv_dtos[i] is d for d in combo)]
-                for inv_id in ids:
-                    ps = PairScore(score=0.9, match_type=T_MANY_TO_ONE,
-                                   diff_fields=[f"汇总匹配: {len(combo)} 张发票合计 = 报销单金额"])
-                    mid = _persist_pair(conn, inv_id, None, ps, "UNMATCHED", T_MANY_TO_ONE)
-                    match_repo.insert_pair(conn, mid, inv_id, reb_row["id"])
-                    available.discard(inv_id)
-                    has_candidate.add(inv_id)
-                    summary["many_to_one"] += 1
+            if not combo:
+                continue
+            # 按对象身份匹配：InvoiceDTO 是值相等的 dataclass，用 `in` 会把
+            # 字段值完全相同的另一张发票也误选进来（导致重复计入汇总）
+            ids = [i for i in sorted(available) if any(inv_dtos[i] is d for d in combo)]
+            if not ids:
+                continue
+            msg = (f"汇总匹配：{len(combo)} 张发票合计等于报销单金额 {reb.amount}，"
+                   f"请人工确认归属")
+            for inv_id in ids:
+                ps = PairScore(score=0.90, match_type=T_MANY_TO_ONE,
+                               diff_fields=[f"汇总匹配: {len(combo)} 张发票合计 = 报销单金额"],
+                               field_notes=[msg], capped=True, cap_reason="组合匹配需人工确认")
+                mid = _persist_pair(conn, inv_id, None, ps, "SUSPICIOUS", T_MANY_TO_ONE)
+                match_repo.insert_pair(conn, mid, inv_id, reb_row["id"])
+                available.discard(inv_id)
+                has_candidate.add(inv_id)
+                summary["many_to_one"] += 1
+            done.add(reb_row["id"])
+            summary["pending"] += 1
+            _write_note(conn, reb_row, [msg])
+
+        # ================================================================
+        # 第三轮：模糊特征兜底
+        #   收录条件（任一满足即可）：
+        #   a) 总分 >= 0.70；
+        #   b) 疑似发票号填错（号不一致但金额一致且日期相近，裁决2）；
+        #   c) 低置信度兜底（无号 + 金额误差 <= 1.00 元，裁决4）。
+        #   仅号码冲突且不满足「疑似填错」（is_rejected）的候选才淘汰。
+        # ================================================================
+        for reb_row in reimburses:
+            if reb_row["id"] in done:
+                continue
+            reb = _reb_dto(reb_row)
+            candidates: List[tuple] = []
+            for inv_id in sorted(available):
+                ps = _engine.score_pair(inv_dtos[inv_id], reb, company_tax_nos)
+                if ps.is_rejected:
+                    continue                  # 号码冲突且无金额/日期佐证 -> 淘汰
+                if (ps.score < settings.suspicious_threshold
+                        and not ps.suspected_no_error
+                        and not ps.is_low_confidence):
+                    continue                  # 低于门槛且无兜底通道 -> 不推前端
+                candidates.append((inv_id, ps))
+
+            if not candidates:
+                if reb.invoice_no:
+                    _write_note(conn, reb_row, [
+                        f"未找到可比对的发票（发票号 {reb.invoice_no} 无可用发票，"
+                        f"可能不存在或已被其他报销单占用）"])
+                else:
+                    _write_note(conn, reb_row, ["未找到可比对的发票（报销单未填发票号，且金额无匹配）"])
                 continue
 
-            # ---- 连候选发票都没有：说明没有可比对的对象 ----
-            if reb.invoice_no:
-                _write_note(conn, reb_row, [
-                    f"未找到可比对的发票（发票号 {reb.invoice_no} 无可用发票，"
-                    f"可能不存在或已被其他报销单占用）"
-                ])
-            else:
-                _write_note(conn, reb_row, ["未找到可比对的发票（报销单未填发票号，且金额无匹配）"])
+            # 排序仅用于展示顺序：金额误差小的靠前，其次发票 ID 升序（裁决3：不选定首选）
+            candidates.sort(key=lambda t: (t[1].amount_error, t[0]))
+            top_ps = candidates[0][1]
+            # 平局 = 同分（全部候选都落库展示，不再挑首选）
+            tied = [t for t in candidates if t[1].score == top_ps.score]
+            tie_note = (_ambiguity_note([t[0] for t in tied], inv_rows, reb_row)
+                        if len(tied) > 1 else "")
+
+            for inv_id, ps in candidates:
+                notes = list(ps.field_notes)
+                if ps.suspected_no_error:
+                    notes.append("⚠️ 疑似发票号填错，请核实并修正报销单发票号")
+                if ps.is_low_confidence:
+                    notes.append(
+                        f"[低置信度推荐] 无发票号且金额误差 {ps.amount_error} 元，请重点核查金额")
+                if tie_note:
+                    notes.append(tie_note)
+                if ps.capped:
+                    notes.append(f"[ - ] {ps.cap_reason}（安全锁：不可自动通过，请人工确认）")
+                ps.field_notes = notes
+                _persist_pair(conn, inv_id, reb_row["id"], ps, "SUSPICIOUS", ps.match_type)
+                has_candidate.add(inv_id)
+            summary["pending"] += 1
+            _write_note(conn, reb_row, list(top_ps.field_notes) if not tie_note else [tie_note])
+
+        # ---- 软占用检测：同一发票被多张报销单同时列为候选 -> 记录高亮警告（模块一.2）----
+        soft_rows = conn.execute(
+            "SELECT id, invoice_id, reimburse_id FROM match_result "
+            "WHERE status IN ('UNMATCHED','SUSPICIOUS') AND reimburse_id IS NOT NULL").fetchall()
+        by_inv: Dict[int, set] = {}
+        row_ids_by_inv: Dict[int, List[int]] = {}
+        for r in soft_rows:
+            by_inv.setdefault(r["invoice_id"], set()).add(r["reimburse_id"])
+            row_ids_by_inv.setdefault(r["invoice_id"], []).append(r["id"])
+        for inv_id, rids in by_inv.items():
+            if len(rids) <= 1:
+                continue
+            inv_no = (inv_rows.get(inv_id) or {}).get("invoice_no") or f"#{inv_id}"
+            reb_nos = "、".join(
+                (reb_map.get(rid) or {}).get("reimburse_no") or f"#{rid}"
+                for rid in sorted(rids))
+            warn = (f"⚠️ 该发票（{inv_no}）同时被多张报销单作为候选：{reb_nos}，请核实")
+            ids = row_ids_by_inv[inv_id]
+            marks = ", ".join("?" for _ in ids)
+            conn.execute(
+                f"UPDATE match_result SET message = message || '；' || ? "
+                f"WHERE id IN ({marks})", [warn] + ids)
+
         # ---- 无任何候选的发票 -> UNMATCHED ----
         for inv_id in sorted(available):
             if inv_id in has_candidate:
@@ -228,15 +357,14 @@ def confirm(match_id: int, operator: str = None, note: str = "") -> dict:
         if reb_id:
             change_invoice_status(conn, m["invoice_id"], "MATCHED",
                                   f"人工确认匹配 (match#{match_id})", operator)
+            # 匹配生效瞬间校验双方分类（模块四）
+            _detect_conflict(conn, reb_id)
             # 已生效匹配：清掉报销单备注里的不匹配说明
             reb_row = reimburse_repo.get(conn, reb_id)
             if reb_row:
                 _write_note(conn, reb_row, [])
-        # 同发票其余待确认候选自动拒绝
-        for other in match_repo.list(conn, statuses=["SUSPICIOUS", "CONFLICT"], limit=10000):
-            if other["invoice_id"] == m["invoice_id"] and other["id"] != match_id:
-                match_repo.update_status(conn, other["id"], "REJECTED", operator)
-                _append_message(conn, other["id"], "同发票其他候选已确认，本记录自动拒绝")
+        # 人工终裁：踢出同发票其他候选 + 同报销单未选中的候选
+        _finalize_binding(conn, match_id, m["invoice_id"], reb_id, operator)
         return {"ok": True, "message": "已确认匹配"}
 
 
@@ -317,6 +445,7 @@ def auto_correct(match_id: int, operator: str = None) -> dict:
                 (ps.score, f"一键更正：{trail}，重新精确匹配成功", match_id))
             change_invoice_status(conn, m["invoice_id"], "MATCHED",
                                   f"一键更正后精确匹配 (match#{match_id})", operator)
+            _detect_conflict(conn, m["reimburse_id"])
             _write_note(conn, reb_row, [])
             return {"ok": True, "message": f"一键更正成功：{trail}，重新精确匹配通过"}
 
@@ -354,22 +483,22 @@ def manual_match(invoice_id: int, reimburse_id: int, operator: str = None) -> di
         })
         change_invoice_status(conn, invoice_id, "MATCHED",
                               f"人工指定匹配 (match#{mid})", operator)
+        # 匹配生效瞬间校验双方分类（模块四）
+        _detect_conflict(conn, reimburse_id)
         # 已生效匹配：清掉报销单备注里的不匹配说明
         reb_row = reimburse_repo.get(conn, reimburse_id)
         if reb_row:
             _write_note(conn, reb_row, [])
-        for other in match_repo.list(conn, statuses=["SUSPICIOUS", "CONFLICT"], limit=10000):
-            if other["invoice_id"] == invoice_id:
-                match_repo.update_status(conn, other["id"], "REJECTED", operator)
-                _append_message(conn, other["id"], "同发票已人工指定匹配，本记录自动拒绝")
-        return {"ok": True, "message": "人工匹配成功"}
+        # 人工终裁：踢出同发票其他候选 + 同报销单未选中的候选
+        kicked = _finalize_binding(conn, mid, invoice_id, reimburse_id, operator)
+        return {"ok": True,
+                "message": "人工匹配成功" + (f"（已踢出 {kicked} 条其他候选）" if kicked else "")}
 
 
 def unmatch(match_id: int, operator: str = None, reason: str = "") -> dict:
     """解除生效匹配（人工操作，记录原因）。
 
-    注意：设计 §3.2 中 MATCHED 为终态，但错误匹配必须可撤销，
-    此处按操作员动作处理：匹配 -> REJECTED，发票 MATCHED -> NORMAL（均留痕）。
+    解除后两边各自保留解除前的分类，恢复完全独立的孤岛状态（模块三.3）。
     """
     operator = operator or settings.default_operator
     with db.tx() as conn:
@@ -378,6 +507,24 @@ def unmatch(match_id: int, operator: str = None, reason: str = "") -> dict:
             return {"ok": False, "message": f"匹配记录 #{match_id} 不存在"}
         if m["status"] not in ("MATCHED", "CONFIRMED"):
             return {"ok": False, "message": f"仅生效匹配可解除（当前: {m['status']}）"}
+
+        reb_id = m["reimburse_id"]
+        if reb_id is None:
+            pairs = match_repo.pairs_of(conn, [match_id]).get(match_id, [])
+            reb_id = pairs[0]["reimburse_id"] if pairs else None
+
+        # 解除前快照双方分类（用于审计留痕，说明两边各自保留）
+        from app.service import audit_service, category_service
+        detail = "解除后双方分类各自保留"
+        if reb_id:
+            reb = reimburse_repo.get(conn, reb_id) or {}
+            reb_cat, _ = category_service.reimburse_explicit(conn, reb)
+            inv_cat = (category_service.invoice_confirmed_map(conn, [m["invoice_id"]])
+                       .get(m["invoice_id"]) or "")
+            detail = ("解除后双方分类各自保留：发票「%s」/ 报销单「%s」"
+                      % (inv_cat or "—", reb_cat or "—"))
+            category_service.clear_conflict(conn, reb_id)
+
         match_repo.update_status(conn, match_id, "REJECTED", operator)
         _append_message(conn, match_id, f"解除匹配: {reason or '无备注'}")
         try:
@@ -385,7 +532,11 @@ def unmatch(match_id: int, operator: str = None, reason: str = "") -> dict:
                                   f"解除匹配 (match#{match_id}): {reason or '无备注'}", operator)
         except Exception as e:
             logger.warning("解除匹配时发票状态回转失败: %s", e)
-        return {"ok": True, "message": "匹配已解除，发票回到 NORMAL"}
+        audit_service.log(conn, "unmatch", "match", match_id,
+                          "#%s（发票 #%s）" % (match_id, m["invoice_id"]),
+                          "已匹配", "已解除", operator,
+                          (reason or "无备注") + "；" + detail)
+        return {"ok": True, "message": "匹配已解除，发票回到 NORMAL；双方分类各自保留"}
 
 
 def _append_message(conn, match_id: int, text: str) -> None:
@@ -393,6 +544,34 @@ def _append_message(conn, match_id: int, text: str) -> None:
     msg = (m["message"] + " | " + text) if m.get("message") else text
     conn.execute("UPDATE match_result SET message = ?, updated_at = datetime('now','localtime') WHERE id = ?",
                  (msg, match_id))
+
+
+def _finalize_binding(conn, match_id: int, invoice_id: int,
+                      reb_id: Optional[int], operator: str) -> int:
+    """人工终裁收尾（模块一.3）：发票正式绑定后——
+    1. 踢出该发票在其他报销单候选池中的候选记录；
+    2. 淘汰该报销单未被选中的其他候选发票。
+    被踢出的候选记录置为 REJECTED 并留痕，同时写入审计日志。
+    """
+    kicked: List[int] = []
+    for other in match_repo.list(conn, statuses=["UNMATCHED", "SUSPICIOUS", "CONFLICT"],
+                                 limit=10000):
+        if other["id"] == match_id:
+            continue
+        same_invoice = other["invoice_id"] == invoice_id
+        same_reb = bool(reb_id) and other["reimburse_id"] == reb_id \
+            and other["invoice_id"] != invoice_id
+        if same_invoice or same_reb:
+            match_repo.update_status(conn, other["id"], "REJECTED", operator)
+            _append_message(conn, other["id"], "候选流失：归属已确定，本候选自动淘汰")
+            kicked.append(other["id"])
+    if kicked:
+        from app.service import audit_service
+        audit_service.log(conn, "match_arbitrate", "match", match_id,
+                          "发票 #%s" % invoice_id, "候选池 %d 条" % len(kicked),
+                          "正式绑定", operator,
+                          "人工终裁踢出候选记录：%s" % kicked)
+    return len(kicked)
 
 
 # ---------------------------------------------------------------- 查询
@@ -409,6 +588,15 @@ def list_matches(statuses: List[str] = None) -> List[dict]:
         for r in rows:
             r["pair_reimburses"] = [reb_names.get(p["reimburse_id"]) for p in pairs.get(r["id"], [])]
             r["pair_reimburses"] = [x for x in r["pair_reimburses"] if x]
+        # 软占用标记：同一发票被多张报销单同时列为候选（待人工终裁，模块一.2）
+        pending_rebs: Dict[int, set] = {}
+        for r in rows:
+            if r["status"] in ("UNMATCHED", "SUSPICIOUS") and r.get("reimburse_id"):
+                pending_rebs.setdefault(r["invoice_id"], set()).add(r["reimburse_id"])
+        soft = {i for i, s in pending_rebs.items() if len(s) > 1}
+        for r in rows:
+            r["soft_locked"] = (r["status"] in ("UNMATCHED", "SUSPICIOUS")
+                                and r["invoice_id"] in soft)
         return rows
 
 

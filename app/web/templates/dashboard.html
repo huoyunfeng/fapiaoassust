@@ -37,6 +37,15 @@
 .expense-row { cursor:pointer; padding:6px 8px; margin:0 -8px; border-radius:8px; transition:background .15s; }
 .expense-row:hover { background:#f1f5f9; }
 .expense-hint { text-align:right; font-size:11px; color:#9ca3af; margin-top:-6px; }
+/* 含待确认（系统推测）数据提示：金额照常计入图表，但提醒财务去核实 */
+.expense-pending-tip { display:none; align-items:center; gap:6px; background:#fef3c7; border:1px solid #fcd34d;
+  color:#92400e; border-radius:8px; padding:7px 12px; font-size:12px; margin:-4px 0 14px; }
+.expense-pending-tip.show { display:flex; }
+.expense-pending-tip a { color:#92400e; font-weight:700; text-decoration:none; }
+.expense-pending-tip a:hover { text-decoration:underline; }
+.cat-pending-mark { display:inline-flex; align-items:center; justify-content:center; width:14px; height:14px;
+  border-radius:50%; background:#fef3c7; color:#92400e; border:1px solid #fcd34d; font-size:10px;
+  font-weight:700; cursor:help; flex-shrink:0; }
 </style>
 
 <h1 style="font-size:20px;margin-bottom:18px;">仪表盘</h1>
@@ -71,6 +80,7 @@
       </div>
     </div>
   </div>
+  <div class="expense-pending-tip" id="expensePendingTip"></div>
   <div class="expense-body" id="expenseBody">
     <div class="expense-chart-wrap">
       <div class="expense-loading" id="expenseLoading"><div class="spinner"></div></div>
@@ -254,6 +264,8 @@ function renderExpenseBreakdown(data, fallbackLabel){
     empty.style.display = 'block';
     if(expenseChart){ expenseChart.dispose(); expenseChart = null; }
     listEl.innerHTML = '';
+    const tip0 = document.getElementById('expensePendingTip');
+    if(tip0){ tip0.classList.remove('show'); tip0.innerHTML = ''; }
     return;
   }
   body.style.display = 'flex';
@@ -284,7 +296,12 @@ function renderExpenseBreakdown(data, fallbackLabel){
   const option = {
     tooltip: {
       trigger: 'item',
-      formatter: p => `${p.name}<br/>金额：${fmtMoney(p.value)}<br/>占比：${finalPcts[p.dataIndex]}%<br/>笔数：${items[p.dataIndex].count}`
+      formatter: p => {
+        const it = items[p.dataIndex] || {};
+        let s = `${p.name}<br/>金额：${fmtMoney(p.value)}<br/>占比：${finalPcts[p.dataIndex]}%<br/>笔数：${it.count}`;
+        if(it.has_pending) s += `<br/><span style="color:#92400e;">含待确认：${fmtMoney(it.pending_amount)}（${it.pending_count} 笔）</span>`;
+        return s;
+      }
     },
     series: [{
       type: 'pie',
@@ -308,13 +325,41 @@ function renderExpenseBreakdown(data, fallbackLabel){
         : { scale: true, scaleSize: 8, label: { show: false } },
     }]
   };
-  if(!expenseChart){
-    expenseChart = echarts.init(chartEl);
-    // 环形图点击下钻：按分类名跳转发票列表
-    expenseChart.on('click', p => { if(p && p.name) expenseDrill(p.name); });
-    window.addEventListener('resize', ()=> expenseChart && expenseChart.resize());
+  // ECharts CDN 加载失败（网络抖动）时跳过图表，保证排行榜/提示条照常渲染
+  if(typeof echarts === 'undefined'){
+    if(chartEl) chartEl.style.display = 'none';
+  }else{
+    if(chartEl) chartEl.style.display = '';
+    try{
+      if(!expenseChart){
+        expenseChart = echarts.init(chartEl);
+        // 环形图点击下钻：按分类名跳转发票列表
+        expenseChart.on('click', p => { if(p && p.name) expenseDrill(p.name); });
+        window.addEventListener('resize', ()=> expenseChart && expenseChart.resize());
+      }
+      expenseChart.setOption(option, true);
+    }catch(e){
+      console.error('expense chart render failed', e);
+      if(chartEl) chartEl.style.display = 'none';
+    }
   }
-  expenseChart.setOption(option, true);
+
+  // ---- 含待确认 / 分类差异数据提醒：金额照常计入统计，但需财务核实 ----
+  const tip = document.getElementById('expensePendingTip');
+  if(tip){
+    let html = '';
+    if(data.has_pending){
+      html += '<span>⚠ 含待确认推测数据 ' + fmtMoney(data.pending_amount)
+        + '（' + data.pending_count + ' 笔），金额已计入下方统计。</span>'
+        + '<a href="/invoices" title="去发票列表确认分类">去确认 ›</a>';
+    }
+    if(data.has_conflict){
+      html += '<span style="color:#b45309;">⚠ 存在 ' + data.conflict_count + ' 笔分类差异数据，已按发票明细分类统计。</span>'
+        + '<a href="/matches?tab=conflict" style="color:#b45309;" title="去匹配中心处理分类差异">去处理 ›</a>';
+    }
+    tip.classList.toggle('show', !!(data.has_pending || data.has_conflict));
+    tip.innerHTML = html;
+  }
 
   // ---- 右侧排行榜（点击行同样下钻） ----
   listEl.innerHTML = items.map((it, idx) => {
@@ -322,12 +367,22 @@ function renderExpenseBreakdown(data, fallbackLabel){
     const pct = finalPcts[idx];
     // 进度条宽度：单分类硬 cap 80%；多分类按实际百分比（max 100）
     const barWidth = isSingle ? 80 : Math.min(pct, 100);
+    const pendingMark = it.has_pending
+      ? '<span class="cat-pending-mark" title="含待确认推测数据：' + fmtMoney(it.pending_amount)
+        + '（' + it.pending_count + ' 笔），点击处理后统计更准确">?</span>'
+      : '';
+    const conflictMark = it.has_conflict
+      ? '<span class="cat-pending-mark" style="background:#fef3c7;color:#92400e;border-color:#fcd34d;" title="存在分类差异：'
+        + it.conflict_count + ' 笔，已按发票明细分类统计；请到匹配中心处理">⚠</span>'
+      : '';
     return `
       <div class="expense-row" onclick="expenseDrill('${it.name}')" title="点击查看「${it.name}」发票明细">
         <div class="expense-row-top">
           <div class="expense-row-title">
             <span class="expense-dot" style="background:${color};"></span>
             <span>${it.name}</span>
+            ${pendingMark}
+            ${conflictMark}
             <span style="color:#9ca3af;font-size:12px;">· ${it.count} 笔</span>
           </div>
           <div class="expense-row-right">

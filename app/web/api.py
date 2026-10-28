@@ -7,8 +7,9 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, Response
 from starlette.background import BackgroundTask
 
-from app.service import (backup_service, invoice_service, match_service,
-                         reimburse_service, report_service)
+from app.service import (audit_service, backup_service, category_service,
+                         invoice_service, match_service, reimburse_service,
+                         report_service)
 from app.service.mapping_service import mapping_service
 from app.service.template_service import template_service
 from app.infra.logger import get_logger
@@ -75,6 +76,27 @@ async def update_item_summary(invoice_id: int, item_summary: str = Form(""),
                               operator: str = Form("admin")):
     """双击编辑"报销内容"专用，任意状态都允许。"""
     return _j(invoice_service.update_item_summary(invoice_id, item_summary, operator))
+
+
+@api.post("/invoices/{invoice_id}/category")
+async def set_invoice_category(invoice_id: int, category: str = Form(""),
+                               operator: str = Form("admin")):
+    """确认/修正发票的费用分类（人工决策最高优先，并学习纠正记忆）。"""
+    return _j(invoice_service.set_invoice_category(invoice_id, category, operator))
+
+
+@api.get("/invoices/{invoice_id}/similar")
+def similar_unmatched_invoices(invoice_id: int):
+    """摘要相似且同为未匹配的发票（批量归类确认面板数据）。"""
+    return _j(invoice_service.similar_unmatched(invoice_id))
+
+
+@api.post("/invoices/category/batch")
+async def batch_invoice_category(ids: str = Form(""), category: str = Form(""),
+                                 operator: str = Form("admin")):
+    """批量修改发票分类：只作用于未匹配发票（模块二）。"""
+    invoice_ids = [int(x) for x in ids.split(",") if x.strip().isdigit()]
+    return _j(invoice_service.set_invoices_category(invoice_ids, category, operator))
 
 
 @api.post("/invoices/{invoice_id}/delete")
@@ -238,6 +260,18 @@ async def manual_reimburse(
     }, operator))
 
 
+@api.post("/reimburses/{reimburse_id}/category")
+async def set_reimburse_category(reimburse_id: int, category: str = Form(""),
+                                 operator: str = Form("admin"),
+                                 mode: str = Form("sync")):
+    """报销单费用类型。
+
+    未匹配：只改报销单自身分类，绝不影响发票（模块二）；
+    已匹配：mode='self' 仅改报销单 / mode='sync' 同步全部关联发票（模块三）。
+    """
+    return _j(invoice_service.set_reimburse_category(reimburse_id, category, operator, mode))
+
+
 @api.post("/reimburses/{reimburse_id}/delete")
 async def delete_reimburse(reimburse_id: int, operator: str = Form("admin")):
     return _j(reimburse_service.delete_reimburse(reimburse_id, operator))
@@ -351,6 +385,15 @@ def invoice_file_api(invoice_id: int):
                         filename=p.name, content_disposition_type="attachment")
 
 
+@api.get("/invoices/{invoice_id}/preview.png")
+def invoice_pdf_preview_api(invoice_id: int, page: int = 0):
+    """PDF 原件逐页渲染为 PNG 图片（抽屉预览用，与图片发票共用同一预览组件）。"""
+    png = invoice_service.render_pdf_page(invoice_id, page)
+    if png is None:
+        return Response("PDF 渲染失败", status_code=404)
+    return Response(png, media_type="image/png")
+
+
 # ---------------------------------------------------------------- 仪表盘
 @api.get("/dashboard/expense-breakdown")
 def dashboard_expense_breakdown(date_from: str = "", date_to: str = ""):
@@ -360,6 +403,58 @@ def dashboard_expense_breakdown(date_from: str = "", date_to: str = ""):
         top_n=5,
     )
     return _j(data)
+
+
+# ---------------------------------------------------------------- 分类字典（模块一）
+@api.get("/categories")
+def list_categories(include_disabled: int = 1):
+    return _j(category_service.list_categories(bool(include_disabled)))
+
+
+@api.post("/categories")
+async def add_category(name: str = Form(...), merge_into: str = Form(""),
+                       force: int = Form(0), operator: str = Form("admin")):
+    """新增自定义分类；相似词先返回 need_confirm 提示合并。"""
+    return _j(category_service.add_category(name, merge_into, bool(force), operator))
+
+
+@api.post("/categories/{category_id}/toggle")
+async def toggle_category(category_id: int, operator: str = Form("admin")):
+    """启用/禁用分类（分类只能禁用，不能物理删除；系统预设分类锁定）。"""
+    return _j(category_service.toggle_category(category_id, operator))
+
+
+@api.post("/categories/{category_id}/rename")
+async def rename_category(category_id: int, name: str = Form(...),
+                          force: int = Form(0), operator: str = Form("admin")):
+    """重命名自定义分类（仅限未被历史数据使用；系统预设分类锁定）。"""
+    return _j(category_service.rename_category(category_id, name, bool(force), operator))
+
+
+@api.post("/categories/{category_id}/merge")
+async def merge_category(category_id: int, target_id: int = Form(...),
+                         operator: str = Form("admin")):
+    """合并自定义分类：历史数据改为目标分类，源分类自动禁用（系统预设分类锁定）。"""
+    return _j(category_service.merge_category(category_id, target_id, operator))
+
+
+# ---------------------------------------------------------------- 分类冲突（模块四）
+@api.get("/conflicts")
+def list_conflicts(include_resolved: int = 1):
+    return _j(category_service.list_conflicts(bool(include_resolved)))
+
+
+@api.post("/conflicts/{reimburse_id}/resolve")
+async def resolve_conflict(reimburse_id: int, mode: str = Form(...),
+                           operator: str = Form("admin")):
+    """冲突仲裁：reimburse=以报销单为准 / invoice=以发票为准 / keep=保留差异。"""
+    return _j(category_service.resolve_conflict(reimburse_id, mode, operator))
+
+
+# ---------------------------------------------------------------- 审计日志（模块六）
+@api.get("/audit")
+def audit_list(limit: int = 100, target_type: str = ""):
+    return _j(audit_service.list_recent(limit, target_type or None))
 
 
 # ---------------------------------------------------------------- 设置

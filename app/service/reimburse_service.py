@@ -16,7 +16,10 @@ from app.domain.normalize import clean, parse_date, to_decimal
 from app.infra.excel import read_reimburses
 from app.infra.logger import get_logger
 from app.repository import db
-from app.repository.repos import (match_repo, reimburse_repo)
+from app.repository.repos import (category_dict_repo, conflict_repo, match_repo,
+                                  reimburse_category_repo, reimburse_repo)
+from app.domain.categorize import (STATUS_CONFIRMED, STATUS_PENDING,
+                                   normalize_category)
 from app.service.mapping_service import mapping_service
 from app.service.template_service import template_service
 
@@ -276,12 +279,68 @@ def delete_batch(batch_id: str, operator: str = None) -> dict:
 
 def list_reimburses(batch_id: str = None, keyword: str = None,
                     template_id: int = None) -> List[dict]:
+    """报销单列表：分类 = 报销单自身分类（与发票侧隔离），已匹配时附发票侧分类与冲突。
+
+    未匹配：只展示报销单自身分类（reimburse_category 人工值 > 导入的费用类型），可点击修改，
+            绝不会影响任何发票（模块二「两座孤岛」）。
+    已匹配：报销单侧分类同样来自自身字段；发票侧分类单独附上，供页面提示与仲裁（模块三/四）。
+    """
+    from app.service import invoice_service   # 惰性导入，避免服务层循环依赖
+
     with db.read() as conn:
         rows = reimburse_repo.list(conn, batch_id=batch_id, keyword=keyword)
         active_ids = match_repo.active_reimburse_ids(conn)
+        invoices = match_repo.matched_invoice_ids(conn, [r["id"] for r in rows])
+        all_ids = sorted({iid for ids in invoices.values() for iid in ids})
+        decisions = invoice_service.resolve_categories(conn, all_ids)
+        own_map = reimburse_category_repo.decisions(conn)
+        conflicts = conflict_repo.all(conn)
+        dict_names = category_dict_repo.names(conn, enabled_only=False)
     for r in rows:
         r["matched"] = r["id"] in active_ids
+        _attach_category(
+            r, invoices.get(r["id"]) or [], decisions,
+            (own_map.get(r["id"]) or {}).get("category") or "",
+            conflicts.get(r["id"]), dict_names, r["matched"])
     return rows
+
+
+def _attach_category(row: dict, invoice_ids: List[int], decisions: dict,
+                     manual_category: str, conflict: Optional[dict],
+                     dict_names: List[str], matched: bool) -> None:
+    """报销单分类载荷：自身分类 + 发票侧分类 + 冲突标记。
+
+    报销单分类是独立存储的（reimburse_category），未匹配时修改它不会触碰发票；
+    已匹配时页面据此提示「仅改报销单 / 同步更新关联发票」。
+    """
+    own_raw = (manual_category or "").strip() or (row.get("expense_type") or "").strip()
+    own = normalize_category(own_raw, dict_names) if own_raw else ""
+    inv_cats = sorted({(decisions.get(iid) or {}).get("category") or ""
+                       for iid in invoice_ids} - {""})
+    status = STATUS_CONFIRMED if own else ""
+    source = "manual" if (manual_category or "").strip() else ("reimburse" if own else "")
+    suggest = ""
+    hint = ""
+    # 已匹配且报销单自身无分类：按模块五口径借用发票侧分类，只作建议并标【待确认】
+    if not own and matched and inv_cats:
+        if len(inv_cats) == 1:
+            own, status, source = inv_cats[0], STATUS_PENDING, "inferred"
+            suggest = inv_cats[0]
+            hint = "报销单未填分类，暂按关联发票分类显示，请确认"
+        else:
+            suggest = "、".join(inv_cats)
+            status = STATUS_PENDING
+            hint = "关联发票分类不一致（%s），请确认报销单分类" % suggest
+    row["category"] = own
+    row["cat_status"] = status
+    row["cat_source"] = source
+    row["cat_suggest"] = suggest
+    row["cat_hint"] = hint
+    row["cat_invoice_id"] = invoice_ids[0] if invoice_ids else None
+    row["cat_matched"] = bool(matched)
+    row["cat_invoice_category"] = ("、".join(inv_cats)) if inv_cats else ""
+    row["cat_conflict"] = bool(conflict and not (conflict.get("resolution") or "").strip())
+    row["cat_conflict_detail"] = (conflict.get("detail") or "") if conflict else ""
 
 
 def list_batches() -> List[dict]:
@@ -289,80 +348,16 @@ def list_batches() -> List[dict]:
         return reimburse_repo.batches(conn)
 
 
+def batch_template_id(batch_id: str) -> Optional[int]:
+    """批次绑定的模板 id（用于表头严格按该批次模板渲染，即使筛选后该批次无行）。"""
+    with db.read() as conn:
+        row = conn.execute(
+            "SELECT template_id FROM reimburse"
+            " WHERE batch_id = ? AND template_id IS NOT NULL LIMIT 1",
+            (batch_id,)).fetchone()
+        return row["template_id"] if row else None
+
+
 def reimburse_count() -> int:
     with db.read() as conn:
         return reimburse_repo.count(conn)
-
-
-def expense_breakdown(date_from: str = None, date_to: str = None, top_n: int = 5) -> dict:
-    """费用构成统计（基于 reimburse 表）。
-
-    返回结构：
-    {
-        "total_amount": float,          # 时间段内总金额（元）
-        "total_count": int,              # 时间段内总笔数
-        "label_when_all": str,           # 中心标签（历史总报销/本月总报销）
-        "items": [                       # 按金额降序，超过 top_n 合并为 "其他"
-            {"name": str, "amount": float, "count": int, "percent": float},
-            ...
-        ]
-    }
-    """
-    with db.read() as conn:
-        rows = reimburse_repo.aggregate_by_expense_type(conn, date_from, date_to)
-
-    total_amount = sum((r["amount"] or 0) for r in rows)
-    total_count = sum((r["count"] or 0) for r in rows)
-
-    top = rows[:top_n]
-    rest = rows[top_n:]
-    items = []
-    for r in top:
-        amt = float(r["amount"] or 0)
-        pct = (amt / total_amount * 100) if total_amount > 0 else 0
-        items.append({
-            "name": r["name"],
-            "amount": round(amt, 2),
-            "count": int(r["count"] or 0),
-            "percent": round(pct, 2),
-        })
-    if rest:
-        other_amt = sum(float(r["amount"] or 0) for r in rest)
-        other_cnt = sum(int(r["count"] or 0) for r in rest)
-        other_pct = (other_amt / total_amount * 100) if total_amount > 0 else 0
-        items.append({
-            "name": "其他",
-            "amount": round(other_amt, 2),
-            "count": other_cnt,
-            "percent": round(other_pct, 2),
-        })
-
-    # 中心标签：按前端 filter 口径推断
-    from datetime import date
-    label_when_all = "历史总报销"
-    if date_from and date_to:
-        today = date.today()
-        # 本月
-        if (date_from == today.replace(day=1).isoformat()
-                and date_to == today.isoformat()):
-            label_when_all = "本月总报销"
-        # 上月
-        else:
-            first_of_month = today.replace(day=1)
-            import datetime as _dt
-            last_month_end = first_of_month - _dt.timedelta(days=1)
-            last_month_start = last_month_end.replace(day=1)
-            if (date_from == last_month_start.isoformat()
-                    and date_to == last_month_end.isoformat()):
-                label_when_all = "上月总报销"
-            # 今年
-            elif (date_from == f"{today.year}-01-01"
-                  and date_to == today.isoformat()):
-                label_when_all = "今年总报销"
-
-    return {
-        "total_amount": round(total_amount, 2),
-        "total_count": total_count,
-        "label_when_all": label_when_all,
-        "items": items,
-    }

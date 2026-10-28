@@ -66,29 +66,90 @@ class InvoiceRepo:
     @staticmethod
     def _filter_sql(status: str = None, keyword: str = None,
                     date_from: str = None, date_to: str = None,
-                    exclude_status: tuple = None) -> tuple:
-        """发票列表筛选条件片段（list/count/position_of 共用，保证口径一致）。"""
+                    exclude_status: tuple = None, alias: str = "") -> tuple:
+        """发票列表筛选条件片段（list/count/position_of 共用，保证口径一致）。
+
+        alias: 表别名前缀（如 "i."），联表查询时避免与 match_result.status 等同名列冲突。
+        """
         sql, params = "", []
+        p = alias
         if status:
-            sql += " AND status = ?"
+            sql += f" AND {p}status = ?"
             params.append(status)
         # 排除指定状态：仪表盘下钻需与统计口径一致（统计不计异常/重复发票）
         if exclude_status:
             marks = ", ".join("?" for _ in exclude_status)
-            sql += f" AND status NOT IN ({marks})"
+            sql += f" AND {p}status NOT IN ({marks})"
             params += list(exclude_status)
         if keyword:
-            sql += " AND (invoice_no LIKE ? OR invoice_code LIKE ? OR buyer_name LIKE ? OR seller_name LIKE ? OR item_summary LIKE ?)"
+            sql += (f" AND ({p}invoice_no LIKE ? OR {p}invoice_code LIKE ?"
+                    f" OR {p}buyer_name LIKE ? OR {p}seller_name LIKE ? OR {p}item_summary LIKE ?)")
             kw = f"%{keyword}%"
             params += [kw, kw, kw, kw, kw]
         # 开票日期范围（仪表盘下钻联动；口径与 aggregate_by_item_summary 一致）
         if date_from:
-            sql += " AND invoice_date IS NOT NULL AND invoice_date >= ?"
+            sql += f" AND {p}invoice_date IS NOT NULL AND {p}invoice_date >= ?"
             params.append(date_from)
         if date_to:
-            sql += " AND invoice_date IS NOT NULL AND invoice_date <= ?"
+            sql += f" AND {p}invoice_date IS NOT NULL AND {p}invoice_date <= ?"
             params.append(date_to)
         return sql, params
+
+    # 费用归类所需的发票 + 报销单 + 人工决策联表（一次查询，避免逐票 N+1）
+    _EXPENSE_SELECT = """
+        SELECT i.id AS id, i.item_summary AS item_summary,
+               i.total_amount AS total_amount, i.invoice_date AS invoice_date,
+               i.status AS status,
+               m.id AS match_id, m.status AS match_status, m.match_type AS match_type,
+               r.id AS reimburse_id, r.reimburse_no AS reimburse_no,
+               r.submitter AS submitter, r.expense_type AS expense_type,
+               r.amount AS reimburse_amount,
+               c.category AS manual_category, c.source AS manual_source,
+               rc.category AS reimburse_manual_category,
+               cf.invoice_category AS conflict_invoice_category,
+               cf.reimburse_category AS conflict_reimburse_category,
+               cf.resolution AS conflict_resolution
+        FROM invoice i
+        LEFT JOIN match_result m
+               ON m.invoice_id = i.id AND m.status IN ('MATCHED','CONFIRMED')
+        LEFT JOIN reimburse r
+               ON r.id = COALESCE(m.reimburse_id,
+                    (SELECT p.reimburse_id FROM match_pair p
+                      WHERE p.match_id = m.id LIMIT 1))
+        LEFT JOIN invoice_category c ON c.invoice_id = i.id
+        LEFT JOIN reimburse_category rc ON rc.reimburse_id = r.id
+        LEFT JOIN category_conflict cf ON cf.reimburse_id = r.id
+        WHERE 1=1
+    """
+
+    def expense_rows(self, conn: sqlite3.Connection, date_from: str = None,
+                     date_to: str = None, status: str = None, keyword: str = None,
+                     ids: List[int] = None, exclude_status: tuple = None,
+                     light: bool = False) -> List[dict]:
+        """费用归类数据源：发票 + 生效匹配的报销单 + 人工分类决策。
+
+        light=True 时只取归类必需的少量列（分类过滤用，10 万条量级省内存）。
+        """
+        f_sql, params = self._filter_sql(status, keyword, date_from, date_to,
+                                         exclude_status, alias="i.")
+        if light:
+            sql = ("SELECT i.id AS id, i.item_summary AS item_summary, "
+                   "i.seller_name AS seller_name, "
+                   "r.expense_type AS expense_type, r.submitter AS submitter, "
+                   "r.id AS reimburse_id, "
+                   "c.category AS manual_category FROM invoice i "
+                   "LEFT JOIN match_result m ON m.invoice_id = i.id AND m.status IN ('MATCHED','CONFIRMED') "
+                   "LEFT JOIN reimburse r ON r.id = COALESCE(m.reimburse_id, "
+                   "(SELECT p.reimburse_id FROM match_pair p WHERE p.match_id = m.id LIMIT 1)) "
+                   "LEFT JOIN invoice_category c ON c.invoice_id = i.id WHERE 1=1" + f_sql)
+        else:
+            sql = self._EXPENSE_SELECT + f_sql
+        if ids:
+            marks = ", ".join("?" for _ in ids)
+            sql += f" AND i.id IN ({marks})"
+            params += list(ids)
+        sql += " ORDER BY i.id ASC"
+        return _rows_to_dicts(conn.execute(sql, params))
 
     def list(self, conn: sqlite3.Connection, status: str = None,
              keyword: str = None, limit: int = 500, offset: int = 0,
@@ -241,11 +302,22 @@ class ReimburseRepo:
         return [self._to_dict(r) for r in conn.execute(sql, params)]
 
     def batches(self, conn: sqlite3.Connection) -> List[dict]:
+        """批次聚合：行数 + 未匹配数（未匹配 = 无生效匹配，口径与列表页 matched 一致）。"""
         return _rows_to_dicts(conn.execute(
-            """SELECT r.batch_id, COUNT(*) AS row_count, MIN(r.created_at) AS created_at,
-                      t.name AS template_name
+            f"""SELECT r.batch_id, COUNT(*) AS row_count, MIN(r.created_at) AS created_at,
+                      t.name AS template_name,
+                      SUM(CASE WHEN ar.reimburse_id IS NULL THEN 1 ELSE 0 END) AS unmatched_count
                FROM reimburse r
                LEFT JOIN reimburse_template t ON t.id = r.template_id
+               LEFT JOIN (
+                   SELECT DISTINCT reimburse_id FROM (
+                       SELECT reimburse_id FROM match_result
+                        WHERE {ACTIVE_SQL} AND reimburse_id IS NOT NULL
+                       UNION
+                       SELECT p.reimburse_id FROM match_pair p
+                           JOIN match_result m ON m.id = p.match_id AND m.{ACTIVE_SQL}
+                   )
+               ) ar ON ar.reimburse_id = r.id
                GROUP BY r.batch_id ORDER BY created_at DESC"""
         ))
 
@@ -399,6 +471,52 @@ class MatchRepo:
                 )"""
         )
         return {r["invoice_id"] for r in rows if r["invoice_id"] is not None}
+
+    def invoice_summaries_for_reimburses(self, conn: sqlite3.Connection,
+                                         reimburse_ids: List[int]) -> Dict[int, str]:
+        """报销单 -> 已匹配发票的报销内容（费用类型为空时用于智能推测）。"""
+        if not reimburse_ids:
+            return {}
+        marks = ", ".join("?" for _ in reimburse_ids)
+        rows = conn.execute(
+            f"""SELECT x.reimburse_id AS rid, i.item_summary AS item_summary
+                FROM (
+                    SELECT reimburse_id, invoice_id FROM match_result
+                     WHERE {ACTIVE_SQL} AND reimburse_id IN ({marks})
+                    UNION
+                    SELECT p.reimburse_id AS reimburse_id, p.invoice_id AS invoice_id
+                      FROM match_pair p JOIN match_result m ON m.id = p.match_id
+                     WHERE m.{ACTIVE_SQL} AND p.reimburse_id IN ({marks})
+                ) x
+                JOIN invoice i ON i.id = x.invoice_id""",
+            list(reimburse_ids) * 2)
+        out: Dict[int, str] = {}
+        for r in rows:
+            out.setdefault(r["rid"], r["item_summary"] or "")
+        return out
+
+    def matched_invoice_ids(self, conn: sqlite3.Connection,
+                            reimburse_ids: List[int]) -> Dict[int, List[int]]:
+        """报销单 -> 已匹配发票 id 列表（费用类型与发票分类联动时使用）。"""
+        if not reimburse_ids:
+            return {}
+        marks = ", ".join("?" for _ in reimburse_ids)
+        rows = conn.execute(
+            f"""SELECT DISTINCT reimburse_id, invoice_id FROM (
+                    SELECT reimburse_id, invoice_id FROM match_result
+                     WHERE {ACTIVE_SQL} AND reimburse_id IN ({marks})
+                    UNION
+                    SELECT p.reimburse_id AS reimburse_id, p.invoice_id AS invoice_id
+                      FROM match_pair p JOIN match_result m ON m.id = p.match_id
+                     WHERE m.{ACTIVE_SQL} AND p.reimburse_id IN ({marks})
+                ) ORDER BY reimburse_id, invoice_id""",
+            list(reimburse_ids) * 2)
+        out: Dict[int, List[int]] = {}
+        for r in rows:
+            if r["reimburse_id"] is None or r["invoice_id"] is None:
+                continue
+            out.setdefault(r["reimburse_id"], []).append(r["invoice_id"])
+        return out
 
     def list(self, conn: sqlite3.Connection, statuses: List[str] = None,
              limit: int = 500) -> List[dict]:
@@ -608,6 +726,225 @@ class AliasRepo:
         return {r["raw_text"]: r["alias"] for r in rows}
 
 
+# =====================================================================
+# 费用分类决策 + 纠正记忆
+# =====================================================================
+class CategoryRepo:
+    """invoice_category（人工决策）与 category_memory（纠正记忆）。"""
+
+    def get(self, conn: sqlite3.Connection, invoice_id: int) -> Optional[dict]:
+        return _row_to_dict(conn.execute(
+            "SELECT * FROM invoice_category WHERE invoice_id = ?", (invoice_id,)).fetchone())
+
+    def decisions(self, conn: sqlite3.Connection, invoice_ids: List[int] = None) -> Dict[int, dict]:
+        """发票 -> 人工分类决策（可按 ids 过滤）。"""
+        sql, params = "SELECT * FROM invoice_category", []
+        if invoice_ids:
+            marks = ", ".join("?" for _ in invoice_ids)
+            sql += f" WHERE invoice_id IN ({marks})"
+            params += list(invoice_ids)
+        return {r["invoice_id"]: _row_to_dict(r) for r in conn.execute(sql, params)}
+
+    def upsert(self, conn: sqlite3.Connection, invoice_id: int, category: str,
+               source: str = "manual") -> None:
+        conn.execute(
+            """INSERT INTO invoice_category (invoice_id, category, source)
+               VALUES (?, ?, ?)
+               ON CONFLICT(invoice_id) DO UPDATE SET category = excluded.category,
+               source = excluded.source, updated_at = datetime('now','localtime')""",
+            (invoice_id, category, source),
+        )
+
+    def delete(self, conn: sqlite3.Connection, invoice_id: int) -> None:
+        conn.execute("DELETE FROM invoice_category WHERE invoice_id = ?", (invoice_id,))
+
+    def memory_all(self, conn: sqlite3.Connection) -> Dict[tuple, dict]:
+        """纠正记忆：{(kind, key) -> {wrong_value, category}}。"""
+        rows = conn.execute(
+            "SELECT kind, key, wrong_value, category FROM category_memory")
+        return {(r["kind"], r["key"]): _row_to_dict(r) for r in rows}
+
+    def memory_upsert(self, conn: sqlite3.Connection, kind: str, key: str,
+                      wrong_value: str, category: str) -> None:
+        conn.execute(
+            """INSERT INTO category_memory (kind, key, wrong_value, category)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(kind, key) DO UPDATE SET wrong_value = excluded.wrong_value,
+               category = excluded.category, updated_at = datetime('now','localtime')""",
+            (kind, key, wrong_value or "", category),
+        )
+
+    def rename_values(self, conn: sqlite3.Connection, old: str, new: str) -> int:
+        """把历史数据里等于 old 的分类统一改为 new（字典「合并」用），返回影响行数。"""
+        n = 0
+        for sql in (
+            "UPDATE invoice_category SET category = ? WHERE category = ?",
+            "UPDATE reimburse_category SET category = ? WHERE category = ?",
+        ):
+            n += conn.execute(sql, (new, old)).rowcount
+        n += conn.execute(
+            "UPDATE category_memory SET category = ? WHERE category = ?", (new, old)).rowcount
+        return n
+
+    def usage_count(self, conn: sqlite3.Connection, name: str) -> int:
+        """分类名被历史数据使用的次数（发票决策 + 报销单决策 + 纠正记忆）。"""
+        n = 0
+        for table in ("invoice_category", "reimburse_category", "category_memory"):
+            row = conn.execute(
+                f"SELECT COUNT(*) AS c FROM {table} WHERE category = ?", (name,)).fetchone()
+            n += int(row["c"] if row else 0)
+        return n
+
+
+class CategoryDictRepo:
+    """费用分类字典：只允许禁用/启用，禁止物理删除。"""
+
+    def list(self, conn: sqlite3.Connection, enabled_only: bool = False) -> List[dict]:
+        sql = "SELECT * FROM category_dict"
+        if enabled_only:
+            sql += " WHERE enabled = 1"
+        sql += " ORDER BY sort_order, id"
+        return _rows_to_dicts(conn.execute(sql))
+
+    def names(self, conn: sqlite3.Connection, enabled_only: bool = True) -> List[str]:
+        sql = "SELECT name FROM category_dict"
+        if enabled_only:
+            sql += " WHERE enabled = 1"
+        sql += " ORDER BY sort_order, id"
+        return [r["name"] for r in conn.execute(sql)]
+
+    def get(self, conn: sqlite3.Connection, cid: int) -> Optional[dict]:
+        return _row_to_dict(conn.execute(
+            "SELECT * FROM category_dict WHERE id = ?", (cid,)).fetchone())
+
+    def get_by_name(self, conn: sqlite3.Connection, name: str) -> Optional[dict]:
+        return _row_to_dict(conn.execute(
+            "SELECT * FROM category_dict WHERE name = ?", (name,)).fetchone())
+
+    def insert(self, conn: sqlite3.Connection, name: str,
+               is_builtin: int = 0, sort_order: int = 0) -> int:
+        cur = conn.execute(
+            "INSERT INTO category_dict (name, is_builtin, sort_order) VALUES (?, ?, ?)",
+            (name, is_builtin, sort_order))
+        return cur.lastrowid
+
+    def set_enabled(self, conn: sqlite3.Connection, cid: int, enabled: bool) -> None:
+        conn.execute(
+            "UPDATE category_dict SET enabled = ?, updated_at = datetime('now','localtime') "
+            "WHERE id = ?", (1 if enabled else 0, cid))
+
+    def rename(self, conn: sqlite3.Connection, cid: int, new_name: str) -> None:
+        conn.execute(
+            "UPDATE category_dict SET name = ?, updated_at = datetime('now','localtime') "
+            "WHERE id = ?", (new_name, cid))
+
+    def max_sort(self, conn: sqlite3.Connection) -> int:
+        row = conn.execute(
+            "SELECT COALESCE(MAX(sort_order), -1) AS m FROM category_dict").fetchone()
+        return int(row["m"])
+
+
+class ReimburseCategoryRepo:
+    """报销单侧分类决策（与发票侧隔离存储）。"""
+
+    def get(self, conn: sqlite3.Connection, reimburse_id: int) -> Optional[dict]:
+        return _row_to_dict(conn.execute(
+            "SELECT * FROM reimburse_category WHERE reimburse_id = ?",
+            (reimburse_id,)).fetchone())
+
+    def decisions(self, conn: sqlite3.Connection,
+                  reimburse_ids: List[int] = None) -> Dict[int, dict]:
+        sql, params = "SELECT * FROM reimburse_category", []
+        if reimburse_ids:
+            marks = ", ".join("?" for _ in reimburse_ids)
+            sql += f" WHERE reimburse_id IN ({marks})"
+            params += list(reimburse_ids)
+        return {r["reimburse_id"]: _row_to_dict(r) for r in conn.execute(sql, params)}
+
+    def upsert(self, conn: sqlite3.Connection, reimburse_id: int, category: str,
+               source: str = "manual") -> None:
+        conn.execute(
+            """INSERT INTO reimburse_category (reimburse_id, category, source)
+               VALUES (?, ?, ?)
+               ON CONFLICT(reimburse_id) DO UPDATE SET category = excluded.category,
+               source = excluded.source, updated_at = datetime('now','localtime')""",
+            (reimburse_id, category, source))
+
+    def delete(self, conn: sqlite3.Connection, reimburse_id: int) -> None:
+        conn.execute("DELETE FROM reimburse_category WHERE reimburse_id = ?",
+                     (reimburse_id,))
+
+
+class ConflictRepo:
+    """已匹配报销单的分类冲突（resolution 为空 = 待处理）。"""
+
+    def get(self, conn: sqlite3.Connection, reimburse_id: int) -> Optional[dict]:
+        return _row_to_dict(conn.execute(
+            "SELECT * FROM category_conflict WHERE reimburse_id = ?",
+            (reimburse_id,)).fetchone())
+
+    def all(self, conn: sqlite3.Connection) -> Dict[int, dict]:
+        rows = conn.execute("SELECT * FROM category_conflict")
+        return {r["reimburse_id"]: _row_to_dict(r) for r in rows}
+
+    def upsert(self, conn: sqlite3.Connection, reimburse_id: int,
+               invoice_category: str, reimburse_category: str,
+               detail: str = "") -> None:
+        conn.execute(
+            """INSERT INTO category_conflict
+                   (reimburse_id, invoice_category, reimburse_category, detail)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(reimburse_id) DO UPDATE SET
+                   invoice_category = excluded.invoice_category,
+                   reimburse_category = excluded.reimburse_category,
+                   detail = excluded.detail,
+                   resolution = '', resolved_at = NULL,
+                   detected_at = datetime('now','localtime')""",
+            (reimburse_id, invoice_category, reimburse_category, detail))
+
+    def set_resolution(self, conn: sqlite3.Connection, reimburse_id: int,
+                       resolution: str) -> None:
+        conn.execute(
+            "UPDATE category_conflict SET resolution = ?, "
+            "resolved_at = datetime('now','localtime') WHERE reimburse_id = ?",
+            (resolution, reimburse_id))
+
+    def delete(self, conn: sqlite3.Connection, reimburse_id: int) -> None:
+        conn.execute("DELETE FROM category_conflict WHERE reimburse_id = ?",
+                     (reimburse_id,))
+
+    def count_unresolved(self, conn: sqlite3.Connection) -> int:
+        row = conn.execute(
+            "SELECT COUNT(*) AS c FROM category_conflict WHERE resolution = ''").fetchone()
+        return int(row["c"])
+
+
+class AuditRepo:
+    """全量审计日志：字典维护、分类修改、批量修改、仲裁、解除匹配。"""
+
+    def log(self, conn: sqlite3.Connection, action: str, target_type: str,
+            target_id: str = "", target_label: str = "", old_value: str = "",
+            new_value: str = "", operator: str = "admin", detail: str = "") -> int:
+        cur = conn.execute(
+            """INSERT INTO audit_log
+                   (action, target_type, target_id, target_label,
+                    old_value, new_value, operator, detail)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (action, target_type, str(target_id), target_label,
+             old_value or "", new_value or "", operator or "admin", detail or ""))
+        return cur.lastrowid
+
+    def list(self, conn: sqlite3.Connection, limit: int = 100,
+             target_type: str = None) -> List[dict]:
+        sql, params = "SELECT * FROM audit_log", []
+        if target_type:
+            sql += " WHERE target_type = ?"
+            params.append(target_type)
+        sql += " ORDER BY id DESC LIMIT ?"
+        params.append(limit)
+        return _rows_to_dicts(conn.execute(sql, params))
+
+
 invoice_repo = InvoiceRepo()
 reimburse_repo = ReimburseRepo()
 match_repo = MatchRepo()
@@ -615,6 +952,11 @@ log_repo = LogRepo()
 rule_repo = RuleRepo()
 company_repo = CompanyRepo()
 alias_repo = AliasRepo()
+category_repo = CategoryRepo()
+category_dict_repo = CategoryDictRepo()
+reimburse_category_repo = ReimburseCategoryRepo()
+conflict_repo = ConflictRepo()
+audit_repo = AuditRepo()
 
 
 # =====================================================================

@@ -7,8 +7,8 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from pathlib import Path
 
-from app.service import (invoice_service, match_service, reimburse_service,
-                         report_service)
+from app.service import (audit_service, category_service, invoice_service,
+                         match_service, reimburse_service, report_service)
 
 pages = APIRouter(tags=["pages"])
 templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
@@ -16,17 +16,17 @@ templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 STATUS_BADGE = {
     "PARSING": "badge-gray", "PARSED": "badge-blue", "NORMAL": "badge-green",
     "ABNORMAL": "badge-red", "DUPLICATE": "badge-orange", "MATCHED": "badge-purple",
-    "PENDING": "badge-gray", "SUSPICIOUS": "badge-red", "CONFLICT": "badge-red",
+    "PENDING": "badge-gray", "SUSPICIOUS": "badge-yellow", "CONFLICT": "badge-red",
     "UNMATCHED": "badge-red", "CONFIRMED": "badge-green", "REJECTED": "badge-gray",
 }
 templates.env.filters["badge"] = lambda s: STATUS_BADGE.get(s, "badge-gray")
-# 需求2：SUSPICIOUS 状态已废弃，存量记录在前端统一按 UNMATCHED 展示
-templates.env.filters["dstatus"] = lambda s: "UNMATCHED" if s == "SUSPICIOUS" else s
+# SUSPICIOUS 为真实状态（模糊候选待人工确认），前端原样展示
+templates.env.filters["dstatus"] = lambda s: s
 # 状态码统一转中文显示（发票状态 + 匹配状态）
 STATUS_CN = {
     "PARSING": "解析中", "PARSED": "已解析", "NORMAL": "未匹配",
     "ABNORMAL": "异常", "DUPLICATE": "重复", "MATCHED": "已匹配",
-    "PENDING": "匹配中", "SUSPICIOUS": "无候选", "CONFLICT": "字段冲突",
+    "PENDING": "匹配中", "SUSPICIOUS": "待人工确认", "CONFLICT": "字段冲突",
     "UNMATCHED": "无候选", "CONFIRMED": "已确认", "REJECTED": "已拒绝",
 }
 templates.env.filters["status_cn"] = lambda s: STATUS_CN.get(s, s)
@@ -114,6 +114,7 @@ def invoices_page(request: Request, status: str = "", q: str = "",
         "request": request, "rows": rows,
         "status": status, "q": q,
         "category": category, "date_from": date_from, "date_to": date_to,
+        "categories": category_service.enabled_names(),
         "counts": invoice_service.invoice_status_counts(),
         "pager": {"total": total, "page": page, "pages": pages_n,
                   "page_size": page_size},
@@ -131,17 +132,29 @@ def invoice_detail_page(request: Request, invoice_id: int):
 
 
 @pages.get("/reimburses", response_class=HTMLResponse)
-def reimburses_page(request: Request, batch_id: str = "", q: str = "",
+def reimburses_page(request: Request, batch_id: Optional[str] = None, q: str = "",
                     status: str = "", page: int = 1, page_size: int = 20,
                     focus_id: int = 0):
+    batches = reimburse_service.list_batches()
+    # 默认激活最新批次：仅在 URL 完全没有 batch_id 参数时生效；
+    # ?batch_id=（空串）是用户显式选择「全部批次」，不覆盖
+    if batch_id is None:
+        batch_id = batches[0]["batch_id"] if batches else ""
     rows = reimburse_service.list_reimburses(batch_id=batch_id or None, keyword=q or None)
     # 路由联动语义参数：按匹配状态过滤（matched 口径与差异报告一致）
     if status == "unmatched":
         rows = [r for r in rows if not r.get("matched")]
     elif status == "matched":
         rows = [r for r in rows if r.get("matched")]
-    batches = reimburse_service.list_batches()
-    columns = _display_columns(rows)
+    all_batches = not batch_id
+    batch_tpl_id = None if all_batches else reimburse_service.batch_template_id(batch_id)
+    columns = _display_columns(rows, all_batches, batch_tpl_id)
+    if all_batches:
+        # 全部批次模式：附上每行的来源模板名（公共列「来源模板」）
+        from app.service.template_service import template_service
+        tpl_names = {t["id"]: t["name"] for t in template_service.list()}
+        for r in rows:
+            r["_template_name"] = tpl_names.get(r.get("template_id")) or "手动录入"
     for r in rows:
         r["cells"] = [_cell_value(r, c) for c in columns]
     _sort_rows(rows, columns)
@@ -155,7 +168,7 @@ def reimburses_page(request: Request, batch_id: str = "", q: str = "",
     return templates.TemplateResponse(request, "reimburses.html", {
         "request": request, "rows": rows, "batches": batches,
         "batch_id": batch_id, "q": q, "status": status, "columns": columns,
-        "pager": pager,
+        "pager": pager, "categories": category_service.enabled_names(),
     })
 
 
@@ -176,12 +189,31 @@ def _sort_rows(rows: list, columns: list) -> None:
     rows.sort(key=key)
 
 
-def _display_columns(rows: list) -> list:
-    """数据列按模板字段顺序生成：取行中最常用的模板，兜底默认模板。"""
+def _display_columns(rows: list, all_batches: bool = False,
+                     batch_tpl_id: int = None) -> list:
+    """数据列生成。
+
+    全部批次模式：只输出核心公共列（ID/来源模板/单号/提交人/日期/费用类型/金额/发票号），
+    隐藏各模板的专属列，避免不同模板列混杂错位。
+    具体批次模式：严格按该批次绑定的模板字段渲染列头；批次无行时兜底默认模板。
+    """
+    if all_batches:
+        return [
+            {"label": "ID", "key": "id"},
+            {"label": "来源模板", "key": "_template"},
+            {"label": "报销单号", "key": "reimburse_no"},
+            {"label": "提交人", "key": "submitter"},
+            {"label": "报销日期", "key": "reimburse_date"},
+            {"label": "费用类型", "key": "expense_type"},
+            {"label": "金额", "key": "amount"},
+            {"label": "发票号", "key": "invoice_no"},
+        ]
     from collections import Counter
     from app.service.template_service import template_service
-    tpl_ids = [r.get("template_id") for r in rows if r.get("template_id")]
-    tpl = template_service.get(Counter(tpl_ids).most_common(1)[0][0]) if tpl_ids else None
+    tpl = template_service.get(batch_tpl_id) if batch_tpl_id else None
+    if tpl is None:
+        tpl_ids = [r.get("template_id") for r in rows if r.get("template_id")]
+        tpl = template_service.get(Counter(tpl_ids).most_common(1)[0][0]) if tpl_ids else None
     if tpl is None:
         tpl = template_service.get_default()
     cols = []
@@ -193,12 +225,24 @@ def _display_columns(rows: list) -> list:
             cols.append({"label": label, "custom": f.get("display_name") or label})
         else:
             cols.append({"label": label, "key": f.get("system_key")})
+    # 模板里没有「费用类型」列时补一列：系统会按发票推测并标记【待确认】，需财务核实
+    if not any(c.get("key") == "expense_type" for c in cols):
+        cols.append({"label": "费用类型", "key": "expense_type"})
     return cols
 
 
 def _cell_value(row: dict, col: dict) -> dict:
-    """单元格智能渲染：金额保留两位小数、长文本标记（>18字符）、空值。"""
-    if "custom" in col:
+    """单元格智能渲染：金额保留两位小数、长文本标记（>18字符）、空值。
+
+    「费用类型」列不读报表单字段，而是输出所匹配发票的分类决策（cat 载荷），
+    保证与发票页展示/修改同一口径。
+    """
+    if col.get("key") == "expense_type":
+        return {"text": "", "amount": False, "long": False,
+                "cat": _category_payload(row)}
+    if col.get("key") == "_template":
+        v = row.get("_template_name") or ""
+    elif "custom" in col:
         v = (row.get("extra_data") or {}).get(col["custom"], "")
     else:
         v = row.get(col["key"])
@@ -216,6 +260,40 @@ def _cell_value(row: dict, col: dict) -> dict:
     return {"text": s, "amount": is_amount, "long": len(s) > 18}
 
 
+def _category_payload(row: dict) -> dict:
+    """费用类型单元格的分类载荷：报销单自身分类（可点击）+ 已匹配时的发票侧分类/冲突。"""
+    category = row.get("category") or ""
+    suggest = row.get("cat_suggest") or ""
+    hint = row.get("cat_hint") or ""
+    matched = bool(row.get("cat_matched"))
+    inv_cat = row.get("cat_invoice_category") or ""
+    conflict = bool(row.get("cat_conflict"))
+    detail = row.get("cat_conflict_detail") or ""
+    tips = []
+    if matched:
+        tips.append("该报销单已匹配发票；修改分类将无条件同步所有关联发票（主从联动）")
+        if inv_cat:
+            tips.append("发票侧当前分类：%s" % inv_cat)
+        if conflict:
+            tips.append("⚠️ 分类差异：%s（可在匹配中心一键拉平或保留差异）" % (detail or "双方分类不一致"))
+    else:
+        tips.append("该报销单尚未匹配发票；此处修改只影响报销单自身分类，不会改动任何发票")
+    return {
+        "category": category,
+        "status": row.get("cat_status") or "",
+        "source": row.get("cat_source") or "",
+        "suggest": suggest,
+        "hint": hint,
+        "invoice_id": row.get("cat_invoice_id"),
+        "reimburse_id": row.get("id"),
+        "matched": matched,
+        "invoice_category": inv_cat,
+        "conflict": conflict,
+        "conflict_detail": detail,
+        "tip": "；".join(tips),
+    }
+
+
 @pages.get("/matches", response_class=HTMLResponse)
 def matches_page(request: Request):
     # 待人工处理：有报销单关联的 CONFLICT / UNMATCHED（含存量 SUSPICIOUS）；
@@ -230,6 +308,8 @@ def matches_page(request: Request):
         "pending": pending, "active": active, "unmatched": unmatched,
         "opt_invoices": options["invoices"], "opt_reimburses": options["reimburses"],
         "counts": match_service.match_counts(),
+        "conflicts": category_service.list_conflicts(),
+        "conflict_unresolved": category_service.count_unresolved(),
     })
 
 
@@ -261,5 +341,7 @@ def settings_page(request: Request):
         rules = rule_repo.list_all(conn)
     return templates.TemplateResponse(request, "settings.html", {
         "request": request, "companies": companies, "rules": rules,
+        "categories": category_service.list_categories(include_disabled=True),
+        "audit_logs": audit_service.list_recent(50),
     })
 

@@ -59,6 +59,62 @@
 </div>
 
 <div class="card">
+  <h2>费用分类字典（系统预设锁定，自定义分类仅支持重命名 / 合并 / 禁用）</h2>
+  <p class="muted mb">系统预设分类为基础映射标准，<b>只能查看，不提供修改、重命名或禁用</b>；自定义分类未被使用时可直接重命名，已被使用时只能通过【合并】转移历史数据，或【禁用】（历史数据仍正常显示，永不可物理删除）。</p>
+  <form class="inline mb" onsubmit="addCat(event)">
+    <input name="name" id="newCatName" placeholder="新增分类名称（如 培训费）" required>
+    <button class="btn btn-sm">新增分类</button>
+  </form>
+  {% if categories %}
+  <table>
+    <tr><th>ID</th><th>分类名称</th><th>来源</th><th>状态</th><th>操作</th></tr>
+    {% for c in categories %}
+    <tr>
+      <td>#{{ c.id }}</td>
+      <td>{{ c.name }}</td>
+      <td>{% if c.is_builtin %}<span class="badge badge-blue">系统预设</span>{% else %}<span class="badge badge-gray">自定义</span>{% endif %}</td>
+      <td>{% if c.enabled %}<span class="badge badge-green">启用</span>{% else %}<span class="badge badge-gray">已禁用</span>{% endif %}</td>
+      <td>
+        {% if c.is_builtin %}
+        <span class="muted" title="系统基础映射标准，已强制锁定">🔒 已锁定</span>
+        {% else %}
+        <button class="btn btn-sm btn-outline" onclick='renameCat({{ c.id }}, {{ c.name|tojson }})'>重命名</button>
+        <button class="btn btn-sm btn-outline" onclick='mergeCat({{ c.id }}, {{ c.name|tojson }})'>合并</button>
+        <button class="btn btn-sm btn-outline" onclick="toggleCat({{ c.id }})">{{ '禁用' if c.enabled else '启用' }}</button>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}<p class="muted">分类字典为空。</p>{% endif %}
+</div>
+
+<div class="card">
+  <h2>审计日志（最近 50 条）</h2>
+  <p class="muted mb">字典新增/禁用、单条修改、批量修改、冲突仲裁、解除匹配等操作均记录操作人、时间、对象与修改前后值。</p>
+  {% if audit_logs %}
+  <table>
+    <tr><th>时间</th><th>操作</th><th>对象</th><th>修改前</th><th>修改后</th><th>操作人</th><th>说明</th></tr>
+    {% for a in audit_logs %}
+    <tr>
+      <td class="muted">{{ a.created_at }}</td>
+      <td>{{ {'category_dict_add':'字典新增','category_dict_enable':'字典启用','category_dict_disable':'字典禁用',
+              'category_dict_merge':'字典合并','category_dict_rename':'字典重命名','invoice_category':'发票分类修改','invoice_category_batch':'发票分类批量修改',
+              'reimburse_category':'报销单分类修改','conflict_reimburse':'冲突仲裁(以报销单为准)',
+              'conflict_invoice':'冲突仲裁(以发票为准)','conflict_keep':'冲突保留差异',
+              'unmatch':'解除匹配'}.get(a.action, a.action) }}</td>
+      <td class="wrap">{{ a.target_label or a.target_type }}</td>
+      <td class="muted">{{ a.old_value or '—' }}</td>
+      <td>{{ a.new_value or '—' }}</td>
+      <td>{{ a.operator }}</td>
+      <td class="wrap muted">{{ a.detail or '' }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% else %}<p class="muted">暂无审计记录。</p>{% endif %}
+</div>
+
+<div class="card">
   <h2>数据管理</h2>
   <p class="muted mb">本系统为本地化软件，全部数据（数据库 + 原始发票附件）仅保存在本机。重装系统或更换电脑前，请务必先执行【一键备份数据】。</p>
   <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
@@ -86,6 +142,83 @@
 async function delCompany(id){if(await confirmDlg('确认删除该公司抬头？'))post(`/api/companies/${id}/delete`).then(()=>location.reload());}
 async function delRule(id){if(await confirmDlg('确认删除该规则？'))post(`/api/rules/${id}/delete`).then(()=>location.reload());}
 function toggleRule(id){post(`/api/rules/${id}/toggle`).then(()=>location.reload());}
+
+// ---- 分类字典：新增（相似词提示合并）/ 启用禁用（不提供物理删除）----
+const CAT_LIST = {{ categories|tojson }};
+async function _catPost(url, obj){
+  const fd = new FormData();
+  Object.entries(obj || {}).forEach(([k, v]) => fd.append(k, v));
+  const r = await fetch(url, {method:'POST', body:fd});
+  const j = await r.json();
+  return j.data || j;
+}
+async function addCat(e){
+  e.preventDefault();
+  const name = document.getElementById('newCatName').value.trim();
+  if(!name) return;
+  const fd = new FormData(); fd.append('name', name);
+  let r = await fetch('/api/categories', {method:'POST', body:fd});
+  let j = await r.json(); let d = j.data || j;
+  if(d.ok && d.need_confirm){
+    const sim = (d.similar || [])[0] || '';
+    const merge = await confirmDlg('「' + name + '」与已有分类「' + sim + '」高度相似。\n\n点击「确认」合并到「' + sim + '」（历史数据同步更新）；点击「取消」则仍然作为新分类新增。');
+    const fd2 = new FormData(); fd2.append('name', name);
+    if(merge) fd2.append('merge_into', sim);
+    else fd2.append('force', '1');
+    r = await fetch('/api/categories', {method:'POST', body:fd2});
+    j = await r.json(); d = j.data || j;
+  }
+  if(d.ok){ toast(d.message || '已保存'); setTimeout(()=>location.reload(), 800); }
+  else toast(d.message || '新增失败', false);
+}
+async function toggleCat(id){
+  const r = await fetch('/api/categories/' + id + '/toggle', {method:'POST', body:new FormData()});
+  const j = await r.json(); const d = j.data || j;
+  if(d.ok){ toast(d.message || '已更新'); setTimeout(()=>location.reload(), 600); }
+  else toast(d.message || '操作失败', false);
+}
+// 自定义分类【重命名】：仅限未被历史数据使用；已被使用时后端会拒绝并提示走【合并】
+async function renameCat(id, name){
+  const nn = await promptDlg('重命名自定义分类「' + name + '」\n仅当该分类尚未被任何发票/报销单使用时允许直接改名。\n请输入新名称：', name);
+  if(nn === null) return;
+  const v = nn.trim();
+  if(!v || v === name) return;
+  let d = await _catPost('/api/categories/' + id + '/rename', {name: v});
+  if(d && d.need_confirm){
+    const sim = (d.similar || [])[0] || '';
+    const ok = await confirmDlg('「' + v + '」与已有分类「' + sim + '」高度相似。\n仍要重命名为「' + v + '」吗？');
+    if(!ok) return;
+    d = await _catPost('/api/categories/' + id + '/rename', {name: v, force: '1'});
+  }
+  if(d && d.ok){ toast(d.message); setTimeout(()=>location.reload(), 700); }
+  else toast((d && d.message) || '重命名失败', false);
+}
+// 自定义分类【合并】：选择目标分类，历史数据全部改为目标分类，源分类自动禁用（保留备查）
+async function mergeCat(id, name){
+  const opts = (CAT_LIST || []).filter(c => c.id !== id && c.enabled)
+    .map(c => '<option value="' + c.id + '">' + c.name + (c.is_builtin ? '（系统预设）' : '（自定义）') + '</option>').join('');
+  if(!opts){ toast('没有可合并的目标分类', false); return; }
+  const tid = await new Promise(resolve => {
+    const m = document.getElementById('modal');
+    m.innerHTML = '<h2 style="margin-bottom:10px;font-size:16px;">合并分类「' + name + '」</h2>'
+      + '<p style="margin-bottom:12px;line-height:1.7;color:#92400e;background:#fef3c7;border:1px solid #fcd34d;padding:8px 10px;border-radius:6px;">'
+      + '风险提示：合并后，所有历史发票/报销单中的「' + name + '」将全部改为目标分类，'
+      + '原分类随即被禁用（保留备查，历史显示不受影响）。此操作会记入审计日志。</p>'
+      + '<label style="font-size:13px;">合并到：</label>'
+      + '<select id="mgTarget" style="width:100%;padding:8px;margin-top:4px;">' + opts + '</select>'
+      + '<div style="text-align:right;margin-top:14px;">'
+      + '<button class="btn btn-outline" id="mgCancel">取消</button> '
+      + '<button class="btn btn-danger" id="mgOk">确认合并</button></div>';
+    openModal();
+    document.getElementById('mgCancel').onclick = () => { closeModal(); resolve(null); };
+    document.getElementById('mgOk').onclick = () => { const v = document.getElementById('mgTarget').value; closeModal(); resolve(v); };
+    document.getElementById('modalBg').onclick = () => { closeModal(); resolve(null); };
+  });
+  if(!tid) return;
+  const d = await _catPost('/api/categories/' + id + '/merge', {target_id: tid});
+  if(d && d.ok){ toast(d.message); setTimeout(()=>location.reload(), 700); }
+  else toast((d && d.message) || '合并失败', false);
+}
 
 // ---- 数据备份：直接跳转下载（浏览器自动保存 zip）----
 function downloadBackup(){

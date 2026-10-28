@@ -8,6 +8,8 @@
 :root{--primary:#2563eb;--bg:#f5f7fa;--card:#fff;--border:#e5e7eb;--text:#1f2937;--muted:#6b7280;}
 *{box-sizing:border-box;margin:0;padding:0;}
 body{font-family:"Microsoft YaHei",system-ui,sans-serif;background:var(--bg);color:var(--text);font-size:14px;}
+/* 按钮/表单控件默认不继承 body 字体，强制继承保持全局字体协调 */
+button,input,select,textarea{font-family:inherit;color:inherit;}
 .nav{background:var(--card);border-bottom:1px solid var(--border);padding:0 24px;display:flex;align-items:center;gap:4px;height:52px;}
 .nav .brand{font-weight:700;font-size:16px;margin-right:24px;color:var(--primary);}
 .nav a{padding:8px 14px;border-radius:6px;color:var(--text);text-decoration:none;}
@@ -31,10 +33,10 @@ td.num,th.num{text-align:right;}
 td.num{font-variant-numeric:tabular-nums;}
 /* 发票表格：固定布局，列宽按 colgroup 分配，长文本省略号 */
 .invoice-table{table-layout:fixed;width:100%;}
-.invoice-table th,.invoice-table td{padding:14px 12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:middle;}
+.invoice-table th,.invoice-table td{padding:10px 8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:middle;}
 .invoice-table tbody td{height:auto;}
 .invoice-table .col-number{text-align:right;font-variant-numeric:tabular-nums;}
-.invoice-table .col-action{width:100px;min-width:100px;overflow:visible;}
+.invoice-table .col-action{width:88px;min-width:88px;overflow:visible;}
 .invoice-table td.col-action{overflow:visible;}
 /* 操作按钮：文字与箭头不折行 */
 .action-btn{white-space:nowrap;padding:6px 12px;}
@@ -42,6 +44,33 @@ td.num{font-variant-numeric:tabular-nums;}
 .badge-green{background:#dcfce7;color:#166534;}.badge-red{background:#fee2e2;color:#991b1b;}
 .badge-orange{background:#ffedd5;color:#9a3412;}.badge-blue{background:#dbeafe;color:#1e40af;}
 .badge-purple{background:#f3e8ff;color:#6b21a8;}.badge-gray{background:#f3f4f6;color:#4b5563;}
+.badge-yellow{background:#fef3c7;color:#92400e;border:1px solid #fcd34d;}
+/* 费用分类标签：分类名 + 确认状态（已确认绿 / 待确认黄），可点击修改 */
+.cat-tag{display:inline-flex;align-items:center;gap:4px;border-radius:999px;padding:2px 9px;font-size:12px;
+  cursor:pointer;border:1px solid transparent;white-space:nowrap;line-height:1.6;}
+.cat-tag:hover{filter:brightness(.96);}
+.cat-tag.confirmed{background:#dcfce7;color:#166534;border-color:#bbf7d0;}
+.cat-tag.pending{background:#fef3c7;color:#92400e;border-color:#fcd34d;}
+/* 未报销的游离发票：系统推测分类用 dashed 边框区分 */
+.cat-tag.orphan{border-style:dashed;}
+/* 未匹配发票的报销单：标签只读，不出现手型 */
+.cat-tag.static{cursor:default;}
+/* 费用分类下拉菜单（fixed 挂 body，避免被表格容器截断） */
+.cat-menu{position:fixed;z-index:120;background:#fff;border:1px solid var(--border);border-radius:8px;
+  box-shadow:0 8px 24px rgba(15,23,42,.16);padding:6px;min-width:170px;display:flex;flex-direction:column;}
+.cat-menu-head{padding:4px 10px;font-size:12px;color:var(--muted);}
+.cat-menu-sep{height:1px;background:var(--border);margin:4px 0;}
+.cat-menu-item{border:0;background:none;text-align:left;padding:7px 10px;border-radius:6px;
+  font-size:13px;cursor:pointer;color:var(--text);white-space:nowrap;}
+.cat-menu-item:hover{background:#f1f5f9;}
+.cat-menu-item.current{color:#166534;font-weight:600;}
+.cat-menu-item .cat-check{font-size:12px;color:#16a34a;margin-left:4px;}
+.cat-menu-item.accept{background:#fef3c7;color:#92400e;font-weight:600;}
+.cat-menu-item.accept:hover{background:#fde68a;}
+.cat-tag .cat-q{font-weight:700;}
+.cat-tag .cat-warn{color:#dc2626;font-weight:700;}
+/* 分类差异（黄色警示，非阻塞）：发票与报销单分类不一致 */
+.cat-tag .cat-warn-y{color:#d97706;font-weight:700;}
 .dropdown{position:relative;display:inline-block;}
 /* 下拉菜单挂载到 body，fixed 定位，避免被表格容器截断 */
 .dropdown-menu{display:none;position:fixed;background:#fff;border:1px solid var(--border);border-radius:6px;box-shadow:0 4px 14px rgba(0,0,0,.1);min-width:96px;z-index:100;overflow:hidden;}
@@ -197,6 +226,269 @@ document.addEventListener('click', function(e){
 });
 window.addEventListener('scroll', closeAllDropdowns, true);
 window.addEventListener('resize', closeAllDropdowns);
+
+// ---- 费用分类：发票列表与报销单列表共用同一套标签与菜单（两个页面联动） ----
+const CAT_STD = {% if categories is defined %}{{ categories|tojson }}{% else %}["餐饮费","交通费","差旅费","办公费","通讯费","其他费用"]{% endif %};
+let _catMenuEl = null;      // 当前挂载的菜单 DOM
+let _catMenuTarget = null;  // 当前操作的 .cat-tag
+
+function closeCatMenu(){
+  if(_catMenuEl){ _catMenuEl.remove(); _catMenuEl = null; }
+  _catMenuTarget = null;
+}
+
+function openCatMenu(e, el){
+  if(e) e.stopPropagation();
+  const reopen = (_catMenuTarget === el && _catMenuEl);
+  closeCatMenu();
+  if(reopen) return;   // 再次点击同一标签 = 收起
+
+  const cur = el.dataset.cat || '';
+  const suggest = el.dataset.suggest || '';
+  const pending = el.dataset.status === 'PENDING';
+
+  let html = '';
+  if(pending && suggest && suggest !== cur){
+    html += '<div class="cat-menu-head">系统推测为「' + suggest + '」</div>'
+          + '<button class="cat-menu-item accept" onclick="saveCategory(\'' + suggest + '\')">✓ 一键确认为 ' + suggest + '</button>'
+          + '<div class="cat-menu-sep"></div><div class="cat-menu-head">或改为：</div>';
+  }else{
+    html += '<div class="cat-menu-head">修改费用分类</div>';
+  }
+  CAT_STD.forEach(c => {
+    const isCur = (c === cur);
+    html += '<button class="cat-menu-item' + (isCur ? ' current' : '') + '" onclick="saveCategory(\'' + c + '\')">'
+          + c + (isCur ? '<span class="cat-check">✓ 当前</span>' : '') + '</button>';
+  });
+  // 模块一：下拉菜单底部支持新增自定义分类（相似词会提示合并）
+  html += '<div class="cat-menu-sep"></div>'
+        + '<button class="cat-menu-item" onclick="addCategoryDlg()">＋ 新增自定义分类</button>';
+
+  const m = document.createElement('div');
+  m.className = 'cat-menu';
+  m.innerHTML = html;
+  m.addEventListener('click', ev => ev.stopPropagation());
+  document.body.appendChild(m);
+
+  // 定位：默认在标签下方，右侧/底部空间不足时自动左移或翻到上方
+  const r = el.getBoundingClientRect();
+  const mw = m.offsetWidth, mh = m.offsetHeight;
+  let left = r.left;
+  let top = r.bottom + 4;
+  if(left + mw > window.innerWidth - 8) left = Math.max(8, window.innerWidth - mw - 8);
+  if(top + mh > window.innerHeight - 8) top = Math.max(8, r.top - mh - 4);
+  m.style.left = left + 'px';
+  m.style.top = top + 'px';
+
+  _catMenuEl = m;
+  _catMenuTarget = el;
+}
+
+// 保存分类：按「未匹配 / 已匹配」与主从法则处理
+// - 未匹配发票：只改发票，随后弹出「摘要相似」统一批量面板（含已匹配记录）
+// - 已匹配发票：提示主从法则（一对一连带同步报销单 / 一对多只改当前发票）
+// - 未匹配报销单：只改报销单，不影响任何发票
+// - 已匹配报销单：警告后无条件强制联动同步全部关联发票（主账变了，明细必须跟）
+async function saveCategory(cat){
+  const el = _catMenuTarget;
+  closeCatMenu();
+  if(!el) return;
+  const kind = el.dataset.kind;
+  const id = el.dataset.id;
+  const matched = el.dataset.matched === '1';
+  if(kind === 'reb' && matched){
+    const ok = await confirmDlg(
+      '该报销单已匹配发票。修改分类将无条件同步其关联的所有发票明细分类（主从联动），是否继续？');
+    if(!ok) return;
+    await _saveRebCategory(id, cat, 'sync');
+  }else if(kind === 'reb'){
+    await _saveRebCategory(id, cat, 'self');
+  }else if(matched){
+    const ok = await confirmDlg(
+      '该发票已匹配报销单，将按主从法则处理：一对一匹配连带同步报销单；一对多只改当前发票（可能与报销单产生分类差异）。是否继续？');
+    if(!ok) return;
+    await _saveInvCategory(id, cat);
+  }else{
+    await _saveInvCategory(id, cat);
+  }
+}
+
+async function _postData(url, fd){
+  try{
+    const r = await fetch(url, {method:'POST', body: fd || new FormData()});
+    const j = await r.json();
+    return (j && j.data) ? j.data : j;
+  }catch(e){ return {ok:false, message:'网络错误：' + e.message}; }
+}
+async function _getData(url){
+  try{
+    const r = await fetch(url);
+    const j = await r.json();
+    return (j && j.data) ? j.data : j;
+  }catch(e){ return {ok:false, message:'网络错误：' + e.message}; }
+}
+
+async function _saveRebCategory(id, cat, mode){
+  const fd = new FormData();
+  fd.append('category', cat);
+  fd.append('mode', mode);
+  const d = await _postData('/api/reimburses/' + id + '/category', fd);
+  if(!d || d.ok === false){ toast((d && d.message) || '保存失败', false); return; }
+  toast(d.message || ('已保存分类：' + cat));
+  setTimeout(() => location.reload(), 700);
+}
+
+async function _saveInvCategory(id, cat){
+  const fd = new FormData();
+  fd.append('category', cat);
+  const d = await _postData('/api/invoices/' + id + '/category', fd);
+  if(!d || d.ok === false){ toast((d && d.message) || '保存失败', false); return; }
+  // 统一触发：无论是否匹配，都查找「相似记录」池，弹批量确认面板（三层判定：归类大类/商家字号/摘要关键词）
+  const sim = await _getData('/api/invoices/' + id + '/similar');
+  if(sim && sim.items && sim.items.length){
+    toast(d.message || ('已保存分类：' + cat));
+    openBatchPanel(cat, sim.items, sim.basis || []);
+  }else{
+    toast(d.message || ('已保存分类：' + cat));
+    setTimeout(() => location.reload(), 700);
+  }
+}
+
+function _escHtml(s){
+  return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+// 模块二：统一批量归类确认面板（默认全选，可取消勾选；含已匹配记录，实时勾选计数）
+// 三层相似判定：归类大类 / 商家字号 / 摘要关键词；命中词高亮 + 命中原因列
+function _hlHits(text, hits){
+  let html = _escHtml(text || '—');
+  (hits || []).forEach(h => {
+    if(!h) return;
+    html = html.split(_escHtml(h)).join('<mark style="background:#fde68a;color:#92400e;border-radius:2px;padding:0 1px;">' + _escHtml(h) + '</mark>');
+  });
+  return html;
+}
+function openBatchPanel(category, items, basis){
+  const m = document.getElementById('modal');
+  const rows = items.map(it => `
+    <tr>
+      <td style="text-align:center;"><input type="checkbox" class="batch-chk" value="${it.id}" data-matched="${it.matched ? 1 : 0}" checked></td>
+      <td>#${it.id}</td>
+      <td>${_escHtml(it.invoice_no || '—')}</td>
+      <td>${_escHtml(it.invoice_date || '—')}</td>
+      <td class="wrap">${_hlHits(it.item_summary, it.hits)}</td>
+      <td class="wrap muted">${_hlHits(it.seller_name, it.hits)}</td>
+      <td>${_escHtml(it.category || '—')}</td>
+      <td>${it.matched ? '<span class="badge badge-blue">已匹配 ' + _escHtml(it.reimburse_no || '') + '</span>' : '<span class="muted">未匹配</span>'}</td>
+      <td class="muted" style="font-size:12px;">${_escHtml(it.reason || '')}</td>
+      <td style="text-align:right;">${_escHtml(it.total_amount || '—')}</td>
+    </tr>`).join('');
+  const basisText = (basis && basis.length) ? basis.join(' / ') : '摘要相似度';
+  m.innerHTML = `<h2 style="margin-bottom:10px;">批量归类为「${_escHtml(category)}」</h2>
+    <p class="muted" style="margin-bottom:6px;line-height:1.6;">
+      系统根据【${_escHtml(basisText)}】为您找到了 <b>${items.length}</b> 条相似记录。默认全选，可取消勾选。
+    </p>
+    <p style="margin-bottom:10px;font-size:13px;">已选中 <b id="batchSel">${items.length}</b> 条（共 ${items.length} 条相似记录）</p>
+    <div style="max-height:44vh;overflow:auto;">
+      <table>
+        <thead><tr><th style="width:44px;">选择</th><th>ID</th><th>发票号</th><th>开票日期</th><th>报销内容</th><th>销售方</th><th>当前分类</th><th>状态</th><th>命中原因</th><th style="text-align:right;">价税合计</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+    <div style="text-align:right;margin-top:14px;">
+      <button class="btn btn-outline" id="batchSkip">仅保存当前单条</button>
+      <button class="btn" id="batchOk">确认批量修改（已选 ${items.length} 条）</button>
+    </div>`;
+  openModal();
+  const chks = [...document.querySelectorAll('.batch-chk')];
+  const btnSkip = document.getElementById('batchSkip');
+  const btnOk = document.getElementById('batchOk');
+  // 按钮状态随勾选数联动：>0 时【仅保存当前单条】/【确认批量修改（已选 N 条）】；
+  // =0 时左侧变【取消】、右侧置灰禁用并提示先勾选（防呆）
+  const updBtns = () => {
+    const n = chks.filter(x => x.checked).length;
+    document.getElementById('batchSel').textContent = n;
+    if(n === 0){
+      btnSkip.textContent = '取消';
+      btnOk.textContent = '请先勾选需要修改的记录';
+      btnOk.disabled = true;
+      btnOk.style.opacity = '.5';
+      btnOk.style.cursor = 'not-allowed';
+    }else{
+      btnSkip.textContent = '仅保存当前单条';
+      btnOk.textContent = '确认批量修改（已选 ' + n + ' 条）';
+      btnOk.disabled = false;
+      btnOk.style.opacity = '';
+      btnOk.style.cursor = '';
+    }
+  };
+  chks.forEach(c => c.addEventListener('change', updBtns));
+  updBtns();
+  // 左侧按钮：有勾选=仅保留刚才的单条修改（单条已生效，确认后关闭）；零勾选=取消直接关闭
+  btnSkip.onclick = async () => {
+    const n = chks.filter(x => x.checked).length;
+    if(n > 0){
+      const ok = await confirmDlg('确定仅修改当前这 1 条发票吗？');
+      if(!ok) return;
+    }
+    closeModal();
+    location.reload();
+  };
+  btnOk.onclick = async () => {
+    const sel = chks.filter(x => x.checked);
+    if(!sel.length) return;
+    // 二次防呆确认：含已匹配数据时追加红字风险提示（主从联动）
+    const hasMatched = sel.some(x => x.dataset.matched === '1');
+    let warn = '确定将勾选的 ' + sel.length + ' 条记录统一修改为【' + category + '】吗？';
+    if(hasMatched){
+      warn += '\n⚠️ 注意：选中包含已匹配数据，该操作会同步更新关联的报销单，系统将自动执行财务主从账目联动同步！';
+    }
+    const ok = await confirmDlg(warn);
+    if(!ok) return;
+    const fd = new FormData();
+    fd.append('ids', sel.map(x => x.value).join(','));
+    fd.append('category', category);
+    const d = await _postData('/api/invoices/category/batch', fd);
+    closeModal();
+    if(!d || d.ok === false){ toast((d && d.message) || '批量更新失败', false); return; }
+    toast(d.message || '批量更新成功');
+    setTimeout(() => location.reload(), 700);
+  };
+}
+
+// 模块一：新增自定义分类；若与已有分类高度相似，提示合并
+async function addCategoryDlg(){
+  closeCatMenu();
+  const name = await promptDlg('请输入新的费用分类名称：', '');
+  if(!name || !name.trim()) return;
+  const fd = new FormData();
+  fd.append('name', name.trim());
+  let d = await _postData('/api/categories', fd);
+  if(d && d.ok && d.need_confirm){
+    const sim = (d.similar || [])[0] || '';
+    const opt = await chooseDlg(
+      '发现相似分类',
+      '「' + name.trim() + '」与已有分类' + d.similar.map(s => '「' + s + '」').join('、') +
+      ' 高度相似，建议合并到已有分类，历史数据会一并同步。',
+      [{v:'merge', label:'合并到「' + sim + '」'},
+       {v:'force', label:'仍然新增', cls:'btn btn-outline'}]);
+    if(!opt) return;
+    const fd2 = new FormData();
+    fd2.append('name', name.trim());
+    if(opt === 'merge') fd2.append('merge_into', sim);
+    else fd2.append('force', '1');
+    d = await _postData('/api/categories', fd2);
+  }
+  if(d && d.ok){ toast(d.message || '已保存'); setTimeout(() => location.reload(), 900); }
+  else { toast((d && d.message) || '新增失败', false); }
+}
+
+document.addEventListener('click', e => {
+  if(_catMenuEl && !e.target.closest('.cat-menu') && !e.target.closest('.cat-tag')) closeCatMenu();
+});
+window.addEventListener('scroll', closeCatMenu, true);
+window.addEventListener('resize', closeCatMenu);
+
 // 自定义确认弹窗：内嵌浏览器不支持原生 confirm()，改用模态框实现
 function confirmDlg(msg){
   return new Promise(resolve=>{
@@ -209,6 +501,25 @@ function confirmDlg(msg){
     document.getElementById('cfOk').onclick = ()=>{closeModal();resolve(true);};
     document.getElementById('cfCancel').onclick = ()=>{closeModal();resolve(false);};
     document.getElementById('modalBg').onclick = ()=>{closeModal();resolve(false);};
+  });
+}
+// 多选项弹窗：用于「仅改报销单 / 同步更新关联发票」「合并 / 仍然新增」等二选一场景
+// options: [{v:'值', label:'按钮文字', cls:'额外样式'}]，返回所选值或 null（取消）
+function chooseDlg(title, msg, options){
+  return new Promise(resolve=>{
+    const m = document.getElementById('modal');
+    const btns = options.map((o, i) =>
+      `<button class="btn ${o.cls || ''}" data-opt="${i}">${o.label}</button>`).join(' ');
+    m.innerHTML = '<h2 style="margin-bottom:10px;font-size:16px;">' + title + '</h2>'
+      + '<p style="margin-bottom:16px;white-space:pre-line;line-height:1.6;">' + msg + '</p>'
+      + '<div style="text-align:right;">' + btns
+      + ' <button class="btn btn-outline" data-cancel="1">取消</button></div>';
+    openModal();
+    m.querySelectorAll('button[data-opt]').forEach(b=>{
+      b.onclick = ()=>{ const v = options[+b.dataset.opt].v; closeModal(); resolve(v); };
+    });
+    m.querySelector('button[data-cancel]').onclick = ()=>{ closeModal(); resolve(null); };
+    document.getElementById('modalBg').onclick = ()=>{ closeModal(); resolve(null); };
   });
 }
 // 自定义输入弹窗：内嵌浏览器不支持原生 prompt()，改用模态框实现。返回 Promise<string|null>

@@ -33,11 +33,44 @@
 .cell-amount{color:#1677ff;font-weight:500;text-align:right;font-variant-numeric:tabular-nums;}
 .cell-long{max-width:200px;}
 .text-ellipsis{display:inline-block;max-width:180px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;vertical-align:middle;}
+/* 费用类型列：分类标签可能比单元格宽，不能省略号截断 */
+.reb-table .cell-cat{overflow:visible;text-overflow:clip;}
 
 /* ===== 右侧固定列（状态/操作）：视觉分隔 ===== */
 .reb-table .col-state,
 .reb-table .col-action{border-left:1px solid var(--border);}
 .reb-table .col-state,.reb-table .col-action{text-align:center;white-space:nowrap;}
+
+/* ===== 批次卡片条：横向滚动 + 选中高亮 ===== */
+.batch-strip{display:flex;gap:12px;overflow-x:auto;padding:10px 2px 6px;}
+.batch-card{position:relative;flex:0 0 230px;border:2px solid var(--border);border-radius:12px;
+  padding:12px 14px;cursor:pointer;background:#fff;
+  transition:border-color .15s,background .15s,box-shadow .15s;}
+.batch-card:hover{border-color:#93c5fd;box-shadow:0 4px 14px rgba(37,99,235,.12);}
+.batch-card.on{border-color:var(--primary);background:#eff6ff;box-shadow:0 4px 14px rgba(37,99,235,.18);}
+.batch-check{position:absolute;top:-9px;right:-9px;width:22px;height:22px;border-radius:50%;
+  background:#16a34a;color:#fff;font-size:13px;line-height:22px;text-align:center;
+  box-shadow:0 1px 4px rgba(0,0,0,.25);z-index:2;}
+.batch-head{display:flex;justify-content:space-between;align-items:flex-start;gap:6px;}
+.batch-title{font-weight:600;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;}
+.batch-del{border:none;background:none;color:#d1d5db;font-size:16px;cursor:pointer;
+  padding:0 2px;line-height:1.2;}
+.batch-card:hover .batch-del{color:#9ca3af;}
+.batch-del:hover{color:#dc2626;}
+.batch-no{font-size:11px;color:var(--muted);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.batch-stats{display:flex;gap:22px;margin-top:10px;}
+.bs-num{font-size:20px;font-weight:700;font-variant-numeric:tabular-nums;}
+.bs-num.bs-bad{color:#b91c1c;background:#fee2e2;border-radius:6px;padding:0 6px;}
+.bs-label{font-size:11px;color:var(--muted);margin-top:2px;}
+
+/* ===== 表格加载遮罩 ===== */
+.table-loading{position:absolute;inset:0;background:rgba(255,255,255,.88);z-index:20;
+  display:none;flex-direction:column;align-items:center;justify-content:center;gap:10px;
+  border-radius:12px;font-size:13px;color:var(--muted);}
+.table-loading.on{display:flex;}
+.spinner{width:28px;height:28px;border:3px solid #dbeafe;border-top-color:var(--primary);
+  border-radius:50%;animation:spin .8s linear infinite;}
+@keyframes spin{to{transform:rotate(360deg);}}
 </style>
 
 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
@@ -50,28 +83,40 @@
 </div>
 
 {% if batches %}
-<div class="card">
-  <h2>批次</h2>
-  <table>
-    <tr><th>批次号</th><th>模板</th><th>行数</th><th>导入时间</th><th>操作</th></tr>
+<div class="card" style="padding:8px 18px 12px;">
+  <div class="batch-strip">
     {% for b in batches %}
-    <tr>
-      <td><a class="link" href="/reimburses?batch_id={{ b.batch_id }}">{{ b.batch_id }}</a></td>
-      <td class="muted">{{ b.template_name or '—' }}</td>
-      <td>{{ b.row_count }}</td>
-      <td>{{ b.created_at }}</td>
-      <td><button class="btn btn-sm btn-danger" onclick="delBatch('{{ b.batch_id }}')">删除批次</button></td>
-    </tr>
+    <div class="batch-card{% if batch_id == b.batch_id %} on{% endif %}"
+         data-batch="{{ b.batch_id }}" title="点击只查看该批次"
+         onclick="gotoBatch('{{ b.batch_id }}')">
+      {% if batch_id == b.batch_id %}<span class="batch-check">✓</span>{% endif %}
+      <div class="batch-head">
+        <div class="batch-title" title="{{ b.template_name or '手动录入' }}">{{ b.template_name or '手动录入' }}</div>
+        <button class="batch-del" title="删除该批次"
+                onclick="event.stopPropagation();delBatch('{{ b.batch_id }}')">×</button>
+      </div>
+      <div class="batch-no" title="{{ b.batch_id }}">{{ b.batch_id }}</div>
+      <div class="batch-stats">
+        <div class="bs">
+          <div class="bs-num">{{ b.row_count }}</div>
+          <div class="bs-label">总条数</div>
+        </div>
+        <div class="bs">
+          <div class="bs-num{% if b.unmatched_count %} bs-bad{% endif %}">{{ b.unmatched_count or 0 }}</div>
+          <div class="bs-label">未匹配</div>
+        </div>
+      </div>
+    </div>
     {% endfor %}
-  </table>
+  </div>
 </div>
 {% endif %}
 
 <div class="card">
-  <form class="inline" method="get">
-    <select name="batch_id">
+  <form class="inline" method="get" onsubmit="showTableLoading()">
+    <select name="batch_id" onchange="gotoBatch(this.value)">
       <option value="">全部批次</option>
-      {% for b in batches %}<option value="{{ b.batch_id }}" {% if batch_id==b.batch_id %}selected{% endif %}>{{ b.batch_id }}</option>{% endfor %}
+      {% for b in batches %}<option value="{{ b.batch_id }}" {% if batch_id==b.batch_id %}selected{% endif %}>{{ b.template_name or '手动录入' }} · {{ b.batch_id }}</option>{% endfor %}
     </select>
     <select name="status">
       <option value="" {% if not status %}selected{% endif %}>全部状态</option>
@@ -83,7 +128,8 @@
   </form>
 </div>
 
-<div class="card table-card">
+<div class="card table-card" style="position:relative;">
+  <div class="table-loading" id="tableLoading"><div class="spinner"></div><div>正在加载数据…</div></div>
   {% if rows %}
   <div class="table-scroll">
     <table class="reb-table">
@@ -98,13 +144,29 @@
         <tr id="row-{{ r.id }}"{% if not r.matched %} class="row-unmatched"{% endif %}>
           {% for c in columns %}
           {% set cell = r.cells[loop.index0] %}
-          <td{% if cell.amount %} class="cell-amount"{% elif cell.long %} class="cell-long" title="{{ cell.text }}"{% endif %}>
+          <td{% if cell.amount %} class="cell-amount"{% elif cell.long %} class="cell-long" title="{{ cell.text }}"{% elif cell.cat is defined %} class="cell-cat"{% endif %}>
             {%- if cell.amount -%}<b>{{ cell.text }}</b>
             {%- elif cell.long -%}<span class="text-ellipsis">{{ cell.text }}</span>
+            {%- elif cell.cat is defined -%}
+              {%- if cell.cat.category -%}
+              <span class="cat-tag {% if cell.cat.status == 'PENDING' %}pending{% else %}confirmed{% endif %}"
+                    data-kind="reb" data-id="{{ cell.cat.reimburse_id }}" data-cat="{{ cell.cat.category }}"
+                    data-matched="{{ '1' if cell.cat.matched else '0' }}"
+                    data-suggest="{{ cell.cat.suggest or '' }}" data-status="{{ cell.cat.status }}"
+                    data-source="{{ cell.cat.source }}" data-hint="{{ cell.cat.hint or '' }}"
+                    title="{{ cell.cat.tip }}" onclick="openCatMenu(event, this)">{{ cell.cat.category }}{% if cell.cat.conflict %}<span class="cat-warn-y" title="{{ cell.cat.conflict_detail }}">⚠</span>{% endif %}</span>
+              {%- else -%}
+              <span class="cat-tag orphan" data-kind="reb" data-id="{{ cell.cat.reimburse_id }}" data-cat=""
+                    data-matched="{{ '1' if cell.cat.matched else '0' }}" data-status=""
+                    title="{{ cell.cat.tip }}" onclick="openCatMenu(event, this)">选择分类</span>
+              {%- endif -%}
             {%- else -%}{{ cell.text or '—' }}{%- endif -%}
           </td>
           {% endfor %}
-          <td class="col-state">{% if r.matched %}<span class="badge badge-purple">已匹配</span>{% else %}<span class="badge badge-red">未匹配</span>{% endif %}</td>
+          <td class="col-state">
+            {% if r.matched %}<span class="badge badge-purple">已匹配</span>{% else %}<span class="badge badge-red">未匹配</span>{% endif %}
+            {% if r.cat_conflict %}<div style="margin-top:4px;"><span class="badge badge-yellow" title="{{ r.cat_conflict_detail }}">⚠️ 分类差异</span></div>{% endif %}
+          </td>
           <td class="col-action"><button class="btn btn-sm btn-danger" onclick="delReimburse({{ r.id }})">删除</button></td>
         </tr>
         {% endfor %}
@@ -253,6 +315,24 @@ const SYSTEM_FIELDS = [
 ];
 const SYSTEM_LABEL = Object.fromEntries(SYSTEM_FIELDS);
 const CUSTOM_OPT = '__custom__';
+
+// ===== 批次三向联动的唯一事实源：URL 上的 batch_id（服务端渲染时注入）=====
+const CURRENT_BATCH = {{ batch_id | tojson }};
+
+// 点击卡片 / 切换下拉框 -> 出 Loading -> 跳转（卡片高亮、下拉框、表格全部由新 URL 渲染，天然一致）
+function gotoBatch(bid){
+  if(bid === CURRENT_BATCH) return;   // 已选中，不重复加载
+  showTableLoading();
+  const u = new URL(location.href);
+  u.searchParams.set('batch_id', bid);   // 空串 = 全部批次
+  u.searchParams.delete('page');          // 切批次回到第 1 页
+  u.searchParams.delete('focus_id');
+  location.href = u.toString();
+}
+function showTableLoading(){
+  const el = document.getElementById('tableLoading');
+  if(el) el.classList.add('on');
+}
 
 let currentTemplates = [];
 let wizState = { mode:'template', templateId:null, file:null, headerRow:1,
@@ -510,6 +590,8 @@ function renderSuccess(d){
   document.getElementById('wizResult').innerHTML = html;
   const done = document.getElementById('wizDoneBtn');
   done.style.display = 'inline-block';
+  // 导入成功 -> 「查看结果」直接定位到新批次（卡片/下拉/表格三处同步高亮该批次）
+  done.onclick = () => { location.href = '/reimburses?batch_id=' + encodeURIComponent(d.batch_id); };
   setStep(3);
   toast(`导入成功：${d.imported} 行`);
 }
@@ -591,7 +673,11 @@ async function saveManualEntry(){
   const r = await fetch('/api/reimburses/manual', { method:'POST', body:fd });
   const j = await r.json();
   const d = j.data || j;
-  if(d.ok){ toast(d.message || '已录入'); setTimeout(()=>location.reload(), 700); }
+  if(d.ok){
+    toast(d.message || '已录入');
+    // 手动录入产生新批次，跳转后自动选中该批次卡片
+    setTimeout(()=>{ location.href = '/reimburses?batch_id=' + encodeURIComponent(d.batch_id); }, 700);
+  }
   else toast(d.message || '录入失败', false);
 }
 
@@ -732,7 +818,8 @@ async function delBatch(bid){
   }
   busyDone();
   if(fail) toast(`删除完成：${ids.length - fail} 张成功，${fail} 张失败`, false);
-  setTimeout(()=>location.reload(), 400);
+  // 删除后跳回无参列表页：服务端自动选中最新批次（无批次则显示全部）
+  setTimeout(()=>{ location.href = '/reimburses'; }, 400);
 }
 
 // 点击遮罩关闭面板（不干扰 base.html 的 closeModal）

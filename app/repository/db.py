@@ -64,6 +64,32 @@ CREATE TABLE IF NOT EXISTS item_alias (
     updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
 
+-- 人工费用分类决策：财务确认/修正后的发票分类（只记录人工决策，系统推测不落库）
+-- source: manual = 财务在列表里确认或修改
+CREATE TABLE IF NOT EXISTS invoice_category (
+    invoice_id INTEGER PRIMARY KEY,
+    category   TEXT NOT NULL,
+    source     TEXT NOT NULL DEFAULT 'manual',
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    FOREIGN KEY(invoice_id) REFERENCES invoice(id) ON DELETE CASCADE
+);
+
+-- 分类纠正记忆：kind=submitter 按提交人、kind=item 按发票明细
+-- wrong_value 记录纠正前的值（员工误填的费用类型或系统推测值），为空表示"当时没填"
+CREATE TABLE IF NOT EXISTS category_memory (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind        TEXT NOT NULL CHECK(kind IN ('submitter','item')),
+    key         TEXT NOT NULL,
+    wrong_value TEXT NOT NULL DEFAULT '',
+    category    TEXT NOT NULL,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_category_memory
+    ON category_memory(kind, key);
+
 -- 不变量 I2（部分唯一索引；含上述调整 1）
 CREATE UNIQUE INDEX IF NOT EXISTS uq_invoice_code_no
     ON invoice(invoice_code, invoice_no)
@@ -215,6 +241,56 @@ CREATE TABLE IF NOT EXISTS company_profile (
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_company_tax_no ON company_profile(tax_no);
+
+-- 费用分类字典：分类只能禁用、不能物理删除（禁用后新建时隐藏，历史数据正常显示）
+CREATE TABLE IF NOT EXISTS category_dict (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    name       TEXT NOT NULL UNIQUE,
+    is_builtin INTEGER NOT NULL DEFAULT 0,
+    enabled    INTEGER NOT NULL DEFAULT 1,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+
+-- 报销单侧分类决策：与发票侧相互独立（未匹配时互不影响）
+CREATE TABLE IF NOT EXISTS reimburse_category (
+    reimburse_id INTEGER PRIMARY KEY,
+    category     TEXT NOT NULL,
+    source       TEXT NOT NULL DEFAULT 'manual',
+    created_at   TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    updated_at   TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    FOREIGN KEY(reimburse_id) REFERENCES reimburse(id) ON DELETE CASCADE
+);
+
+-- 已匹配双方的分类冲突：resolution 为空 = 待处理，keep = 保留差异
+CREATE TABLE IF NOT EXISTS category_conflict (
+    reimburse_id       INTEGER PRIMARY KEY,
+    invoice_category   TEXT NOT NULL DEFAULT '',
+    reimburse_category TEXT NOT NULL DEFAULT '',
+    detail             TEXT NOT NULL DEFAULT '',
+    resolution         TEXT NOT NULL DEFAULT ''
+                       CHECK(resolution IN ('','reimburse','invoice','keep')),
+    detected_at        TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    resolved_at        TEXT,
+    FOREIGN KEY(reimburse_id) REFERENCES reimburse(id) ON DELETE CASCADE
+);
+
+-- 全量审计日志：字典维护、单条/批量修改、冲突仲裁、解除匹配
+CREATE TABLE IF NOT EXISTS audit_log (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    action       TEXT NOT NULL,
+    target_type  TEXT NOT NULL,
+    target_id    TEXT NOT NULL DEFAULT '',
+    target_label TEXT NOT NULL DEFAULT '',
+    old_value    TEXT NOT NULL DEFAULT '',
+    new_value    TEXT NOT NULL DEFAULT '',
+    operator     TEXT NOT NULL DEFAULT 'admin',
+    detail       TEXT NOT NULL DEFAULT '',
+    created_at   TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log(created_at);
 """
 
 
@@ -332,3 +408,13 @@ def _migrate(conn: sqlite3.Connection) -> None:
              json.dumps(default_fields_config(), ensure_ascii=False)),
         )
         logger.info("迁移: 插入内置经典模板")
+
+    # 3. 费用分类字典：首次启动写入内置六类（只初始化一次，之后由设置页维护）
+    if conn.execute("SELECT COUNT(*) AS c FROM category_dict").fetchone()["c"] == 0:
+        from app.domain.categorize import STANDARD_CATEGORIES
+        for i, name in enumerate(STANDARD_CATEGORIES):
+            conn.execute(
+                "INSERT INTO category_dict (name, is_builtin, enabled, sort_order) VALUES (?, 1, 1, ?)",
+                (name, i),
+            )
+        logger.info("迁移: 初始化费用分类字典 %s 项", len(STANDARD_CATEGORIES))

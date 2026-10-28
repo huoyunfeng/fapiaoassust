@@ -11,13 +11,14 @@
   <div class="muted">
     待人工处理 {{ pending|length }} · 冲突 {{ counts.get('CONFLICT',0) }} ·
     自动通过 {{ counts.get('MATCHED',0) }} · 已确认 {{ counts.get('CONFIRMED',0) }} ·
-    无候选 {{ unmatched|length }}
+    无候选 {{ unmatched|length }} · 分类差异 {{ conflict_unresolved }}
   </div>
 </div>
 
 <div class="tabs">
   <div class="tab active" onclick="switchTab(this,'panePending')">待人工处理 ({{ pending|length }})</div>
   <div class="tab" onclick="switchTab(this,'paneActive')">生效匹配 ({{ active|length }})</div>
+  <div class="tab" onclick="switchTab(this,'paneConflict')">分类差异 ({{ conflict_unresolved }})</div>
   <div class="tab" onclick="switchTab(this,'paneUnmatched')">无候选发票 ({{ unmatched|length }})</div>
   <div class="tab" onclick="switchTab(this,'paneManual')">人工指定匹配</div>
 </div>
@@ -29,9 +30,10 @@
       <tr><th>匹配</th><th>状态</th><th>类型</th><th>分数</th><th>发票号</th><th>价税合计</th>
           <th>报销单号</th><th>报销金额</th><th>智能提醒</th><th>操作</th></tr>
       {% for m in pending %}
-      <tr id="row-{{ m.id }}">
+      <tr id="row-{{ m.id }}"{% if m.soft_locked %} style="background:#fffbeb;"{% endif %}>
         <td>#{{ m.id }}</td>
-        <td><span class="badge {{ m.status|badge }}">{{ m.status|dstatus|status_cn }}</span></td>
+        <td><span class="badge {{ m.status|badge }}">{{ m.status|dstatus|status_cn }}</span>
+            {% if m.soft_locked %}<span class="badge badge-yellow" title="⚠️ 该发票同时被多张报销单作为候选，请核实">⚠️ 多单候选</span>{% endif %}</td>
         <td class="muted">{{ m.match_type|match_type_cn }}</td>
         <td><b>{{ '%.2f'|format(m.match_score) }}</b></td>
         <td>{{ m.invoice_no or '—' }}</td><td>{{ m.total_amount or '—' }}</td>
@@ -74,6 +76,42 @@
       {% endfor %}
     </table>
     {% else %}<p class="muted">暂无生效匹配</p>{% endif %}
+  </div>
+</div>
+
+<div class="tabpane" id="paneConflict">
+  <div class="card">
+    {% if conflicts %}
+    <p class="muted mb">发票明细与报销单主分类不一致时标记为「分类差异」（一对多仅改单张发票属正常业务场景，允许保留）。可【以报销单为主（强制拉平明细）】或保留差异；操作均记入审计日志。</p>
+    <table>
+      <tr><th>报销单号</th><th>提交人</th><th>发票数</th><th>发票侧分类</th>
+          <th>报销单侧分类</th><th>说明</th><th>状态</th><th>处理</th></tr>
+      {% for c in conflicts %}
+      <tr id="cf-{{ c.reimburse_id }}">
+        <td>{{ c.reimburse_no }}</td>
+        <td class="muted">{{ c.submitter or '—' }}</td>
+        <td>{{ c.invoice_count }}</td>
+        <td><span class="cat-tag confirmed">{{ c.invoice_category or '—' }}</span></td>
+        <td><span class="cat-tag confirmed">{{ c.reimburse_category or '—' }}</span></td>
+        <td class="wrap muted">{{ c.detail }}</td>
+        <td>
+          {% if not c.resolution %}<span class="badge badge-yellow">⚠️ 分类差异</span>
+          {% elif c.resolution == 'keep' %}<span class="badge badge-yellow">已保留差异</span>
+          {% else %}<span class="badge badge-green">已仲裁</span>{% endif %}
+        </td>
+        <td>
+          {% if not c.resolution %}
+          <div style="display:flex;gap:6px;flex-wrap:wrap;">
+            <button class="btn btn-sm" onclick="resolveCf({{ c.reimburse_id }},'reimburse')" title="把所有关联发票明细分类强制改为报销单分类">以报销单为主（强制拉平明细）</button>
+            <button class="btn btn-sm btn-outline" onclick="resolveCf({{ c.reimburse_id }},'invoice')">以发票为准</button>
+            <button class="btn btn-sm btn-outline" onclick="resolveCf({{ c.reimburse_id }},'keep')">保留差异</button>
+          </div>
+          {% else %}<span class="muted">{{ c.resolved_at or '' }}</span>{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </table>
+    {% else %}<p class="muted">暂无分类差异。发票明细与报销单主分类不一致时会自动在此标记。</p>{% endif %}
   </div>
 </div>
 
@@ -121,9 +159,20 @@
 // 路由联动：?tab=matched/pending/unmatched/manual 自动激活对应 Tab（在 applyFocus 之前执行，保证焦点行可见）
 (function(){
   const tab=new URLSearchParams(location.search).get('tab');
-  const map={pending:'panePending',matched:'paneActive',unmatched:'paneUnmatched',manual:'paneManual'};
+  const map={pending:'panePending',matched:'paneActive',conflict:'paneConflict',
+             unmatched:'paneUnmatched',manual:'paneManual'};
   if(map[tab]) activateTab(map[tab]);
 })();
+// 分类差异仲裁：reimburse=以报销单为准 / invoice=以发票为准 / keep=保留差异
+async function resolveCf(rid, mode){
+  const label={reimburse:'以报销单为主（强制拉平明细）', invoice:'以发票为准', keep:'保留差异'}[mode] || mode;
+  if(!await confirmDlg('确认按「' + label + '」处理该分类差异？\n操作将记入审计日志。')) return;
+  const fd=new FormData(); fd.set('mode',mode); fd.set('operator','admin');
+  post(`/api/conflicts/${rid}/resolve`, fd).then(j=>{
+    const d = j.data || j;
+    if(d && d.ok !== false) setTimeout(()=>location.reload(), 700);
+  });
+}
 async function act(action, id){
   const note = await promptDlg(action==='confirm'?'确认备注（可空）：':'拒绝原因（可空）：','') ;
   if(note===null)return;
