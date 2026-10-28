@@ -164,15 +164,24 @@ def _import_one(file_name: str, content: bytes, operator: str) -> dict:
                 "status": None, "message": f"不支持的文件类型: {file_type or '未知'}"}
 
     file_hash = _file_store.sha256(content)
+    # 先只读查一次重复：重复文件不必落盘，避免产生无引用的孤儿文件
+    with db.read() as conn:
+        existed = invoice_repo.get_by_hash(conn, file_hash)
+    if existed:
+        return {"file_name": file_name, "ok": True, "skipped": True,
+                "invoice_id": existed["id"], "status": existed["status"],
+                "message": f"文件已存在（发票 #{existed['id']}），已自动跳过"}
+
     t_save = time.perf_counter()
     source_path = str(_file_store.save(file_name, content))
     save_ms = (time.perf_counter() - t_save) * 1000
     task = ParseTask(file_name=file_name, file_type=file_type, content=content)
 
     with db.tx() as conn:
-        # 不变量 I1：同一文件 hash 只能存在一条发票 -> 直接拦截
+        # 不变量 I1 二次确认（并发上传同一文件时兜底）：清理刚写入的副本再跳过
         existed = invoice_repo.get_by_hash(conn, file_hash)
         if existed:
+            _file_store.delete(source_path)
             return {"file_name": file_name, "ok": True, "skipped": True,
                     "invoice_id": existed["id"], "status": existed["status"],
                     "message": f"文件已存在（发票 #{existed['id']}），已自动跳过"}
@@ -412,10 +421,10 @@ def update_item_summary(invoice_id: int, item_summary: str, operator: str = None
         raw["item_summary_user_edit"] = True
 
         old_summary = row.get("item_summary") or ""
+        # updated_at 由仓储层 update() 自动刷新，这里无需传
         invoice_repo.update(conn, invoice_id, {
             "item_summary": cleaned,
             "raw_json": json.dumps(raw, ensure_ascii=False),
-            "updated_at": "datetime('now','localtime')",
         })
         # 词典记忆：记录 原始词 -> 新词，同步历史同名词条；以后导入自动套用
         learned = False
@@ -536,6 +545,7 @@ def invoice_preview(invoice_id: int) -> Optional[dict]:
         if row is None:
             return None
         row.pop("raw_json", None)
+        src = row.pop("source_path", "") or ""   # 绝对路径不下发前端
         m = match_repo.active_for_invoice(conn, invoice_id)
         match = None
         if m:
@@ -548,9 +558,18 @@ def invoice_preview(invoice_id: int) -> Optional[dict]:
                 "submitter": (reb or {}).get("submitter"),
                 "amount": (reb or {}).get("amount"),
             }
-        return {"invoice": row, "match": match,
-                "file_type": (row.get("file_type") or "").lower(),
-                "has_file": invoice_file_path(invoice_id) is not None}
+    # 就地判断原件存在性（复用安全约束：仅上传目录内），不再开第二个连接查库
+    has_file = False
+    if src:
+        try:
+            p = Path(src).resolve()
+            root = Path(settings.upload_dir).resolve()
+            has_file = p != root and root in p.parents and p.is_file()
+        except OSError:
+            pass
+    return {"invoice": row, "match": match,
+            "file_type": (row.get("file_type") or "").lower(),
+            "has_file": has_file}
 
 
 def invoice_file_path(invoice_id: int) -> Optional[Path]:
@@ -583,14 +602,10 @@ def list_invoices(status: str = None, keyword: str = None,
                   limit: int = 500, offset: int = 0) -> List[dict]:
     with db.read() as conn:
         if category:
-            # 分类是派生值（用户词典 + 智能归类），需全量取出后过滤再分页
-            rows = invoice_repo.list(conn, status=status, keyword=keyword,
-                                     date_from=date_from, date_to=date_to,
-                                     limit=100000, offset=0)
-            alias_map = alias_repo.all(conn)
-            rows = [r for r in rows
-                    if _category_of(r.get("item_summary"), alias_map) == category]
-            rows = rows[offset:offset + limit]
+            ids = _category_ids(conn, category, status, keyword, date_from, date_to)
+            page_ids = ids[offset:offset + limit]
+            rows = (invoice_repo.list(conn, ids=page_ids, limit=len(page_ids))
+                    if page_ids else [])
         else:
             rows = invoice_repo.list(conn, status=status, keyword=keyword,
                                      date_from=date_from, date_to=date_to,
@@ -604,17 +619,32 @@ def list_invoices(status: str = None, keyword: str = None,
     return rows
 
 
+# 仪表盘统计口径：排除异常/重复发票（aggregate_by_item_summary 同样排除）。
+# 分类下钻来自仪表盘，列表必须沿用同一口径，否则会出现"点开 12 张却看到 15 张"。
+_STATS_EXCLUDED = ("ABNORMAL", "DUPLICATE")
+
+
+def _drill_exclude(status: str, category: str) -> Optional[tuple]:
+    """分类下钻且未显式指定状态时，排除异常/重复发票；用户显式选状态则以状态为准。"""
+    return _STATS_EXCLUDED if (category and not status) else None
+
+
+def _category_ids(conn, category: str, status: str = None, keyword: str = None,
+                  date_from: str = None, date_to: str = None) -> List[int]:
+    """分类过滤后的发票 id 列表（id 升序）。分类是派生值，只能取摘要列内存过滤。"""
+    pairs = invoice_repo.list_id_summaries(
+        conn, status=status, keyword=keyword, date_from=date_from, date_to=date_to,
+        exclude_status=_drill_exclude(status, category))
+    alias_map = alias_repo.all(conn)
+    return [i for i, s in pairs if _category_of(s, alias_map) == category]
+
+
 def count_invoices(status: str = None, keyword: str = None, category: str = None,
                    date_from: str = None, date_to: str = None) -> int:
     """发票总数（与 list_invoices 同筛选口径，分页用）。"""
     with db.read() as conn:
         if category:
-            rows = invoice_repo.list(conn, status=status, keyword=keyword,
-                                     date_from=date_from, date_to=date_to,
-                                     limit=100000, offset=0)
-            alias_map = alias_repo.all(conn)
-            return sum(1 for r in rows
-                       if _category_of(r.get("item_summary"), alias_map) == category)
+            return len(_category_ids(conn, category, status, keyword, date_from, date_to))
         return invoice_repo.count(conn, status=status, keyword=keyword,
                                   date_from=date_from, date_to=date_to)
 
@@ -627,13 +657,8 @@ def page_of_invoice(invoice_id: int, status: str = None, keyword: str = None,
         if invoice_repo.get(conn, invoice_id) is None:
             return None
         if category:
-            rows = invoice_repo.list(conn, status=status, keyword=keyword,
-                                     date_from=date_from, date_to=date_to,
-                                     limit=100000, offset=0)
-            alias_map = alias_repo.all(conn)
-            rows = [r for r in rows
-                    if _category_of(r.get("item_summary"), alias_map) == category]
-            pos = next((i for i, r in enumerate(rows) if r["id"] == invoice_id), None)
+            ids = _category_ids(conn, category, status, keyword, date_from, date_to)
+            pos = ids.index(invoice_id) if invoice_id in ids else None
             return (pos // page_size + 1) if pos is not None else None
         pos = invoice_repo.position_of(conn, invoice_id, status=status, keyword=keyword,
                                        date_from=date_from, date_to=date_to)

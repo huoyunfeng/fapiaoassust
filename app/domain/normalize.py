@@ -6,7 +6,7 @@
 """
 import re
 from datetime import datetime, timedelta
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Optional
 
 from app.domain.dto import InvoiceDTO
@@ -25,16 +25,16 @@ def clean(v) -> str:
 
 
 def to_decimal(v) -> Optional[Decimal]:
-    """金额标准化：去除逗号/货币符号，量化到 0.01。失败返回 None。"""
+    """金额标准化：去除逗号/货币符号，量化到 0.01（四舍五入）。失败返回 None。"""
     if v is None or v == "":
         return None
     if isinstance(v, Decimal):
-        return v.quantize(Decimal("0.01"))
+        return v.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     if isinstance(v, (int, float)):
-        return Decimal(str(v)).quantize(Decimal("0.01"))
+        return Decimal(str(v)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     s = str(v).replace(",", "").replace("，", "").replace("¥", "").replace("￥", "").strip()
     try:
-        return Decimal(s).quantize(Decimal("0.01"))
+        return Decimal(s).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     except (InvalidOperation, ValueError):
         return None
 

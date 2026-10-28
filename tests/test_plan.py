@@ -422,6 +422,16 @@ class TestItemSummaryRules:
         assert categorize_item("鲜花") == "其他费用"
         assert categorize_item("") == "其他费用"
 
+    def test_same_file_twice_no_orphan_file(self, env):
+        """重复文件跳过时不得再次落盘（避免上传目录留下无引用的孤儿文件）。"""
+        content = xml_invoice("ORPH0000001", "100.00")
+        env["inv"].import_files([("o.xml", "", content)])[0]
+        root = env["inv"]._file_store.root
+        before = len([p for p in root.rglob("*") if p.is_file()])
+        r2 = env["inv"].import_files([("o.xml", "", content)])[0]
+        after = len([p for p in root.rglob("*") if p.is_file()])
+        assert r2["skipped"] and after == before
+
     def test_category_drill_filter(self, env):
         """仪表盘下钻：发票列表按分类 + 日期范围过滤（分类口径与仪表盘一致）。"""
         env["inv"].import_files([("c2.xml", "", xml_invoice("CAT0000002", "100.00", item_name="*餐饮服务*餐饮服务"))])
@@ -433,6 +443,14 @@ class TestItemSummaryRules:
         # 日期范围排除：9 月的餐饮发票不在 10 月范围内
         assert env["inv"].count_invoices(category="餐饮费", date_from="2026-10-01", date_to="2026-10-31") == 0
         assert env["inv"].count_invoices(category="办公费") == 1
+        # 同号不同内容 -> DUPLICATE：仪表盘统计不计入，下钻列表必须同样不计入
+        env["inv"].import_files([("c2b.xml", "", xml_invoice("CAT0000002", "100.00",
+                                                             seller="另一家供应商",
+                                                             item_name="*餐饮服务*餐饮服务"))])
+        assert env["inv"].count_invoices(category="餐饮费") == 1
+        assert len(env["inv"].list_invoices(category="餐饮费")) == 1
+        # 用户显式指定状态时以状态为准（可查看重复发票）
+        assert env["inv"].count_invoices(category="餐饮费", status="DUPLICATE") == 1
         # focus 定位同样支持分类过滤
         with env["db"].read() as conn:
             inv = [r for r in env["invoice_repo"].list(conn) if r["invoice_no"] == "CAT0000003"][0]

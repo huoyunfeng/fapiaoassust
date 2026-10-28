@@ -45,12 +45,14 @@ MAX_PAGE_SIZE = 1000               # 自定义条数上限，防止一次渲染�
 
 
 def _norm_page_size(page_size: int) -> int:
-    """每页条数：预设值或 1~1000 的自定义值，非法值回退 20。"""
+    """每页条数：预设值或 1~1000 的自定义值；超上限钳制到 1000，非法值回退 20。"""
     try:
         n = int(page_size)
     except (TypeError, ValueError):
         return 20
-    return n if 1 <= n <= MAX_PAGE_SIZE else 20
+    if n < 1:
+        return 20
+    return min(n, MAX_PAGE_SIZE)
 
 
 def _paginate(items: list, page: int, page_size: int) -> tuple:

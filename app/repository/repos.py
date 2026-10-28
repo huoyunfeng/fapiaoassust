@@ -65,12 +65,18 @@ class InvoiceRepo:
 
     @staticmethod
     def _filter_sql(status: str = None, keyword: str = None,
-                    date_from: str = None, date_to: str = None) -> tuple:
+                    date_from: str = None, date_to: str = None,
+                    exclude_status: tuple = None) -> tuple:
         """发票列表筛选条件片段（list/count/position_of 共用，保证口径一致）。"""
         sql, params = "", []
         if status:
             sql += " AND status = ?"
             params.append(status)
+        # 排除指定状态：仪表盘下钻需与统计口径一致（统计不计异常/重复发票）
+        if exclude_status:
+            marks = ", ".join("?" for _ in exclude_status)
+            sql += f" AND status NOT IN ({marks})"
+            params += list(exclude_status)
         if keyword:
             sql += " AND (invoice_no LIKE ? OR invoice_code LIKE ? OR buyer_name LIKE ? OR seller_name LIKE ? OR item_summary LIKE ?)"
             kw = f"%{keyword}%"
@@ -87,9 +93,10 @@ class InvoiceRepo:
     def list(self, conn: sqlite3.Connection, status: str = None,
              keyword: str = None, limit: int = 500, offset: int = 0,
              ids: List[int] = None, date_from: str = None,
-             date_to: str = None) -> List[dict]:
+             date_to: str = None, exclude_status: tuple = None) -> List[dict]:
         sql, params = "SELECT * FROM invoice WHERE 1=1", []
-        f_sql, f_params = self._filter_sql(status, keyword, date_from, date_to)
+        f_sql, f_params = self._filter_sql(status, keyword, date_from, date_to,
+                                          exclude_status)
         sql += f_sql
         params += f_params
         if ids:
@@ -100,22 +107,40 @@ class InvoiceRepo:
         params += [limit, offset]
         return _rows_to_dicts(conn.execute(sql, params))
 
+    def list_id_summaries(self, conn: sqlite3.Connection, status: str = None,
+                          keyword: str = None, date_from: str = None,
+                          date_to: str = None,
+                          exclude_status: tuple = None) -> List[tuple]:
+        """只取 [(id, item_summary)]（id 升序），供分类这类派生条件在内存过滤。
+
+        分类 = 用户词典 + 智能归类，无法用 SQL 表达；只取两列可避免全字段全量加载。
+        """
+        sql, params = "SELECT id, item_summary FROM invoice WHERE 1=1", []
+        f_sql, f_params = self._filter_sql(status, keyword, date_from, date_to,
+                                          exclude_status)
+        sql += f_sql + " ORDER BY id ASC"
+        params += f_params
+        return [(r["id"], r["item_summary"]) for r in conn.execute(sql, params)]
+
     def count(self, conn: sqlite3.Connection, status: str = None,
               keyword: str = None, date_from: str = None,
-              date_to: str = None) -> int:
+              date_to: str = None, exclude_status: tuple = None) -> int:
         """发票总数（与 list 同筛选口径，分页用）。"""
         sql, params = "SELECT COUNT(*) AS n FROM invoice WHERE 1=1", []
-        f_sql, f_params = self._filter_sql(status, keyword, date_from, date_to)
+        f_sql, f_params = self._filter_sql(status, keyword, date_from, date_to,
+                                          exclude_status)
         sql += f_sql
         params += f_params
         return conn.execute(sql, params).fetchone()["n"]
 
     def position_of(self, conn: sqlite3.Connection, invoice_id: int,
                     status: str = None, keyword: str = None,
-                    date_from: str = None, date_to: str = None) -> Optional[int]:
+                    date_from: str = None, date_to: str = None,
+                    exclude_status: tuple = None) -> Optional[int]:
         """按 id ASC 排序时 invoice_id 之前的行数（用于计算 focus 行所在页码）。"""
         sql, params = "SELECT COUNT(*) AS n FROM invoice WHERE id < ?", [invoice_id]
-        f_sql, f_params = self._filter_sql(status, keyword, date_from, date_to)
+        f_sql, f_params = self._filter_sql(status, keyword, date_from, date_to,
+                                          exclude_status)
         sql += f_sql
         params += f_params
         return conn.execute(sql, params).fetchone()["n"]
@@ -362,6 +387,18 @@ class MatchRepo:
                 )"""
         )
         return {r["reimburse_id"] for r in rows if r["reimburse_id"] is not None}
+
+    def active_invoice_ids(self, conn: sqlite3.Connection) -> set:
+        """所有已占用（生效匹配）的发票 id，含多对一汇总匹配（一次查询，替代逐票查询）。"""
+        rows = conn.execute(
+            f"""SELECT DISTINCT invoice_id FROM (
+                    SELECT invoice_id FROM match_result WHERE {ACTIVE_SQL} AND invoice_id IS NOT NULL
+                    UNION
+                    SELECT p.invoice_id FROM match_pair p
+                        JOIN match_result m ON m.id = p.match_id AND m.{ACTIVE_SQL}
+                )"""
+        )
+        return {r["invoice_id"] for r in rows if r["invoice_id"] is not None}
 
     def list(self, conn: sqlite3.Connection, statuses: List[str] = None,
              limit: int = 500) -> List[dict]:

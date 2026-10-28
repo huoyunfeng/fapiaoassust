@@ -220,7 +220,7 @@
       <td class="col-status fixed-right col-state"><span class="badge {% if i.status == 'NORMAL' %}badge-red{% else %}{{ i.status|badge }}{% endif %}">{{ i.status|status_cn }}</span></td>
       <td class="col-action fixed-right" onclick="event.stopPropagation()">
         <button class="btn btn-sm btn-outline" onclick="openInvDrawer({{ i.id }})">详情</button>
-        <button class="btn btn-sm btn-danger" onclick="delOne({{ i.id }}, '{{ i.invoice_no or i.id }}')">删除</button>
+        <button class="btn btn-sm btn-danger" data-id="{{ i.id }}" data-no="{{ i.invoice_no or i.id }}" onclick="delOne(this)">删除</button>
       </td>
     </tr>
     {% endfor %}
@@ -398,7 +398,9 @@ function toggleAll(el){
   document.querySelectorAll('.chk-inv').forEach(c=>c.checked = el.checked);
   refreshSel();
 }
-async function delOne(id, label){
+async function delOne(btn){
+  // 发票号走 data 属性（HTML 转义），避免含引号的发票号破坏 onclick 的 JS 字符串
+  const id = btn.dataset.id, label = btn.dataset.no;
   if(!await confirmDlg('确认删除发票 ' + label + '？\n其匹配记录将级联删除，已匹配的报销单会自动释放。')) return;
   const fd = new FormData();
   const j = await post('/api/invoices/' + id + '/delete', fd, {title:'正在删除发票…'});

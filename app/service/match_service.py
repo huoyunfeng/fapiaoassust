@@ -83,9 +83,10 @@ def run_matching(operator: str = None) -> dict:
         summary["cleared"] = match_repo.delete_non_active(conn)
         company_tax_nos = company_repo.tax_nos(conn)
 
-        # 候选集：NORMAL 且无生效匹配的发票
+        # 候选集：NORMAL 且无生效匹配的发票（一次查询取已占用 id，避免逐票 N+1 查询）
+        occupied_invoices = match_repo.active_invoice_ids(conn)
         invoices = [r for r in invoice_repo.list(conn, status="NORMAL", limit=100000)
-                    if match_repo.active_for_invoice(conn, r["id"]) is None]
+                    if r["id"] not in occupied_invoices]
         # 未占用报销单
         occupied = match_repo.active_reimburse_ids(conn)
         reimburses = [r for r in reimburse_repo.list(conn, limit=100000)
@@ -138,7 +139,9 @@ def run_matching(operator: str = None) -> dict:
             pool = [inv_dtos[i] for i in available]
             combo = _engine.find_many_to_one(pool, reb)
             if combo:
-                ids = [i for i in available if inv_dtos[i] in combo]
+                # 按对象身份匹配：InvoiceDTO 是值相等的 dataclass，用 `in` 会把
+                # 字段值完全相同的另一张发票也误选进来（导致重复计入汇总）
+                ids = [i for i in available if any(inv_dtos[i] is d for d in combo)]
                 for inv_id in ids:
                     ps = PairScore(score=0.9, match_type=T_MANY_TO_ONE,
                                    diff_fields=[f"汇总匹配: {len(combo)} 张发票合计 = 报销单金额"])
