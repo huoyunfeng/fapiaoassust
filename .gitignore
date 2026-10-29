@@ -12,7 +12,7 @@ data/logs/
 # 数据库（业务数据，不提交）
 data/fapiao.db
 # 恢复保底备份与备份 zip 目录，不提交
-data/fapiao.db.bak
+data/fapiao.db.bak*
 data/backups/
 
 # 虚拟环境
