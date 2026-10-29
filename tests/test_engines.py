@@ -183,13 +183,18 @@ class TestMatcher:
         assert MatchEngine().decide_status(ps) == "MATCHED"
 
     def test_conflict_on_no_diff(self):
+        """裁决2：号不一致但金额一致 + 日期相近 → 疑似填错，推 SUSPICIOUS（不是 CONFLICT）。"""
         ps = MatchEngine().score_pair(
             self._inv(invoice_no="NO999"), self._reb(invoice_no="NO100"))
-        assert MatchEngine().decide_status(ps) == "CONFLICT"
+        # 新架构：号不一致但金额/日期全中 → 疑似号填错 → SUSPICIOUS，不是 CONFLICT
+        assert MatchEngine().decide_status(ps) == "SUSPICIOUS"
+        assert ps.suspected_no_error and ps.is_conflict
 
     def test_conflict_on_amount(self):
+        """唯一键金额冲突：号一致但金额差大（>1 元容差）→ CONFLICT。"""
         ps = MatchEngine().score_pair(
             self._inv(), self._reb(amount=Decimal("150.00"), invoice_no="NO100"))
+        # 短路逻辑：号一致 + 金额差 50 > 1 元 → 情况 C → conflict_fields=["amount"]
         assert "amount" in ps.conflict_fields
         assert MatchEngine().decide_status(ps) == "CONFLICT"
 
@@ -203,9 +208,11 @@ class TestMatcher:
         assert MatchEngine().decide_status(ps) == "SUSPICIOUS"
 
     def test_out_of_period_penalty(self):
-        ps_in = MatchEngine().score_pair(self._inv(), self._reb())
+        """第二阶段日期扣分：唯一键未命中时（报销单不填号），日期超出期间应降分。"""
+        # 报销单不填号 → 走第二阶段多维打分，日期维度正常参与
+        ps_in = MatchEngine().score_pair(self._inv(), self._reb(invoice_no=""))
         ps_out = MatchEngine().score_pair(
-            self._inv(invoice_date="2026-01-01"), self._reb())
+            self._inv(invoice_date="2026-01-01"), self._reb(invoice_no=""))
         assert ps_out.score < ps_in.score
 
     def test_many_to_one(self):

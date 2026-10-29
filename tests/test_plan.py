@@ -202,11 +202,12 @@ class TestBoundary:
         assert r["status"] == "NORMAL" and "过旧" in r["message"]  # WARN 不阻断
 
     def test_date_cross_year(self, env):
+        """跨年期间外扣分（走第二阶段：报销单不填号，日期维度正常参与）。"""
         from app.domain.matcher import MatchEngine
         from app.domain.dto import InvoiceDTO, ReimburseDTO
         ps = MatchEngine().score_pair(
             InvoiceDTO(invoice_no="C", invoice_date="2025-12-31", total_amount=Decimal("100")),
-            ReimburseDTO(amount=Decimal("100"), invoice_no="C",
+            ReimburseDTO(amount=Decimal("100"), invoice_no="",   # 不填号 → 走第二阶段
                          period_start="2026-01-01", period_end="2026-01-31"))
         assert 0.0 <= ps.score <= 1.0 and ps.score < 1.0  # 跨年期间外扣分但不报错
 
@@ -735,7 +736,7 @@ class TestCategoryEngine:
         rb2 = [x for x in env["reb"].list_reimburses() if x["reimburse_no"] == "RES2"][0]
         assert rb2["category"] == "餐饮费" and rb2["cat_status"] == "CONFIRMED"
         from app.service import audit_service
-        logs = audit_service.list_recent(20, target_type="reimburse")
+        logs = audit_service.list_recent(limit=20, target_type="reimburse")["items"]
         assert any(l["action"] == "reimburse_category" and l["new_value"] == "餐饮费"
                    for l in logs)
 
@@ -990,7 +991,7 @@ class TestCategoryGovernance:
         rb = [x for x in env["reb"].list_reimburses() if x["reimburse_no"] == "UMR1"][0]
         # 解除后两边各自保留解除前的最新分类（同步后的交通费）
         assert rb["cat_matched"] is False and rb["category"] == "交通费"
-        assert any(l["action"] == "unmatch" for l in audit_service.list_recent(50))
+        assert any(l["action"] == "unmatch" for l in audit_service.list_recent(limit=50)["items"])
 
     def test_expense_breakdown_amount_counted_once(self, env):
         """模块五：金额只遍历发票表一次；已匹配用报销单分类，否则用发票分类。"""
@@ -1109,7 +1110,7 @@ class TestCategoryGovernance:
         rb2 = [x for x in env["reb"].list_reimburses() if x["reimburse_no"] == "GOVR1"][0]
         assert rb2["category"] == "餐饮费"
         # 审计：记录原分类名与目标分类名
-        logs = audit_service.list_recent(50, "category_dict")
+        logs = audit_service.list_recent(limit=50, target_type="category_dict")["items"]
         assert any(l["action"] == "category_dict_merge" and l["old_value"] == "研发加班餐"
                    and l["new_value"] == "餐饮费" for l in logs)
         # 已禁用的目标分类不可作为合并目标
@@ -1240,6 +1241,105 @@ class TestAmbiguousCandidates:
 
 
 # =====================================================================
+# 快捷修复（单点重匹配事务）：状态翻转 / 防抢占 / 强制绑定 / 审计
+# =====================================================================
+class TestQuickFix:
+
+    def _one_pair(self, env, inv_no, inv_total, reb_no, reb_amount, reb_inv_no=""):
+        env["inv"].import_files([("a.xml", "", xml_invoice(
+            inv_no, inv_total, date="2026-09-05", seller="嘀嘀出行",
+            item_name="*运输服务*打车费"))])
+        env["reb"].import_excel("r.xlsx", make_excel([
+            [reb_no, "张三", "2026-09-10", "2026-09-01", "2026-09-30",
+             "交通费", reb_amount, reb_inv_no, "", "打车报销"],
+        ]))
+        env["match"].run_matching()
+        with env["db"].read() as conn:
+            inv = env["invoice_repo"].list(conn)[0]
+            reb = [r for r in env["reimburse_repo"].list(conn)
+                   if r["reimburse_no"] == reb_no][0]
+            m = conn.execute(
+                "SELECT * FROM match_result WHERE invoice_id = ? ORDER BY id DESC LIMIT 1",
+                (inv["id"],)).fetchone()
+        return inv, reb, dict(m) if m else None
+
+    def test_quick_fix_repairs_amount_and_flips_status(self, env):
+        """号一致金额大差 -> 快捷修复报销金额 -> 单点重匹配成功，发票同步 MATCHED 并写审计。"""
+        inv, reb, m = self._one_pair(env, "QF000001", "100.00", "QFR1", "120.00", "QF000001")
+        assert m is not None
+        res = env["match"].quick_fix(match_id=m["id"], reb_fields={"amount": "100.00"})
+        assert res["ok"] is True and res["status"] == "MATCHED"
+        with env["db"].read() as conn:
+            inv_row = env["invoice_repo"].get(conn, inv["id"])
+            match_row = env["match_repo"].get(conn, m["id"])
+            audit = conn.execute(
+                "SELECT action, old_value, new_value, detail FROM audit_log "
+                "WHERE action='match_quick_fix'").fetchone()
+        assert inv_row["status"] == "MATCHED"
+        assert match_row["status"] == "MATCHED"
+        assert audit is not None
+        assert audit["old_value"] == "UNMATCHED" and audit["new_value"] == "MATCHED"
+        assert "报销金额" in (audit["detail"] or "")
+
+    def test_quick_fix_blocks_when_invoice_occupied(self, env):
+        """防抢占：发票已生效匹配到其他报销单时立即阻断，且不产生任何写入。"""
+        env["inv"].import_files([("a.xml", "", xml_invoice(
+            "QF000002", "38.00", date="2026-09-05", seller="嘀嘀出行",
+            item_name="*运输服务*打车费"))])
+        env["reb"].import_excel("r.xlsx", make_excel([
+            ["QFR2A", "张三", "2026-09-10", "2026-09-01", "2026-09-30",
+             "交通费", "38.00", "", "", "打车报销"],
+            ["QFR2B", "李四", "2026-09-10", "2026-09-01", "2026-09-30",
+             "交通费", "38.00", "", "", "打车报销"],
+        ]))
+        env["match"].run_matching()
+        with env["db"].read() as conn:
+            inv = env["invoice_repo"].list(conn)[0]
+            rebs = {r["reimburse_no"]: r for r in env["reimburse_repo"].list(conn)}
+        assert env["match"].manual_match(inv["id"], rebs["QFR2A"]["id"])["ok"] is True
+        # 基线行数（run_matching 为 QFR2B 产出的候选记录，非本次写入）
+        with env["db"].read() as conn:
+            n_before = conn.execute(
+                "SELECT COUNT(*) AS c FROM match_result WHERE reimburse_id = ?",
+                (rebs["QFR2B"]["id"],)).fetchone()["c"]
+        # 未占用的报销单 + 已占用发票 -> 阻断
+        res = env["match"].quick_fix(invoice_id=inv["id"],
+                                     reimburse_id=rebs["QFR2B"]["id"],
+                                     force_bind=True)
+        assert res["ok"] is False and "已被占用" in res["message"]
+        with env["db"].read() as conn:
+            n_after = conn.execute(
+                "SELECT COUNT(*) AS c FROM match_result WHERE reimburse_id = ?",
+                (rebs["QFR2B"]["id"],)).fetchone()["c"]
+            active = conn.execute(
+                "SELECT COUNT(*) AS c FROM match_result WHERE invoice_id = ? "
+                "AND status IN ('MATCHED','CONFIRMED')", (inv["id"],)).fetchone()["c"]
+        assert n_after == n_before          # 冲突阻断后未新增写入
+        assert active == 1                  # 仍只保留原有 QFR2A 生效匹配
+
+    def test_quick_fix_force_bind_unmatched_pair(self, env):
+        """强制绑定：无匹配记录的发票+报销单可直接生效（match_type=manual）。"""
+        env["inv"].import_files([("a.xml", "", xml_invoice(
+            "QF000003", "50.00", date="2026-09-05", seller="某公司",
+            item_name="*服务*咨询费"))])
+        env["reb"].import_excel("r.xlsx", make_excel([
+            ["QFR3", "王五", "2026-09-10", "2026-09-01", "2026-09-30",
+             "办公费", "999.00", "", "", "无号报销"],
+        ]))
+        env["match"].run_matching()
+        with env["db"].read() as conn:
+            inv = env["invoice_repo"].list(conn)[0]
+            reb = env["reimburse_repo"].list(conn)[0]
+        res = env["match"].quick_fix(invoice_id=inv["id"], reimburse_id=reb["id"],
+                                     force_bind=True, reason="财务强制指定")
+        assert res["ok"] is True and res["status"] == "MATCHED"
+        with env["db"].read() as conn:
+            row = env["match_repo"].active_for_invoice(conn, inv["id"])
+        assert row is not None and row["match_type"] == "manual"
+        assert row["status"] == "MATCHED"
+
+
+# =====================================================================
 # 相似记录三层判定：归类大类 / 销方核心字号 / 摘要核心词
 # =====================================================================
 class TestSimilarRules:
@@ -1356,7 +1456,7 @@ class TestBatchCards:
         from app.web.pages import _display_columns
         cols = _display_columns([], all_batches=True)
         keys = [c["key"] for c in cols]
-        assert keys == ["id", "_template", "reimburse_no", "submitter",
+        assert keys == ["id", "reimburse_no", "_template", "submitter",
                         "reimburse_date", "expense_type", "amount", "invoice_no"]
 
     def test_display_columns_batch_template(self, env):
@@ -1485,21 +1585,40 @@ class TestRobustMatchEngine:
         assert not ps.is_low_confidence
 
     def test_missing_no_or_date_capped_at_094(self):
-        """安全锁：无号或缺日期 -> 封顶 0.94，绝不自动通过。"""
+        """安全锁（仅第二阶段启用）：无号->封顶；双方都没日期->封顶；号一致时安全锁被短路跳过。"""
         from app.domain.matcher import MatchEngine
         from app.domain.dto import InvoiceDTO, ReimburseDTO
         eng = MatchEngine()
-        # 号一致、金额一致，但发票无开票日期
-        ps = self._pair(InvoiceDTO(invoice_no="N001", invoice_date=None,
-                                   total_amount=Decimal("100.00")))
-        assert ps.capped and ps.score == 0.94 and "日期" in ps.cap_reason
-        assert eng.decide_status(ps) == "SUSPICIOUS"
-        # 报销单未填发票号
+
+        # 场景1：双方都没号（报销单不填号）+ 双方都没日期 -> "发票号、日期缺失" 双封顶
+        ps1 = self._pair(InvoiceDTO(invoice_no=None, invoice_date=None,
+                                    total_amount=Decimal("100.00")),
+                         ReimburseDTO(invoice_no="", amount=Decimal("100.00")))
+        assert ps1.capped and ps1.score == 0.94
+        assert "发票号" in ps1.cap_reason and "日期" in ps1.cap_reason
+        assert eng.decide_status(ps1) == "SUSPICIOUS"
+
+        # 场景2：报销单未填发票号 + 有日期 -> 只有 "发票号缺失" 封顶
         ps2 = self._pair(reb=ReimburseDTO(
-            amount=Decimal("100.00"),
+            invoice_no="", amount=Decimal("100.00"),
             period_start="2026-09-01", period_end="2026-09-30"))
         assert ps2.capped and ps2.score == 0.94 and "发票号" in ps2.cap_reason
         assert eng.decide_status(ps2) == "SUSPICIOUS"
+
+        # 场景3（关键新语义）：号一致 + 金额一致 + 双方都没日期
+        # -> 第一阶段唯一键短路命中，跳过安全锁！auto_matchable=True -> MATCHED
+        ps3 = self._pair(InvoiceDTO(invoice_no="N001", invoice_date=None,
+                                    total_amount=Decimal("100.00")),
+                         ReimburseDTO(invoice_no="N001", amount=Decimal("100.00")))
+        assert ps3.auto_matchable and not ps3.capped
+        assert ps3.score == 1.0 and eng.decide_status(ps3) == "MATCHED"
+
+        # 场景4（关键新语义）：报销单缺期间但发票有日期 + 号一致 -> 短路跳过安全锁 -> MATCHED
+        ps4 = self._pair(InvoiceDTO(invoice_no="N001", invoice_date="2026-09-05",
+                                    total_amount=Decimal("100.00")),
+                         ReimburseDTO(invoice_no="N001", amount=Decimal("100.00")))
+        assert ps4.auto_matchable and ps4.score == 1.0
+        assert eng.decide_status(ps4) == "MATCHED"
 
     def test_empty_dimensions_excluded_not_neutral(self):
         """无日期：直接剔除分母，不给中性分（模块四）。"""
@@ -1628,5 +1747,369 @@ class TestRobustMatchEngine:
             ["R-LOWD", "张三", "2026-09-10", "2026-09-01", "2026-09-30",
              "费用", "100.50", "", "", ""]]))
         assert env["match"].list_matches(["SUSPICIOUS"]) == []
+
+
+# =====================================================================
+# 差异报告工作台：搜索 / 排序 / 批量绑定 / 并发失效 / 导出列
+# =====================================================================
+class TestReportWorkbench:
+
+    def _seed(self, env):
+        """一张精确匹配 + 一张疑似号填错（待处理），用于验证排序与搜索。"""
+        env["inv"].import_files([
+            ("a.xml", "", xml_invoice("RPW0001", "100.00", date="2026-09-05")),
+            ("b.xml", "", xml_invoice("RPW0002", "200.00", date="2026-09-05")),
+        ])
+        env["reb"].import_excel("r.xlsx", make_excel([
+            ["RPW-A", "张三", "2026-09-10", "2026-09-01", "2026-09-30",
+             "交通费", "100.00", "RPW0001", "", ""],
+            ["RPW-B", "李四", "2026-09-10", "2026-09-01", "2026-09-30",
+             "交通费", "200.00", "RPW0009", "", ""],
+        ]))
+        env["match"].run_matching()
+
+    def test_details_pending_first_then_time_desc(self, env):
+        """默认排序：异常（待处理）优先，其次按创建时间倒序。"""
+        self._seed(env)
+        data = env["report"].report_payload()
+        rows = data["details"]
+        assert len(rows) >= 2
+        assert rows[0]["pending"] is True
+        assert rows[0]["reimburse_no"] == "RPW-B"
+        assert data["stats"]["pending"] == 1
+
+    def test_search_q_filters_details_and_lists(self, env):
+        """关键词同时作用于主表与底部清单；筛选后回到第一页。"""
+        self._seed(env)
+        hit = env["report"].report_payload(q="RPW-A")
+        assert [r["reimburse_no"] for r in hit["details"]] == ["RPW-A"]
+        assert hit["pagers"]["dpage"]["page"] == 1
+
+        by_invoice = env["report"].report_payload(q="RPW0002")
+        assert any(r["invoice_no"] == "RPW0002" for r in by_invoice["details"])
+
+        miss = env["report"].report_payload(q="不存在的关键词")
+        assert miss["details"] == [] and miss["stats"]["pending"] == 1
+
+    def test_page_clamped_when_tail_emptied(self, env):
+        """末页被清空时后端把页码钳制回最后一页（前端自动回退上一页）。"""
+        self._seed(env)
+        data = env["report"].report_payload(page_size=1, dpage=99)
+        assert data["pagers"]["dpage"]["page"] == data["pagers"]["dpage"]["pages"]
+
+    def test_per_pager_page_size_independent(self, env):
+        """主表与底部 Tab 的分页完全独立：每页条数各自生效、互不影响。"""
+        self._seed(env)
+        data = env["report"].report_payload(
+            page_size=20, page_sizes={"dpage": 50, "ipage": 100})
+        assert data["pagers"]["dpage"]["page_size"] == 50
+        assert data["pagers"]["ipage"]["page_size"] == 100
+        assert data["pagers"]["rpage"]["page_size"] == 20   # 未指定 -> 全局默认
+        assert data["pagers"]["apage"]["page_size"] == 20
+        # 非法条数回落到默认值（防呆）
+        bad = env["report"].report_payload(page_size=20, page_sizes={"dpage": 37})
+        assert bad["pagers"]["dpage"]["page_size"] == 20
+
+    def test_batch_bind_many_invoices_to_one_reimburse(self, env):
+        """多张发票批量绑定同一报销单：逐票 MATCHED + match_pair + manual + 审计。"""
+        env["inv"].import_files([
+            ("a.xml", "", xml_invoice("BB000001", "30.00", date="2026-09-05")),
+            ("b.xml", "", xml_invoice("BB000002", "50.00", date="2026-09-05")),
+        ])
+        env["reb"].import_excel("r.xlsx", make_excel([
+            ["RBB1", "张三", "2026-09-10", "2026-09-01", "2026-09-30",
+             "费用", "80.00", "", "", ""]]))
+        with env["db"].read() as conn:
+            ids = [r["id"] for r in env["invoice_repo"].list(conn)]
+            reb = env["reimburse_repo"].list(conn)[0]
+        res = env["match"].manual_batch_bind(ids, reb["id"])
+        assert res["ok"] is True and len(res["match_ids"]) == 2
+        assert res["amount_diff"] == 0.0
+        with env["db"].read() as conn:
+            for iid in ids:
+                row = env["match_repo"].active_for_invoice(conn, iid)
+                assert row is not None and row["match_type"] == "manual"
+                assert env["invoice_repo"].get(conn, iid)["status"] == "MATCHED"
+            pairs = conn.execute(
+                "SELECT COUNT(*) AS c FROM match_pair WHERE reimburse_id = ?",
+                (reb["id"],)).fetchone()["c"]
+            audit = conn.execute(
+                "SELECT action FROM audit_log WHERE action='match_manual_batch'").fetchone()
+        assert pairs == 2 and audit is not None
+
+    def test_batch_bind_marks_amount_diff_but_still_binds(self, env):
+        """汇总金额有差异时允许强绑，并在差异说明打标。"""
+        env["inv"].import_files([
+            ("a.xml", "", xml_invoice("BD000001", "30.00", date="2026-09-05")),
+            ("b.xml", "", xml_invoice("BD000002", "50.00", date="2026-09-05")),
+        ])
+        env["reb"].import_excel("r.xlsx", make_excel([
+            ["RBD1", "张三", "2026-09-10", "2026-09-01", "2026-09-30",
+             "费用", "100.00", "", "", ""]]))
+        with env["db"].read() as conn:
+            ids = [r["id"] for r in env["invoice_repo"].list(conn)]
+            reb = env["reimburse_repo"].list(conn)[0]
+        res = env["match"].manual_batch_bind(ids, reb["id"])
+        assert res["ok"] is True and abs(res["amount_diff"] - 20.0) < 1e-6
+        with env["db"].read() as conn:
+            row = env["match_repo"].active_for_invoice(conn, ids[0])
+        assert "汇总金额差异 ¥20.00" in (row["message"] or "")
+
+    def test_batch_bind_blocked_when_reimburse_occupied(self, env):
+        """报销单已有生效匹配时批量绑定被阻断且不产生任何写入。"""
+        env["inv"].import_files([
+            ("a.xml", "", xml_invoice("BE000001", "100.00", date="2026-09-05")),
+            ("b.xml", "", xml_invoice("BE000002", "100.00", date="2026-09-05")),
+        ])
+        env["reb"].import_excel("r.xlsx", make_excel([
+            ["RBE1", "张三", "2026-09-10", "2026-09-01", "2026-09-30",
+             "费用", "100.00", "BE000001", "", ""]]))
+        env["match"].run_matching()
+        with env["db"].read() as conn:
+            ids = [r["id"] for r in env["invoice_repo"].list(conn)]
+            reb = env["reimburse_repo"].list(conn)[0]
+        res = env["match"].manual_batch_bind(ids, reb["id"])
+        assert res["ok"] is False and "已存在生效匹配" in res["message"]
+
+    def test_expect_status_stale_raises(self, env):
+        """并发失效：期望状态与库内不一致时抛 StaleError（API 层返回 409）。"""
+        env["inv"].import_files([("a.xml", "", xml_invoice(
+            "ST000001", "100.00", date="2026-09-05"))])
+        env["reb"].import_excel("r.xlsx", make_excel([
+            ["RST1", "张三", "2026-09-10", "2026-09-01", "2026-09-30",
+             "费用", "120.00", "ST000001", "", ""]]))
+        env["match"].run_matching()
+        with env["db"].read() as conn:
+            m = conn.execute("SELECT * FROM match_result ORDER BY id DESC LIMIT 1").fetchone()
+        with pytest.raises(env["match"].StaleError):
+            env["match"].quick_fix(match_id=m["id"], reb_fields={"amount": "100.00"},
+                                   expect_status="MATCHED")
+        # 状态未变（校验失败在任何写入之前）
+        with env["db"].read() as conn:
+            row = env["match_repo"].get(conn, m["id"])
+        assert row["status"] == m["status"]
+
+    def test_export_stream_respects_visible_cols_and_filter(self, env):
+        """导出与视图一致：按可见列裁剪表头，并按 filter 过滤行。"""
+        import io as _io
+
+        from openpyxl import load_workbook
+
+        self._seed(env)
+        stream = env["report"].export_excel_stream(filter="pending", q="",
+                                                  cols=["invoice_no", "status"])
+        content = b"".join(stream)
+        wb = load_workbook(_io.BytesIO(content))
+        ws = wb["匹配明细"]
+        header = [c.value for c in ws[1]]
+        assert header == ["发票号", "状态"]
+        rows = list(ws.iter_rows(min_row=2, values_only=True))
+        assert len(rows) == 1 and rows[0][0] == "RPW0002"
+
+
+# =====================================================================
+# 无票号场景：业务特征碰撞（金额 0.4 / 日期 0.3 / 文本 0.3）
+# =====================================================================
+class TestNoInvoiceFeatureMatch:
+    """双方都无发票号时，只按金额、日期、事由/起止地点/票面文字碰撞，绝不看序号。"""
+
+    def _pair(self, inv, reb):
+        from app.domain.matcher import MatchEngine
+        return MatchEngine().score_pair(inv, reb)
+
+    def _inv(self, amount="40.00", date="2026-08-25", text="出租车 40.00 盈创"):
+        from app.domain.dto import InvoiceDTO
+        return InvoiceDTO(invoice_no="", invoice_date=date,
+                          total_amount=Decimal(amount), traffic_text=text)
+
+    def _reb(self, amount="40.00", date="2026-08-25", row_index=1):
+        from app.domain.dto import ReimburseDTO
+        return ReimburseDTO(amount=Decimal(amount), reimburse_date=date,
+                            reason="送材料", origin="TBD",
+                            destination="盈创动力E座", row_index=row_index)
+
+    def test_amount_is_hard_gate(self):
+        """金额必须绝对一致（±0.01），不一致直接 0 分。"""
+        ps = self._pair(self._inv(), self._reb(amount="40.02"))
+        assert ps.score == 0.0 and "amount" in ps.conflict_fields
+        assert any("金额不一致" in p for p in ps.match_points)
+
+    def test_date_two_days_half_and_text_hit(self):
+        """日期相差 2 天得半分；票面命中「盈创」得高文本分。"""
+        ps = self._pair(self._inv(date="2026-08-27"), self._reb(date="2026-08-25"))
+        assert ps.raw_scores["date"] == 0.5
+        assert ps.raw_scores["text"] == 0.8          # 「盈创」两字命中
+        assert any("盈创" in p for p in ps.match_points)
+        assert ps.score == 0.79                       # 0.4 + 0.15 + 0.24
+        assert ps.capped and "无发票号" in ps.cap_reason
+
+    def test_date_beyond_tolerance_zero(self):
+        ps = self._pair(self._inv(date="2026-09-10"), self._reb(date="2026-08-25"))
+        assert ps.raw_scores["date"] == 0.0
+        assert any("超出 2 天容差" in p for p in ps.match_points)
+
+    def test_row_index_never_affects_score(self):
+        """序号/行号变化不影响评分（禁止按物理行号匹配）。"""
+        a = self._pair(self._inv(), self._reb(row_index=1))
+        b = self._pair(self._inv(), self._reb(row_index=99))
+        assert a.score == b.score == 0.94
+
+    def _seed_traffic(self, env, n=3):
+        import json
+        ids = []
+        with env["db"].tx() as conn:
+            for i in range(n):
+                ids.append(env["invoice_repo"].insert(conn, {
+                    "file_hash": f"traffic-hash-{i}",
+                    "file_type": "jpg",
+                    "parse_engine": "ocr",
+                    "invoice_no": "",
+                    "invoice_date": "2026-08-25",
+                    "seller_name": "出租车",
+                    "total_amount": "40.00",
+                    "status": "NORMAL",
+                    "raw_json": json.dumps({
+                        "traffic": {"text": "出租车 40.00 盈创 08-25",
+                                    "plate_no": "", "ride_time": "2026-08-25 09:12"},
+                    }, ensure_ascii=False),
+                }))
+        env["reb"].import_excel("r.xlsx", make_excel([
+            ["R-TRAFFIC", "张三", "2026-08-25", "", "", "交通费", "40.00", "",
+             "", "TBD到盈创动力E座 送材料"]]))
+        return ids
+
+    def test_tie_candidates_and_delete_isolated(self, env):
+        """平局候选全部列出；删除一张发票不影响其他发票的匹配状态。"""
+        ids = self._seed_traffic(env)
+        env["match"].run_matching()
+        with env["db"].read() as conn:
+            rows = conn.execute(
+                "SELECT invoice_id, status, match_points FROM match_result "
+                "WHERE reimburse_id IS NOT NULL ORDER BY invoice_id").fetchall()
+        assert len(rows) == 3
+        assert all(r["status"] == "SUSPICIOUS" for r in rows)
+        assert all("盈创" in (r["match_points"] or "") for r in rows)
+
+        # 并排比对数据包：推荐发票 + 3 张平局候选
+        payload = env["report"].compare_payload(env["match"].list_matches(["SUSPICIOUS"])[0]["id"])
+        assert "盈创动力E座" in payload["reimburse"]["destination"]
+        assert len(payload["candidates"]) == 3
+        assert any("盈创" in p for p in payload["invoice"]["match_points"])
+
+        # 删除一张发票：只级联删除它自己的匹配记录，其余两张状态不变
+        env["inv"].delete_invoice(ids[0])
+        with env["db"].read() as conn:
+            left = conn.execute(
+                "SELECT invoice_id, status FROM match_result "
+                "WHERE reimburse_id IS NOT NULL ORDER BY invoice_id").fetchall()
+        assert [r["invoice_id"] for r in left] == ids[1:]
+        assert all(r["status"] == "SUSPICIOUS" for r in left)
+
+
+# =====================================================================
+# 模块二/三/五：人工干预强制原因 + 审计 detail 结构化 JSON
+# =====================================================================
+class TestManualReasonAuditStruct:
+    """人工干预必须带原因依据；match_result 说明与 audit_log.detail 同步结构化。"""
+
+    def _pair(self, env, inv_no="ANI000001", amount="29.30", reb_amount=None,
+              run_match=True):
+        env["inv"].import_files([("a.xml", "", xml_invoice(
+            inv_no, amount, date="2026-09-01", seller="测试供应商"))])
+        env["reb"].import_excel("r.xlsx", make_excel([
+            ["", "张三", "2026-09-01", "2026-09-01", "2026-09-30",
+             "费用", reb_amount or amount, inv_no, "2026-09-01", ""],
+        ]))
+        if run_match:
+            env["match"].run_matching()
+        with env["db"].read() as conn:
+            inv = env["invoice_repo"].list(conn)[0]
+            reb = env["reimburse_repo"].list(conn)[0]
+            m = conn.execute(
+                "SELECT * FROM match_result WHERE invoice_id = ? AND reimburse_id = ?",
+                (inv["id"], reb["id"])).fetchone()
+        return inv, reb, dict(m) if m else None
+
+    def test_special_reason_requires_note(self, env):
+        """选「特殊情况」未填说明：confirm/reject/unmatch/manual/batch/quick_fix 全部拦截。"""
+        inv, reb, m = self._pair(env)
+        assert m is not None
+        results = [
+            env["match"].confirm(m["id"], "admin", "", "", "特殊情况"),
+            env["match"].reject(m["id"], "admin", "", "", "特殊情况"),
+            env["match"].unmatch(m["id"], "admin", "", "", "特殊情况"),
+            env["match"].manual_match(inv["id"], reb["id"], "admin", "特殊情况", ""),
+            env["match"].manual_batch_bind([inv["id"]], reb["id"], "admin", "特殊情况", ""),
+            env["match"].quick_fix(match_id=m["id"], reb_fields={"amount": "29.50"},
+                                   reason_option="特殊情况", reason=""),
+        ]
+        for res in results:
+            assert res["ok"] is False and "备注" in res["message"]
+        # 拦截发生在写入之前：状态与金额均未变
+        with env["db"].read() as conn:
+            assert env["match_repo"].get(conn, m["id"])["status"] == m["status"]
+            assert env["reimburse_repo"].get(conn, reb["id"])["amount"] == "29.30"
+
+    def test_manual_bind_message_and_structured_audit(self, env):
+        """人工绑定：说明带业务单号与依据；审计 detail 存 JSON（单号/依据/变更）。"""
+        from app.service import audit_service
+        # 金额差 199 元 -> 唯一键金额冲突（CONFLICT），发票仍为 NORMAL，可走人工绑定
+        inv, reb, _ = self._pair(env, reb_amount="199.00")
+        assert reb["reimburse_no"].startswith("BX-")   # 缺号导入自动生成全局单号
+        res = env["match"].manual_match(inv["id"], reb["id"], "admin", "业务人员已确认")
+        assert res["ok"] is True
+        with env["db"].read() as conn:
+            row = conn.execute(
+                "SELECT message FROM match_result WHERE invoice_id = ? AND status = 'CONFIRMED'",
+                (inv["id"],)).fetchone()
+            aud = conn.execute(
+                "SELECT detail FROM audit_log WHERE action = 'match_manual' "
+                "ORDER BY id DESC LIMIT 1").fetchone()
+        assert row["message"] == (f"人工绑定 [发票:{inv['invoice_no']}] "
+                                  f"至 [报销单:{reb['reimburse_no']}]（依据: 业务人员已确认）")
+        detail = audit_service.parse_detail(aud["detail"])
+        assert detail["invoice_no"] == inv["invoice_no"]
+        assert detail["reimburse_no"] == reb["reimburse_no"]
+        assert detail["reason_option"] == "业务人员已确认"
+        assert {"field": "绑定依据", "old": "-", "new": "业务人员已确认"} in detail["changes"]
+
+    def test_quick_fix_message_and_change_pairs(self, env):
+        """快捷修复：说明按「报销单 + 金额 旧->新 + 发票」输出；审计 detail 存变更对。"""
+        from app.service import audit_service
+        inv, reb, m = self._pair(env)
+        assert m is not None
+        res = env["match"].quick_fix(match_id=m["id"], reb_fields={"amount": "29.50"},
+                                     reason_option="员工补了凭证", operator="admin")
+        assert res["ok"] is True
+        with env["db"].read() as conn:
+            msg = env["match_repo"].get(conn, m["id"])["message"]
+            aud = conn.execute(
+                "SELECT detail FROM audit_log WHERE action = 'match_quick_fix' "
+                "ORDER BY id DESC LIMIT 1").fetchone()
+        assert msg.startswith(f"快捷修复 [报销单:{reb['reimburse_no']}] ")
+        assert "(报销金额: 29.30 -> 29.50)" in msg
+        assert f"匹配 [发票:{inv['invoice_no']}]" in msg
+        detail = audit_service.parse_detail(aud["detail"])
+        assert {"field": "报销金额", "old": "29.30", "new": "29.50"} in detail["changes"]
+        assert detail["reason_option"] == "员工补了凭证"
+
+    def test_parse_detail_legacy_text(self):
+        """历史纯文本 detail 仍可解析（降级为 legacy 字段）。"""
+        from app.service import audit_service
+        assert audit_service.parse_detail("人工确认：业务已核实") == {
+            "legacy": "人工确认：业务已核实"}
+        assert audit_service.parse_detail("") == {}
+
+    def test_display_columns_puts_no_right_after_seq(self, env):
+        """具体批次模式：前两列固定为「序号 / 报销单号」（模块一列顺序）。"""
+        from app.web.pages import _display_columns
+        env["reb"].import_excel("r.xlsx", make_excel([
+            ["RB3001", "张三", "2026-09-10", "2026-09-01", "2026-09-30",
+             "费用", "99.00", "", "", ""],
+        ]), batch_id="batch_D")
+        cols = _display_columns([], all_batches=False,
+                                batch_tpl_id=env["reb"].batch_template_id("batch_D"))
+        assert [c["label"] for c in cols[:2]] == ["序号", "报销单号"]
+
 
 

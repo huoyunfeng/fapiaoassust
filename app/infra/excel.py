@@ -113,6 +113,16 @@ def read_reimburses(content: bytes,
 
     data_start_row = header_row + 1
 
+    # 表头行全部列名：模板未映射的列（事由 / 起止地点 / 车牌号等业务特征）
+    # 也要落进 extra_data，否则无票号场景拿不到这些字段
+    headers_by_col: Dict[int, str] = {}
+    for hrow in ws.iter_rows(min_row=header_row, max_row=header_row,
+                             min_col=1, max_col=ws.max_column):
+        for col_idx, c in _cells_1based(hrow):
+            hv = str(c.value).strip() if c.value is not None else ""
+            if hv:
+                headers_by_col[col_idx] = hv
+
     if not col_map:
         wb.close()
         expected = [fd.get("excel_header") for fd in (fields_config or {}).get("fields", [])]
@@ -134,6 +144,12 @@ def read_reimburses(content: bytes,
         for col_idx, c in _cells_1based(row):
             fd = col_map.get(col_idx)
             if fd is None:
+                # 未映射列：表头存在且单元格非空时自动落 extra_data，
+                # 保留「事由 / 起始地点 / 到达地点 / 车牌号」等业务特征
+                header_name = headers_by_col.get(col_idx)
+                v = _cell_value(c)
+                if header_name and v is not None and str(v).strip() != "":
+                    extra.setdefault(header_name, v)
                 continue
             v = _cell_value(c)
             if v is None or str(v).strip() == "":
@@ -273,3 +289,36 @@ def export_report(sheets: List[Tuple[str, List[str], List[List[Any]]]]) -> bytes
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
+
+
+def export_report_stream(sheets: List[Tuple[str, List[str], List[Any]]],
+                         chunk_size: int = 1 << 16):
+    """流式导出差异报告：write_only 工作簿落盘后分块读出。
+
+    sheets 中的 rows 支持任意可迭代对象（可传生成器，边查边写），
+    大报表不把整表读进内存，配合 StreamingResponse 逐块下发。
+    """
+    import tempfile
+
+    wb = Workbook(write_only=True)
+    for name, header, rows in sheets:
+        ws = wb.create_sheet(title=name[:31])
+        ws.append(list(header))
+        for row in rows:
+            ws.append(list(row))
+
+    tmp = tempfile.SpooledTemporaryFile(max_size=8 << 20)
+    wb.save(tmp)
+    tmp.seek(0)
+
+    def _iter_chunks():
+        try:
+            while True:
+                chunk = tmp.read(chunk_size)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            tmp.close()
+
+    return _iter_chunks()

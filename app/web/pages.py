@@ -193,15 +193,16 @@ def _display_columns(rows: list, all_batches: bool = False,
                      batch_tpl_id: int = None) -> list:
     """数据列生成。
 
-    全部批次模式：只输出核心公共列（ID/来源模板/单号/提交人/日期/费用类型/金额/发票号），
+    全部批次模式：只输出核心公共列（序号/单号/来源模板/提交人/日期/费用类型/金额/发票号），
     隐藏各模板的专属列，避免不同模板列混杂错位。
     具体批次模式：严格按该批次绑定的模板字段渲染列头；批次无行时兜底默认模板。
+    两种模式都把「报销单号」列固定在「序号」列右侧。
     """
     if all_batches:
         return [
-            {"label": "ID", "key": "id"},
-            {"label": "来源模板", "key": "_template"},
+            {"label": "序号", "key": "id"},
             {"label": "报销单号", "key": "reimburse_no"},
+            {"label": "来源模板", "key": "_template"},
             {"label": "提交人", "key": "submitter"},
             {"label": "报销日期", "key": "reimburse_date"},
             {"label": "费用类型", "key": "expense_type"},
@@ -228,6 +229,10 @@ def _display_columns(rows: list, all_batches: bool = False,
     # 模板里没有「费用类型」列时补一列：系统会按发票推测并标记【待确认】，需财务核实
     if not any(c.get("key") == "expense_type" for c in cols):
         cols.append({"label": "费用类型", "key": "expense_type"})
+    # 模块一：报销单号列固定在「序号」列右侧，且始终存在（模板未映射该列时由系统补列）
+    cols = [c for c in cols if c.get("key") != "reimburse_no"]
+    cols.insert(0, {"label": "序号", "key": "id"})
+    cols.insert(1, {"label": "报销单号", "key": "reimburse_no"})
     return cols
 
 
@@ -313,22 +318,29 @@ def matches_page(request: Request):
     })
 
 
+@pages.get("/matches/{match_id}/compare", response_class=HTMLResponse)
+def compare_page(request: Request, match_id: int):
+    """并排比对：报销单业务特征 vs 推荐发票 / 平局候选（无票号场景）。"""
+    data = report_service.compare_payload(match_id)
+    if data is None:
+        return RedirectResponse("/matches", status_code=303)
+    return templates.TemplateResponse(request, "compare.html", {
+        "request": request, "data": data,
+    })
+
+
 @pages.get("/report", response_class=HTMLResponse)
-def report_page(request: Request, page_size: int = 20,
+def report_page(request: Request, page_size: int = 20, filter: str = "", q: str = "",
                 dpage: int = 1, rpage: int = 1, ipage: int = 1,
                 apage: int = 1, xpage: int = 1):
-    report = report_service.build_report()
-    page_size = _norm_page_size(page_size)
-    # 各数据表格独立分页（互不影响的页码参数）
-    pagers = {}
-    for key, param, p in (("details", "dpage", dpage),
-                          ("unmatched_reimburses", "rpage", rpage),
-                          ("unmatched_invoices", "ipage", ipage),
-                          ("abnormal", "apage", apage),
-                          ("duplicates", "xpage", xpage)):
-        report[key], pagers[param] = _paginate(report[key], p, page_size)
+    """差异报告（状态驱动工作台）：首屏直接注入数据包，后续交互走 /api/report/data 局部刷新。"""
+    payload = report_service.report_payload(
+        filter=filter if filter in ("pending", "active") else "",
+        q=(q or "").strip(),
+        page_size=_norm_page_size(page_size),
+        dpage=dpage, rpage=rpage, ipage=ipage, apage=apage, xpage=xpage)
     return templates.TemplateResponse(request, "report.html", {
-        "request": request, "r": report, "pagers": pagers,
+        "request": request, "initial": payload,
     })
 
 
@@ -342,6 +354,7 @@ def settings_page(request: Request):
     return templates.TemplateResponse(request, "settings.html", {
         "request": request, "companies": companies, "rules": rules,
         "categories": category_service.list_categories(include_disabled=True),
-        "audit_logs": audit_service.list_recent(50),
+        # 首页仅展示最新 10 条概览；完整日志由前端通过 /api/audit 动态加载
+        "audit_logs": audit_service.list_recent(limit=10)["items"],
     })
 

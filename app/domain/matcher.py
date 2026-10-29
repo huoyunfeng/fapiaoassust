@@ -30,6 +30,8 @@ from typing import Dict, List, Optional, Sequence
 
 from app.config import settings
 from app.domain.dto import InvoiceDTO, ReimburseDTO
+from app.domain.features import (InvoiceFeatures, ReimburseFeatures, feature_match,
+                                 invoice_features, reimburse_features)
 
 # 基础权重（动态归一化前）
 W_AMOUNT = 0.50
@@ -68,6 +70,10 @@ class PairScore:
     cap_reason: str = ""                      # 封顶原因（发票号缺失 / 日期缺失 / 疑似填错）
     amount_error: Decimal = Decimal("0")      # 金额绝对误差（平局排序第一关键字）
     suspected_no_error: bool = False          # 号不一致，但金额一致且日期相近 -> 疑似号填错
+    match_points: List[str] = field(default_factory=list)  # ✅/✗ 命中点（前端并排比对展示）
+    # ---- 唯一键短路匹配（第一阶段）----
+    auto_matchable: bool = False              # 唯一键命中：发票号精确匹配 + 金额在容差内 -> 跳过安全锁直接 MATCHED
+    auto_match_reason: str = ""               # 唯一键命中说明（展示用）
 
     @property
     def is_conflict(self) -> bool:
@@ -81,22 +87,31 @@ class PairScore:
 
     @property
     def is_low_confidence(self) -> bool:
-        """低置信度兜底（裁决4）：无发票号 + 金额误差 <= 1.00 元，捞回待人工池。
+        """低置信度兜底（裁决4 + 修复）：
 
-        只针对「无号 + 金额相近」这一种情况；日期完全不在期间内、购方抬头不属于
-        本公司属于明确反证，仍按原规则淘汰，不入池。
+        两种情况强制捞回 SUSPICIOUS：
+        a) 无发票号 + 金额误差 <= 1.00 元（原裁决4）
+        b) 有号且号一致 + 金额误差 <= 1.00 元（实际最常见的"号对得上但金额微差"场景）
+
+        日期明确不在期间内、抬头不属于本公司属于明确反证，仍按原规则淘汰。
         """
-        if self.applicable.get("no"):
-            return False                          # 双方都有号：走号码逻辑
         if not self.applicable.get("amount"):
-            return False                          # 没有金额可比：谈不上金额兜底
+            return False
         if self.amount_error > AMOUNT_NEAR:
             return False
+        # 明确反证否决
         if self.applicable.get("date") and self.raw_scores.get("date", 0.0) == 0.0:
-            return False                          # 日期全错 -> 淘汰
+            return False
         if any("抬头" in n for n in self.field_notes):
-            return False                          # 抬头全错 -> 淘汰
-        return True
+            return False
+        no_app = self.applicable.get("no")
+        if not no_app:
+            # 情况 a：无号 + 金额相近
+            return True
+        # 情况 b：有号且号一致 + 金额相近（原来漏掉的最常见场景）
+        if self.raw_scores.get("no", 0.0) >= 0.9 and self.amount_error > AMOUNT_EXACT:
+            return True
+        return False
 
 
 def _parse_d(s: Optional[str]) -> Optional[date]:
@@ -135,9 +150,95 @@ class MatchEngine:
         raw: Dict[str, float] = {}
         match_type = "fuzzy"
 
-        # ---------- 维度 1：发票号（CONFLICT 绝对优先）----------
+        # ================================================================
+        # 第一阶段：唯一键短路匹配（一票通过，跳过后续所有打分）
+        # 设计原则：发票号是发票的唯一标识，对上了就是同一张票。
+        #   - 完美命中（金额≤0.01）→ 直接 MATCHED，跳过安全锁、日期、文本等所有后续逻辑
+        #   - 金额微差（0.02~1.00 元）→ 大概率浮点/四舍五入问题，自动通过并加备注提示
+        #   - 金额大差（>1.00 元）→ 唯一键对不上，说明报销单填了假号，返回 CONFLICT
+        # ================================================================
         inv_no = (inv.invoice_no or "").strip()
         reb_no = (reb.invoice_no or "").strip()
+
+        # ================================================================
+        # 无票号专用：业务特征碰撞（金额 0.4 / 日期 0.3 / 文本 0.3）
+        # 绝对不使用自增 ID 或 Excel 序号——只认金额、日期、事由、起止地点、
+        # 车牌号/票面文字。双方都没有发票号时才走此分支；有号仍走唯一键短路。
+        # ================================================================
+        if not inv_no and not reb_no:
+            rfeat = reimburse_features(reb)
+            ifeat = invoice_features(inv)
+            if rfeat.has_text or ifeat.has_text:
+                return self._score_feature_pair(inv, reb, rfeat, ifeat)
+
+        if inv_no and reb_no and inv_no == reb_no:
+            # 唯一键精确命中 → 三段判断
+            if inv.total_amount is not None and reb.amount is not None:
+                amt_err = abs(inv.total_amount - reb.amount)
+                if amt_err <= AMOUNT_EXACT:
+                    # ----- 情况 A：完美命中 -----
+                    return PairScore(
+                        score=1.0, match_type="exact",
+                        conflict_fields=[], diff_fields=[],
+                        amount_diff=amt_err,
+                        field_notes=["唯一键命中：发票号精确匹配 + 金额一致，自动通过"],
+                        applicable={"no": True, "amount": True},
+                        raw_scores={"no": 1.0, "amount": 1.0},
+                        capped=False, cap_reason="",
+                        amount_error=amt_err,
+                        no_ratio=1.0,
+                        auto_matchable=True,
+                        auto_match_reason="唯一键命中：发票号精确匹配 + 金额一致",
+                    )
+                elif amt_err <= AMOUNT_NEAR:
+                    # ----- 情况 B：金额微差（≤1 元）-----
+                    # 微差大概率是 Excel/导入时的浮点精度问题，唯一键已锁定，自动通过但加备注
+                    return PairScore(
+                        score=1.0, match_type="exact",
+                        conflict_fields=[],
+                        diff_fields=[
+                            f"金额微差：报销单 {reb.amount} vs 发票 {inv.total_amount}（差 {amt_err} 元）"
+                        ],
+                        amount_diff=amt_err,
+                        field_notes=[
+                            f"唯一键命中但金额微差 {amt_err} 元（≤1 元容差），已自动通过请留意"
+                        ],
+                        applicable={"no": True, "amount": True},
+                        raw_scores={"no": 1.0, "amount": 0.5},
+                        capped=False, cap_reason="",
+                        amount_error=amt_err,
+                        no_ratio=1.0,
+                        auto_matchable=True,
+                        auto_match_reason=f"唯一键命中：发票号精确匹配 + 金额微差 {amt_err} 元（≤1 元容差）",
+                    )
+                else:
+                    # ----- 情况 C：金额大差（>1 元）-----
+                    # 唯一键对不上：报销单填了一个真实存在但不属于此报销的发票号
+                    return PairScore(
+                        score=0.0, match_type="exact",
+                        conflict_fields=["amount"],
+                        diff_fields=[
+                            f"金额冲突：报销单 {reb.amount} vs 发票 {inv.total_amount}（差 {amt_err} 元）"
+                        ],
+                        amount_diff=amt_err,
+                        field_notes=[
+                            f"⚠️ 发票号一致但金额差距 {amt_err} 元（>1 元容差），"
+                            f"可能填错发票号，请核实修正"
+                        ],
+                        applicable={"no": True, "amount": True},
+                        raw_scores={"no": 1.0, "amount": 0.0},
+                        capped=False, cap_reason="",
+                        amount_error=amt_err,
+                        no_ratio=1.0,
+                        auto_matchable=False,
+                    )
+            else:
+                # 号一致但一方缺金额信息 → 不短路，进入第二阶段多维打分（后续金额维度会不适用）
+                pass
+
+        # ================================================================
+        # 第二阶段：多维特征打分兜底（仅当唯一键未命中或命中但无法判定金额时启用）
+        # ================================================================
         no_ratio = 0.0
         if inv_no and reb_no:
             applicable["no"] = True
@@ -178,33 +279,43 @@ class MatchEngine:
         else:
             applicable["amount"] = False
 
-        # ---------- 维度 3：日期（期间内 / 边界±7天 / 超出）----------
+        # ---------- 维度 3：日期 ----------
+        # 优先用报销单期间检查；报销单缺期间时降级用「报销日期 vs 发票日期 ±90 天」做近似检查
         start, end = reb.period_range
         start, end = (str(start)[:10] if start else None), (str(end)[:10] if end else None)
-        if inv.invoice_date and (start or end):
+        inv_d = _parse_d(inv.invoice_date)
+        reb_d = _parse_d(getattr(reb, "reimburse_date", None))
+
+        if inv_d and (start or end):
+            # 完整期间检查
             applicable["date"] = True
-            d, s, e = _parse_d(inv.invoice_date), _parse_d(start), _parse_d(end)
-            if d and s and e:
-                if s <= d <= e:
-                    raw["date"] = 1.0
-                elif abs((d - s).days) <= DATE_NEAR_DAYS or abs((d - e).days) <= DATE_NEAR_DAYS:
-                    raw["date"] = 0.5
-                else:
-                    raw["date"] = 0.0
-            elif d and s:            # 只有起始边界
-                raw["date"] = 1.0 if d >= s else (0.5 if abs((d - s).days) <= DATE_NEAR_DAYS else 0.0)
-            elif d and e:            # 只有结束边界
-                raw["date"] = 1.0 if d <= e else (0.5 if abs((d - e).days) <= DATE_NEAR_DAYS else 0.0)
-            else:
-                applicable["date"] = False
-            if applicable.get("date") and raw.get("date", 0.0) == 0.0:
-                diff_fields.append(
-                    f"日期: 开票 {inv.invoice_date} 不在报销期间 [{start or ''} ~ {end or ''}]")
-                notes.append(
-                    f"日期不匹配（开票 {inv.invoice_date} 不在报销期间 "
-                    f"[{start or ''} ~ {end or ''}]）")
+            s, e = _parse_d(start), _parse_d(end)
+            if s and e:
+                if s <= inv_d <= e: raw["date"] = 1.0
+                elif abs((inv_d - s).days) <= DATE_NEAR_DAYS or abs((inv_d - e).days) <= DATE_NEAR_DAYS: raw["date"] = 0.5
+                else: raw["date"] = 0.0
+            elif s: raw["date"] = 1.0 if inv_d >= s else (0.5 if abs((inv_d - s).days) <= DATE_NEAR_DAYS else 0.0)
+            elif e: raw["date"] = 1.0 if inv_d <= e else (0.5 if abs((inv_d - e).days) <= DATE_NEAR_DAYS else 0.0)
+            if raw.get("date", 0.0) == 0.0:
+                diff_fields.append(f"日期: 开票 {inv.invoice_date} 不在报销期间 [{start or ''} ~ {end or ''}]")
+                notes.append(f"日期不匹配（开票 {inv.invoice_date} 不在报销期间 [{start or ''} ~ {end or ''}]）")
+
+        elif inv_d and reb_d:
+            # 报销单缺期间，但有报销日期 → 近似检查（±90 天给 0.5 分，±30 天给 1.0 分）
+            applicable["date"] = True
+            gap = abs((inv_d - reb_d).days)
+            if gap <= 30: raw["date"] = 1.0
+            elif gap <= 90: raw["date"] = 0.5
+            else: raw["date"] = 0.0
+            if raw["date"] == 0.0:
+                diff_fields.append(f"日期: 开票 {inv.invoice_date} 与报销日期 {reb.reimburse_date} 相差 {gap} 天")
+                notes.append(f"开票日期 {inv.invoice_date} 与报销日期 {reb.reimburse_date} 相差 {gap} 天，超出合理范围")
+
+        elif inv_d and not (start or end):
+            # 发票有日期但报销单完全没有任何日期信息 → 仍标记日期维度不适用（安全锁仅在双方都无日期时封顶）
+            applicable["date"] = False
+            notes.append("报销单未填写日期信息，日期维度不参与打分（发票开票日期可作参考）")
         else:
-            # 任一方无日期 -> 剔除该维度（不扣分也不给中性分）
             applicable["date"] = False
 
         # ---------- 维度 4：文本 / 抬头 ----------
@@ -256,11 +367,16 @@ class MatchEngine:
             else:
                 notes.append(f"发票号不一致（报销单 {reb_no} vs 发票 {inv_no}），候选淘汰")
 
-        # ---------- 安全锁：无号 / 缺日期 / 疑似号填错 一律封顶 ----------
+        # ---------- 安全锁：仅当"发票号缺失"或"双方都没日期"或"疑似号填错"才封顶 ----------
+        # 说明：以前是报销单缺期间就封顶，但报销单没填期间≠发票无日期——发票开票日是真实可信的，
+        # 不应因此完全废掉日期维度。只有双方都没有日期信息时才真正"无法校验时序"。
         missing = []
         if not applicable.get("no"):
             missing.append("发票号")
-        if not applicable.get("date"):
+        # 双方都没有日期信息才视为"日期缺失"；发票有开票日或报销有报销日期都算有参考
+        inv_has_date = bool(inv.invoice_date)
+        reb_has_date = bool((reb.period_range[0] or reb.period_range[1] or getattr(reb, "reimburse_date", None)))
+        if not inv_has_date and not reb_has_date:
             missing.append("日期")
         capped, cap_reason = False, ""
         if suspected_no_error:
@@ -283,11 +399,130 @@ class MatchEngine:
         )
 
     # ------------------------------------------------------------------
+    def _score_feature_pair(self, inv: InvoiceDTO, reb: ReimburseDTO,
+                            rfeat: ReimburseFeatures,
+                            ifeat: InvoiceFeatures) -> PairScore:
+        """无票号专用打分：金额 0.4（硬门槛）+ 日期 0.3 + 文本特征 0.3。
+
+        业务红线：
+        - 金额必须绝对一致（±0.01），不一致直接 0 分淘汰；
+        - 日期同日满分、相差 1~2 天半分、超过 2 天 0 分；
+        - 文本用「事由/起止地点/车牌号」与「销方+票面文字」做模糊碰撞；
+        - 因为无发票号，总分强制封顶 0.94，永远只能进人工确认池。
+        """
+        points: List[str] = []
+        notes: List[str] = []
+        diff_fields: List[str] = []
+        applicable: Dict[str, bool] = {}
+        raw: Dict[str, float] = {}
+
+        # ---------- 金额：绝对一致硬门槛 ----------
+        amount_error = Decimal("0")
+        if inv.total_amount is not None and reb.amount is not None:
+            amount_error = abs(inv.total_amount - reb.amount)
+            if amount_error > AMOUNT_EXACT:
+                # 不一致直接 0 分：不做任何其它维度的"补救"
+                return PairScore(
+                    score=0.0, match_type="fuzzy",
+                    conflict_fields=["amount"],
+                    diff_fields=[f"金额: 报销单 {reb.amount} vs 发票 {inv.total_amount}"
+                                 f"（差 {amount_error}）"],
+                    field_notes=[f"金额不一致（无发票号场景要求金额完全一致，差 {amount_error} 元）"],
+                    match_points=[f"✗ 金额不一致（差 {amount_error} 元）"],
+                    applicable={"amount": True}, raw_scores={"amount": 0.0},
+                    amount_error=amount_error,
+                    capped=True, cap_reason="无发票号：需人工确认",
+                )
+            applicable["amount"] = True
+            raw["amount"] = 1.0
+            points.append(f"✅ 金额一致（¥{inv.total_amount:.2f}）")
+
+        # ---------- 日期：同日满分；相差 1~2 天半分 ----------
+        inv_d = _parse_d(inv.invoice_date) or _parse_d(inv.ride_time)
+        reb_d = (_parse_d(reb.reimburse_date) or _parse_d(reb.period_start)
+                 or _parse_d(reb.period_end))
+        if inv_d and reb_d:
+            gap = abs((inv_d - reb_d).days)
+            applicable["date"] = True
+            if gap == 0:
+                raw["date"] = 1.0
+                points.append(f"✅ 日期一致（{reb_d.isoformat()}）")
+            elif gap <= 2:
+                raw["date"] = 0.5
+                points.append(f"✅ 日期相差 {gap} 天（容差内半匹配）")
+            else:
+                raw["date"] = 0.0
+                points.append(f"✗ 日期相差 {gap} 天（超出 2 天容差）")
+                diff_fields.append(
+                    f"日期: 报销 {reb_d.isoformat()} vs 发票 {inv_d.isoformat()}（相差 {gap} 天）")
+                notes.append(f"日期相差 {gap} 天，超出无票号场景 2 天容差")
+
+        # ---------- 文本特征：事由/起止地点 vs 销方+票面文字 ----------
+        if rfeat.has_text:
+            applicable["text"] = True
+            if rfeat.origin or rfeat.destination or rfeat.plate_no:
+                # 有起止地点/车牌：按词条碰撞（「盈创动力E座」命中「盈创」得高分）
+                text_score, hits = feature_match(rfeat, ifeat)
+                for h in hits:
+                    if h.startswith("车牌号"):
+                        points.append(f"✅ {h}")
+                    else:
+                        points.append(f"✅ 文本包含“{h}”")
+            else:
+                # 只有「事由」时沿用整体相似度分档，避免短词包含导致权重虚高
+                ratio = text_similarity("".join(rfeat.phrases), ifeat.text)
+                text_score = (1.0 if ratio >= TEXT_HIGH
+                              else 0.5 if ratio >= TEXT_MID else 0.0)
+                if text_score > 0:
+                    points.append(f"✅ 事由文本相似（{ratio:.0%}）")
+            raw["text"] = text_score
+            if text_score <= 0:
+                points.append("✗ 票面文字未命中事由/起止地点")
+                diff_fields.append("文本: 事由/起止地点未在票面文字中命中")
+                notes.append("票面文字未命中报销单的事由/起止地点，请人工核对")
+
+        # ---------- 动态归一化（缺维度剔除，避免缺数据反而占权重）----------
+        weights = {"amount": 0.4, "date": 0.3, "text": 0.3}
+        active = [k for k in weights if applicable.get(k)]
+        total_w = sum(weights[k] for k in active)
+        score = (sum(weights[k] * raw.get(k, 0.0) for k in active) / total_w
+                 if total_w > 0 else 0.0)
+        score = min(SAFE_CAP, round(score, 4))   # 无号 -> 永不可自动通过
+
+        return PairScore(
+            score=score, match_type="fuzzy",
+            conflict_fields=[], diff_fields=diff_fields,
+            amount_diff=amount_error,
+            field_notes=notes, match_points=points,
+            applicable=applicable,
+            raw_scores={k: round(v, 4) for k, v in raw.items()},
+            amount_error=amount_error,
+            capped=True, cap_reason="无发票号：需人工确认（业务特征碰撞）",
+        )
+
+    # ------------------------------------------------------------------
     def decide_status(self, ps: PairScore) -> str:
         """由评分结果判定匹配状态。
 
-        安全锁优先于阈值：被封顶的配对即使因归一化算到高分，也绝不能自动通过。
+        判定优先级（从高到低）：
+        1. 唯一键短路命中 → 直接 MATCHED（跳过安全锁、阈值等所有后续判断）
+        2. 唯一键金额冲突 → 直接 CONFLICT（报销单填了假号）
+        3. 裁决2疑似号填错 → SUSPICIOUS
+        4. 裁决4低置信度兜底 → SUSPICIOUS
+        5. 安全锁封顶 → SUSPICIOUS（或 UNMATCHED）
+        6. 阈值判断 → MATCHED / SUSPICIOUS / UNMATCHED
         """
+        # ---------- 优先级 1：唯一键短路命中 ----------
+        if ps.auto_matchable:
+            return "MATCHED"
+
+        # ---------- 优先级 2：唯一键金额冲突（号对得上但金额差大）----------
+        # 这种场景 conflict_fields=["amount"]，属于 is_conflict 但不是 is_rejected
+        # 必须显式返回 CONFLICT，不能让它落到后面的阈值判断
+        if "amount" in ps.conflict_fields and "invoice_no" not in ps.conflict_fields:
+            return "CONFLICT"
+
+        # ---------- 原有裁决链路 ----------
         if ps.is_rejected:
             return "CONFLICT"
         if ps.suspected_no_error:

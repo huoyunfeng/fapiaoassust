@@ -1,149 +1,660 @@
 {% extends "base.html" %}
 {% block content %}
-<h1 style="font-size:20px;margin-bottom:16px;">设置</h1>
+<style>
+/* ---- 设置页专属（命名空间前缀 .sg-）避免污染全局 ---- */
+.sg-layout{display:flex;gap:20px;min-height:calc(100vh - 52px - 48px);}
+.sg-nav{width:200px;background:#fff;border:1px solid var(--border);border-radius:12px;padding:10px 0;flex-shrink:0;align-self:flex-start;position:sticky;top:24px;}
+.sg-nav-title{font-size:12px;color:var(--muted);padding:8px 18px 6px;font-weight:600;letter-spacing:.5px;}
+.sg-nav-item{display:flex;align-items:center;gap:10px;padding:10px 18px;cursor:pointer;color:var(--text);font-size:13px;border-left:3px solid transparent;transition:background .15s;}
+.sg-nav-item:hover{background:#f8fafc;}
+.sg-nav-item.active{background:#eff6ff;color:var(--primary);border-left-color:var(--primary);font-weight:600;}
+.sg-nav-icon{font-size:15px;width:18px;text-align:center;}
+.sg-content{flex:1;min-width:0;background:#f3f4f6;border-radius:12px;padding:20px;}
+.sg-pane{display:none;}
+.sg-pane.active{display:block;}
 
-<div class="grid g2">
-  <div class="card">
-    <h2>公司抬头（用于匹配抬头校验与税号规则）</h2>
-    <form class="inline mb" onsubmit="submitForm(event,'/api/companies')">
-      <input name="name" placeholder="公司名称" required>
-      <input name="tax_no" placeholder="税号" required>
-      <label class="muted"><input type="checkbox" name="is_default" value="1"> 默认</label>
-      <button class="btn btn-sm">添加</button>
-    </form>
-    {% if companies %}
-    <table><tr><th>ID</th><th>名称</th><th>税号</th><th>默认</th><th>操作</th></tr>
-    {% for c in companies %}
-      <tr><td>#{{ c.id }}</td><td class="wrap">{{ c.name }}</td><td>{{ c.tax_no }}</td>
-          <td>{% if c.is_default %}<span class="badge badge-green">默认</span>{% endif %}</td>
-          <td><button class="btn btn-sm btn-danger" onclick="delCompany({{ c.id }})">删除</button></td></tr>
-    {% endfor %}</table>
-    {% else %}<p class="muted">未配置。未配置时匹配的抬头维度按中性处理。</p>{% endif %}
-  </div>
+/* 折叠面板（系统信息等）*/
+.sg-collapse{background:#fff;border:1px solid var(--border);border-radius:10px;margin-top:16px;}
+.sg-collapse-head{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;cursor:pointer;color:var(--primary);font-size:13px;font-weight:600;}
+.sg-collapse-head:hover{background:#f8fafc;}
+.sg-collapse-body{padding:0 16px 16px;display:none;}
+.sg-collapse.open .sg-collapse-body{display:block;}
+.sg-collapse .sg-arrow{transition:transform .2s;font-size:12px;}
+.sg-collapse.open .sg-arrow{transform:rotate(90deg);}
 
-  <div class="card">
-    <h2>业务规则（按优先级升序执行）</h2>
-    <form class="inline mb" onsubmit="submitForm(event,'/api/rules')" style="align-items:flex-start;">
-      <input name="name" placeholder="规则名称" required>
-      <select name="rule_type">
-        <option value="buyer_tax_no">buyer_tax_no 购买方税号白名单</option>
-        <option value="period">period 开票日期期间</option>
-        <option value="amount">amount 金额上下限</option>
-        <option value="dedup">dedup 红冲限制</option>
-        <option value="custom">custom 预留</option>
-      </select>
-      <input name="priority" type="number" value="100" style="width:80px;" title="优先级">
-      <label class="muted"><input type="checkbox" name="stop_on_fail" value="1"> 失败短路</label>
-      <input name="config" placeholder='config JSON，如 {"tax_nos":["91..."]}' style="width:260px;" required>
-      <button class="btn btn-sm">添加</button>
-    </form>
-    <p class="muted mb">示例 config：
-      buyer_tax_no → <code>{"tax_nos":["91110000XXXX..."]}</code> ·
-      period → <code>{"start":"2026-01-01","end":"2026-12-31"}</code> ·
-      amount → <code>{"min":0,"max":100000}</code> ·
-      dedup → <code>{"disallow_red_flush":true}</code></p>
-    {% if rules %}
-    <table><tr><th>ID</th><th>名称</th><th>类型</th><th>优先级</th><th>短路</th><th>config</th><th>启用</th><th>操作</th></tr>
-    {% for r in rules %}
-      <tr><td>#{{ r.id }}</td><td>{{ r.name }}</td><td class="muted">{{ r.rule_type }}</td>
-          <td>{{ r.priority }}</td><td>{{ '是' if r.stop_on_fail else '否' }}</td>
-          <td class="wrap muted">{{ r.config }}</td>
-          <td><span class="badge {{ 'badge-green' if r.enabled else 'badge-gray' }}">{{ '启用' if r.enabled else '停用' }}</span></td>
-          <td>
-            <button class="btn btn-sm btn-outline" onclick="toggleRule({{ r.id }})">{{ '停用' if r.enabled else '启用' }}</button>
-            <button class="btn btn-sm btn-danger" onclick="delRule({{ r.id }})">删除</button>
-          </td></tr>
-    {% endfor %}</table>
-    {% else %}<p class="muted">暂无自定义规则（内置校验 C1-C5 始终生效）。</p>{% endif %}
-  </div>
-</div>
+/* 审计日志筛选 + 表格 */
+.sg-filter-row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:14px;}
+.sg-filter-row .sg-sep{width:1px;height:28px;background:var(--border);}
+.sg-filter-row label{font-size:12px;color:var(--muted);}
+.sg-quick-date{display:flex;gap:6px;}
+.sg-quick-date button{padding:4px 10px;font-size:12px;border:1px solid var(--border);background:#fff;border-radius:4px;cursor:pointer;}
+.sg-quick-date button.active{background:var(--primary);color:#fff;border-color:var(--primary);}
+.sg-zebra tbody tr:nth-child(even) td{background:#fafbfc;}
+.sg-zebra tbody tr:hover td{background:#eff6ff !important;}
+.sg-cell-ellipsis{max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 
-<div class="card">
-  <h2>费用分类字典（系统预设锁定，自定义分类仅支持重命名 / 合并 / 禁用）</h2>
-  <p class="muted mb">系统预设分类为基础映射标准，<b>只能查看，不提供修改、重命名或禁用</b>；自定义分类未被使用时可直接重命名，已被使用时只能通过【合并】转移历史数据，或【禁用】（历史数据仍正常显示，永不可物理删除）。</p>
-  <form class="inline mb" onsubmit="addCat(event)">
-    <input name="name" id="newCatName" placeholder="新增分类名称（如 培训费）" required>
-    <button class="btn btn-sm">新增分类</button>
-  </form>
-  {% if categories %}
-  <table>
-    <tr><th>ID</th><th>分类名称</th><th>来源</th><th>状态</th><th>操作</th></tr>
-    {% for c in categories %}
-    <tr>
-      <td>#{{ c.id }}</td>
-      <td>{{ c.name }}</td>
-      <td>{% if c.is_builtin %}<span class="badge badge-blue">系统预设</span>{% else %}<span class="badge badge-gray">自定义</span>{% endif %}</td>
-      <td>{% if c.enabled %}<span class="badge badge-green">启用</span>{% else %}<span class="badge badge-gray">已禁用</span>{% endif %}</td>
-      <td>
-        {% if c.is_builtin %}
-        <span class="muted" title="系统基础映射标准，已强制锁定">🔒 已锁定</span>
+/* 规则表单（动态字段）*/
+.sg-rule-form .sg-field{display:none;}
+.sg-rule-form .sg-field.on{display:block;}
+.sg-rule-form label{font-size:12px;color:var(--muted);display:block;margin-bottom:3px;}
+.sg-rule-form input,.sg-rule-form select{width:100%;}
+
+/* 详情抽屉 */
+.sg-drawer-bg{display:none;position:fixed;inset:0;background:rgba(15,23,42,.45);z-index:200;}
+.sg-drawer-bg.on{display:block;}
+.sg-drawer{position:fixed;top:0;right:0;bottom:0;width:540px;max-width:92vw;background:#fff;z-index:201;transform:translateX(100%);transition:transform .24s ease;padding:20px;overflow-y:auto;display:flex;flex-direction:column;gap:10px;}
+.sg-drawer.open{transform:translateX(0);}
+.sg-drawer-head{display:flex;align-items:center;justify-content:space-between;}
+.sg-drawer-head h3{font-size:15px;}
+.sg-drawer-close{cursor:pointer;font-size:18px;color:var(--muted);border:0;background:none;}
+.sg-drawer-close:hover{color:var(--text);}
+.sg-drawer pre{white-space:pre-wrap;word-break:break-all;max-height:300px;overflow:auto;}
+.sg-detail-row{display:flex;gap:8px;font-size:13px;line-height:1.8;}
+.sg-detail-row .sg-dk{color:var(--muted);width:72px;flex-shrink:0;}
+</style>
+
+<div class="sg-layout">
+
+  <!-- ===== 左侧导航 ===== -->
+  <aside class="sg-nav">
+    <div class="sg-nav-title">设置</div>
+    <div class="sg-nav-item active" data-pane="pane-basic" onclick="sgSwitch(this,'pane-basic')">
+      <span class="sg-nav-icon">⚙️</span>基础配置
+    </div>
+    <div class="sg-nav-item" data-pane="pane-rules" onclick="sgSwitch(this,'pane-rules')">
+      <span class="sg-nav-icon">📏</span>业务规则
+    </div>
+    <div class="sg-nav-item" data-pane="pane-cats" onclick="sgSwitch(this,'pane-cats')">
+      <span class="sg-nav-icon">🏷️</span>费用字典
+    </div>
+    <div class="sg-nav-item" data-pane="pane-system" onclick="sgSwitch(this,'pane-system')">
+      <span class="sg-nav-icon">🛡️</span>系统与安全
+    </div>
+  </aside>
+
+  <!-- ===== 右侧内容 ===== -->
+  <main class="sg-content">
+
+    <!-- ============ 模块1：基础配置 ============ -->
+    <div class="sg-pane active" id="pane-basic">
+      <div class="card">
+        <h2>公司抬头（用于匹配抬头校验与税号规则）</h2>
+        <form class="inline mb" onsubmit="submitForm(event,'/api/companies')">
+          <input name="name" placeholder="公司名称" required>
+          <input name="tax_no" placeholder="税号" required>
+          <label class="muted"><input type="checkbox" name="is_default" value="1"> 默认</label>
+          <button class="btn btn-sm">添加</button>
+        </form>
+      </div>
+
+      <div class="card">
+        {% if companies %}
+        <table>
+          <tr><th>ID</th><th>名称</th><th>税号</th><th>默认</th><th>操作</th></tr>
+          {% for c in companies %}
+          <tr>
+            <td>#{{ c.id }}</td>
+            <td class="wrap">{{ c.name }}</td>
+            <td>{{ c.tax_no }}</td>
+            <td>{% if c.is_default %}<span class="badge badge-green">默认</span>{% endif %}</td>
+            <td><button class="btn btn-sm btn-danger" onclick="delCompany({{ c.id }})">删除</button></td>
+          </tr>
+          {% endfor %}
+        </table>
         {% else %}
-        <button class="btn btn-sm btn-outline" onclick='renameCat({{ c.id }}, {{ c.name|tojson }})'>重命名</button>
-        <button class="btn btn-sm btn-outline" onclick='mergeCat({{ c.id }}, {{ c.name|tojson }})'>合并</button>
-        <button class="btn btn-sm btn-outline" onclick="toggleCat({{ c.id }})">{{ '禁用' if c.enabled else '启用' }}</button>
+        <p class="muted">未配置。未配置时匹配的抬头维度按中性处理。</p>
         {% endif %}
-      </td>
-    </tr>
-    {% endfor %}
-  </table>
-  {% else %}<p class="muted">分类字典为空。</p>{% endif %}
+      </div>
+    </div>
+
+    <!-- ============ 模块2：业务规则 ============ -->
+    <div class="sg-pane" id="pane-rules">
+      <div class="card">
+        <h2>添加规则（按优先级升序执行）</h2>
+        <form class="sg-rule-form" id="sgRuleForm" onsubmit="submitForm(event,'/api/rules')">
+          <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;">
+            <div>
+              <label>规则名称</label>
+              <input name="name" placeholder="如：购买方税号白名单" required style="width:200px;">
+            </div>
+            <div>
+              <label>规则类型</label>
+              <select name="rule_type" id="sgRuleType" onchange="sgToggleRuleFields()" required style="width:220px;">
+                <option value="buyer_tax_no">buyer_tax_no · 购买方税号白名单</option>
+                <option value="period">period · 开票日期期间</option>
+                <option value="amount">amount · 金额上下限</option>
+                <option value="dedup">dedup · 红冲限制</option>
+                <option value="custom">custom · 预留</option>
+              </select>
+            </div>
+            <div>
+              <label>优先级（升序）</label>
+              <input name="priority" type="number" value="100" style="width:90px;" title="值越小越先执行">
+            </div>
+            <div>
+              <label>&nbsp;</label>
+              <label class="muted" style="font-weight:normal;"><input type="checkbox" name="stop_on_fail" value="1"> 失败短路</label>
+            </div>
+          </div>
+
+          <!-- 动态 config 输入区：根据 rule_type 显示对应表单 -->
+          <div id="sgRuleCfg" style="margin-top:14px;">
+            <div class="sg-field on" data-type="buyer_tax_no">
+              <label>允许的购买方税号（多个用英文逗号分隔）</label>
+              <input type="text" id="cfgTaxNos" placeholder="如 91110000XXXX1,91310000XXXX2" style="width:420px;">
+            </div>
+            <div class="sg-field" data-type="period">
+              <label>允许的开票日期区间</label>
+              <input type="date" id="cfgStart"> ~ <input type="date" id="cfgEnd">
+            </div>
+            <div class="sg-field" data-type="amount">
+              <label>金额上下限（元）</label>
+              <input type="number" step="0.01" id="cfgMin" placeholder="下限" style="width:140px;"> ~
+              <input type="number" step="0.01" id="cfgMax" placeholder="上限" style="width:140px;">
+            </div>
+            <div class="sg-field" data-type="dedup">
+              <label>红冲限制</label>
+              <label class="muted" style="font-weight:normal;"><input type="checkbox" id="cfgDedup"> 禁止同号红冲（红冲发票与原蓝票不得在报销中混同）</label>
+            </div>
+            <div class="sg-field" data-type="custom">
+              <label>自定义 JSON</label>
+              <input type="text" id="cfgCustom" placeholder='如 {"key":"value"}' style="width:420px;">
+            </div>
+          </div>
+
+          <input type="hidden" name="config" id="sgRuleConfig" value="">
+          <div style="margin-top:14px;">
+            <button type="button" class="btn btn-sm btn-outline" onclick="sgPreviewRuleCfg()">预览 config JSON</button>
+            <button type="submit" class="btn btn-sm" style="margin-left:8px;">添加规则</button>
+          </div>
+          <p class="muted" id="sgCfgPreview" style="margin-top:6px;"></p>
+        </form>
+      </div>
+
+      <div class="card">
+        <h2>规则列表</h2>
+        {% if rules %}
+        <table>
+          <tr><th>ID</th><th>名称</th><th>类型</th><th>优先级</th><th>短路</th><th>config</th><th>启用</th><th>操作</th></tr>
+          {% for r in rules %}
+          <tr>
+            <td>#{{ r.id }}</td>
+            <td>{{ r.name }}</td>
+            <td class="muted">{{ r.rule_type }}</td>
+            <td>{{ r.priority }}</td>
+            <td>{{ '是' if r.stop_on_fail else '否' }}</td>
+            <td class="wrap muted">{{ r.config }}</td>
+            <td><span class="badge {{ 'badge-green' if r.enabled else 'badge-gray' }}">{{ '启用' if r.enabled else '停用' }}</span></td>
+            <td>
+              <button class="btn btn-sm btn-outline" onclick="toggleRule({{ r.id }})">{{ '停用' if r.enabled else '启用' }}</button>
+              <button class="btn btn-sm btn-danger" onclick="delRule({{ r.id }})">删除</button>
+            </td>
+          </tr>
+          {% endfor %}
+        </table>
+        {% else %}
+        <p class="muted">暂无自定义规则（内置校验 C1-C5 始终生效）。</p>
+        {% endif %}
+      </div>
+
+      <!-- 折叠面板：系统信息 -->
+      <div class="sg-collapse" id="sgSysInfo">
+        <div class="sg-collapse-head" onclick="this.parentElement.classList.toggle('open')">
+          <span>🔧 系统信息（匹配阈值等）</span><span class="sg-arrow">▶</span>
+        </div>
+        <div class="sg-collapse-body" style="padding:16px;">
+          <div class="kv">
+            <span class="k">数据库</span><span>data/fapiao.db（SQLite）</span>
+            <span class="k">匹配阈值</span><span>自动通过 ≥ 0.95 · 待人工 0.70~0.95 · 无候选 &lt; 0.70</span>
+            <span class="k">金额容差</span><span>±0.01（不变量 I5）</span>
+            <span class="k">多对一组合上限</span><span>5 张发票（可在 config.py 调整）</span>
+            <span class="k">OCR</span><span>未配置（解析链中 OCR 环节自动跳过；图片/扫描件请人工录入）</span>
+            <span class="k">日志</span><span>data/logs/app.log</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ============ 模块3：费用字典 ============ -->
+    <div class="sg-pane" id="pane-cats">
+      <div class="card">
+        <form class="inline mb" onsubmit="addCat(event)">
+          <input name="name" id="newCatName" placeholder="新增分类名称（如 培训费）" required>
+          <button class="btn btn-sm">新增分类</button>
+        </form>
+
+        {% if categories %}
+        <div class="sg-filter-row">
+          <input id="sgCatSearch" placeholder="🔍 搜索分类名称" style="width:240px;" oninput="sgFilterCats(this.value)">
+          <span class="muted" id="sgCatCount">共 {{ categories|length }} 项</span>
+        </div>
+
+        <table id="sgCatTable">
+          <thead>
+            <tr><th>ID</th><th>分类名称</th><th>来源</th><th>状态</th><th>操作</th></tr>
+          </thead>
+          <tbody>
+          {% for c in categories %}
+            <tr data-name="{{ c.name }}">
+              <td>#{{ c.id }}</td>
+              <td>{{ c.name }}</td>
+              <td>{% if c.is_builtin %}<span class="badge badge-blue">系统预设</span>{% else %}<span class="badge badge-gray">自定义</span>{% endif %}</td>
+              <td>{% if c.enabled %}<span style="display:inline-block;padding:2px 10px;border-radius:10px;font-size:12px;background:#dcfce7;color:#166534;">启用</span>{% else %}<span style="display:inline-block;padding:2px 10px;border-radius:10px;font-size:12px;background:#f3f4f6;color:#4b5563;">已禁用</span>{% endif %}</td>
+              <td>
+                {% if c.is_builtin %}
+                <span class="muted" title="系统基础映射标准，已强制锁定">🔒 已锁定</span>
+                {% else %}
+                <div class="dropdown">
+                  <button class="btn btn-sm btn-outline action-btn" onclick="toggleDropdown(this)">操作 ▾</button>
+                  <div class="dropdown-menu">
+                    <button onclick='renameCat({{ c.id }}, {{ c.name|tojson }})'>重命名</button>
+                    <button onclick='mergeCat({{ c.id }}, {{ c.name|tojson }})'>合并</button>
+                    <button onclick="toggleCat({{ c.id }})">{{ '禁用' if c.enabled else '启用' }}</button>
+                  </div>
+                </div>
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+        {% else %}<p class="muted">分类字典为空。</p>{% endif %}
+      </div>
+    </div>
+
+    <!-- ============ 模块4：系统与安全 ============ -->
+    <div class="sg-pane" id="pane-system">
+      <!-- Tab 切换 -->
+      <div class="tabs">
+        <div class="tab active" onclick="switchTab(this,'sysBackup')">数据备份</div>
+        <div class="tab" onclick="switchTab(this,'sysAudit')">审计日志</div>
+        <div class="tab" onclick="switchTab(this,'sysInfo')">系统信息</div>
+      </div>
+
+      <!-- ---- Tab: 数据备份 ---- -->
+      <div class="tabpane active" id="sysBackup">
+        <div class="card">
+          <h2>数据备份与恢复</h2>
+          <p class="muted mb">本系统为本地化软件，全部数据（数据库 + 原始发票附件）仅保存在本机。重装系统或更换电脑前，请务必先执行【一键备份数据】。</p>
+          <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+            <button class="btn btn-green" onclick="downloadBackup()">一键备份数据</button>
+            <button class="btn btn-danger" onclick="askRestore()">恢复数据</button>
+            <input type="file" id="restoreFile" accept=".zip" style="display:none" onchange="doRestore(this)">
+            <span class="muted">备份内容：fapiao.db 数据库 + uploads/ 全部发票附件，打包为带时间戳的 zip</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- ---- Tab: 审计日志 ---- -->
+      <div class="tabpane" id="sysAudit">
+        <div class="card" style="position:relative;">
+          <h2>审计日志（不可篡改，仅供追溯）</h2>
+
+          <!-- 筛选区 -->
+          <div class="sg-filter-row">
+            <label>时间：</label>
+            <div class="sg-quick-date">
+              <button type="button" onclick="sgAuditQuickDate(this,'today')">今天</button>
+              <button type="button" onclick="sgAuditQuickDate(this,'7d')">近7天</button>
+              <button type="button" onclick="sgAuditQuickDate(this,'month')">本月</button>
+            </div>
+            <input type="date" id="sgAuditFrom" onchange="sgAuditLoad()">
+            <span class="muted">至</span>
+            <input type="date" id="sgAuditTo" onchange="sgAuditLoad()">
+            <span class="sg-sep"></span>
+            <label>操作：</label>
+            <select id="sgAuditAction" onchange="sgAuditLoad()" style="min-width:180px;">
+              <option value="">全部操作</option>
+              <option value="category_dict_add">字典新增</option>
+              <option value="category_dict_enable">字典启用</option>
+              <option value="category_dict_disable">字典禁用</option>
+              <option value="category_dict_merge">字典合并</option>
+              <option value="category_dict_rename">字典重命名</option>
+              <option value="invoice_category">发票分类修改</option>
+              <option value="invoice_category_batch">发票分类批量修改</option>
+              <option value="reimburse_category">报销单分类修改</option>
+              <option value="conflict_reimburse">冲突仲裁(以报销单为准)</option>
+              <option value="conflict_invoice">冲突仲裁(以发票为准)</option>
+              <option value="conflict_keep">冲突保留差异</option>
+              <option value="unmatch">解除匹配</option>
+            </select>
+            <span class="sg-sep"></span>
+            <input id="sgAuditKw" placeholder="搜索操作人/对象" style="width:200px;" onkeydown="if(event.key==='Enter')sgAuditLoad()">
+            <button class="btn btn-sm" onclick="sgAuditLoad()">查询</button>
+            <button class="btn btn-sm btn-outline" onclick="sgAuditReset()">重置</button>
+          </div>
+
+          <!-- Loading 遮罩 -->
+          <div id="sgAuditLoading" style="display:none;position:absolute;inset:0;background:rgba(255,255,255,.6);z-index:5;border-radius:12px;align-items:center;justify-content:center;">
+            <div style="text-align:center;"><div class="spinner"></div><p class="muted" style="margin-top:8px;">加载中…</p></div>
+          </div>
+
+          <table class="sg-zebra">
+            <thead>
+              <tr>
+                <th style="width:170px;">时间</th>
+                <th>操作</th>
+                <th>对象</th>
+                <th>操作人</th>
+                <th class="sg-cell-ellipsis">说明</th>
+                <th style="width:90px;">操作</th>
+              </tr>
+            </thead>
+            <tbody id="sgAuditTbody">
+              <!-- JS 动态渲染 -->
+            </tbody>
+          </table>
+
+          <!-- 分页 -->
+          <div class="pager" id="sgAuditPager" style="justify-content:center;"></div>
+        </div>
+      </div>
+
+      <!-- ---- Tab: 系统信息 ---- -->
+      <div class="tabpane" id="sysInfo">
+        <div class="card">
+          <h2>系统信息</h2>
+          <div class="kv">
+            <span class="k">数据库</span><span>data/fapiao.db（SQLite）</span>
+            <span class="k">匹配阈值</span><span>自动通过 ≥ 0.95 · 待人工 0.70~0.95 · 无候选 &lt; 0.70</span>
+            <span class="k">金额容差</span><span>±0.01（不变量 I5）</span>
+            <span class="k">多对一组合上限</span><span>5 张发票（可在 config.py 调整）</span>
+            <span class="k">OCR</span><span>未配置（解析链中 OCR 环节自动跳过；图片/扫描件请人工录入）</span>
+            <span class="k">日志</span><span>data/logs/app.log</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </main>
 </div>
 
-<div class="card">
-  <h2>审计日志（最近 50 条）</h2>
-  <p class="muted mb">字典新增/禁用、单条修改、批量修改、冲突仲裁、解除匹配等操作均记录操作人、时间、对象与修改前后值。</p>
-  {% if audit_logs %}
-  <table>
-    <tr><th>时间</th><th>操作</th><th>对象</th><th>修改前</th><th>修改后</th><th>操作人</th><th>说明</th></tr>
-    {% for a in audit_logs %}
-    <tr>
-      <td class="muted">{{ a.created_at }}</td>
-      <td>{{ {'category_dict_add':'字典新增','category_dict_enable':'字典启用','category_dict_disable':'字典禁用',
-              'category_dict_merge':'字典合并','category_dict_rename':'字典重命名','invoice_category':'发票分类修改','invoice_category_batch':'发票分类批量修改',
-              'reimburse_category':'报销单分类修改','conflict_reimburse':'冲突仲裁(以报销单为准)',
-              'conflict_invoice':'冲突仲裁(以发票为准)','conflict_keep':'冲突保留差异',
-              'unmatch':'解除匹配'}.get(a.action, a.action) }}</td>
-      <td class="wrap">{{ a.target_label or a.target_type }}</td>
-      <td class="muted">{{ a.old_value or '—' }}</td>
-      <td>{{ a.new_value or '—' }}</td>
-      <td>{{ a.operator }}</td>
-      <td class="wrap muted">{{ a.detail or '' }}</td>
-    </tr>
-    {% endfor %}
-  </table>
-  {% else %}<p class="muted">暂无审计记录。</p>{% endif %}
-</div>
-
-<div class="card">
-  <h2>数据管理</h2>
-  <p class="muted mb">本系统为本地化软件，全部数据（数据库 + 原始发票附件）仅保存在本机。重装系统或更换电脑前，请务必先执行【一键备份数据】。</p>
-  <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
-    <button class="btn btn-green" onclick="downloadBackup()">一键备份数据</button>
-    <button class="btn btn-danger" onclick="askRestore()">恢复数据</button>
-    <input type="file" id="restoreFile" accept=".zip" style="display:none" onchange="doRestore(this)">
-    <span class="muted">备份内容：fapiao.db 数据库 + uploads/ 全部发票附件，打包为带时间戳的 zip</span>
+<!-- 审计日志详情抽屉 -->
+<div class="sg-drawer-bg" id="sgDrawerBg" onclick="sgCloseDrawer()"></div>
+<div class="sg-drawer" id="sgDrawer">
+  <div class="sg-drawer-head">
+    <h3 id="sgDrawerTitle">操作详情</h3>
+    <button class="sg-drawer-close" onclick="sgCloseDrawer()">✕</button>
   </div>
-</div>
-
-<div class="card">
-  <h2>系统信息</h2>
-  <div class="kv">
-    <span class="k">数据库</span><span>data/fapiao.db（SQLite）</span>
-    <span class="k">匹配阈值</span><span>自动通过 ≥ 0.95 · 待人工 0.70~0.95 · 无候选 &lt; 0.70</span>
-    <span class="k">金额容差</span><span>±0.01（不变量 I5）</span>
-    <span class="k">OCR</span><span>未配置（解析链中 OCR 环节自动跳过；图片/扫描件请人工录入）</span>
-    <span class="k">日志</span><span>data/logs/app.log</span>
-  </div>
+  <div id="sgDrawerBody"></div>
 </div>
 {% endblock %}
 
 {% block scripts %}
 <script>
+/* ===== 左侧导航切换 ===== */
+function sgSwitch(el, paneId){
+  document.querySelectorAll('.sg-nav-item').forEach(i=>i.classList.remove('active'));
+  el.classList.add('active');
+  document.querySelectorAll('.sg-pane').forEach(p=>p.classList.remove('active'));
+  document.getElementById(paneId).classList.add('active');
+  // 切到审计日志 Tab 时自动加载一次
+  if(paneId==='pane-system'){
+    setTimeout(()=>sgEnsureAudit(), 50);
+  }
+}
+
+/* ===== 规则表单：动态 config ===== */
+function sgToggleRuleFields(){
+  const type = document.getElementById('sgRuleType').value;
+  document.querySelectorAll('#sgRuleCfg .sg-field').forEach(f=>{
+    f.classList.toggle('on', f.dataset.type===type);
+  });
+}
+function sgPreviewRuleCfg(){
+  const type = document.getElementById('sgRuleType').value;
+  let cfg = {};
+  switch(type){
+    case 'buyer_tax_no':{
+      const raw = (document.getElementById('cfgTaxNos').value||'').trim();
+      cfg = {tax_nos: raw? raw.split(/[,\s，]+/).filter(Boolean): []};
+      break;
+    }
+    case 'period':{
+      cfg = {start: document.getElementById('cfgStart').value, end: document.getElementById('cfgEnd').value};
+      break;
+    }
+    case 'amount':{
+      cfg = {min: parseFloat(document.getElementById('cfgMin').value)||0, max: parseFloat(document.getElementById('cfgMax').value)||0};
+      break;
+    }
+    case 'dedup':{
+      cfg = {disallow_red_flush: document.getElementById('cfgDedup').checked};
+      break;
+    }
+    case 'custom':{
+      try{ cfg = JSON.parse(document.getElementById('cfgCustom').value||'{}'); }
+      catch(e){ document.getElementById('sgCfgPreview').textContent = 'JSON 解析失败：' + e.message; return; }
+      break;
+    }
+  }
+  const json = JSON.stringify(cfg);
+  document.getElementById('sgRuleConfig').value = json;
+  document.getElementById('sgCfgPreview').innerHTML = '<code>' + _escHtml(json) + '</code>';
+}
+// 表单提交前自动生成 config JSON
+document.addEventListener('submit', function(e){
+  if(e.target.id==='sgRuleForm'){ sgPreviewRuleCfg(); }
+});
+sgToggleRuleFields();
+
+/* ===== 分类搜索 ===== */
+function sgFilterCats(kw){
+  kw = (kw||'').trim().toLowerCase();
+  const rows = document.querySelectorAll('#sgCatTable tbody tr');
+  let show = 0;
+  rows.forEach(r=>{
+    const hit = !kw || (r.dataset.name||'').toLowerCase().includes(kw);
+    r.style.display = hit ? '' : 'none';
+    if(hit) show++;
+  });
+  const total = rows.length;
+  document.getElementById('sgCatCount').textContent = kw
+    ? `命中 ${show} / ${total}` : `共 ${total} 项`;
+}
+
+/* ===== 审计日志：加载 + 筛选 + 分页 + 详情抽屉 ===== */
+const ACTION_CN = {
+  category_dict_add:'字典新增',category_dict_enable:'字典启用',category_dict_disable:'字典禁用',
+  category_dict_merge:'字典合并',category_dict_rename:'字典重命名',
+  invoice_category:'发票分类修改',invoice_category_batch:'发票分类批量修改',
+  reimburse_category:'报销单分类修改',
+  conflict_reimburse:'冲突仲裁(以报销单为准)',conflict_invoice:'冲突仲裁(以发票为准)',
+  conflict_keep:'冲突保留差异',unmatch:'解除匹配',
+};
+let sgAuditPage = 1, sgAuditPageSize = 20;
+const sgAuditState = { loaded:false };
+
+function sgEnsureAudit(){
+  if(!sgAuditState.loaded){ sgAuditLoad(); sgAuditState.loaded = true; }
+}
+function sgAuditQuickDate(btn, mode){
+  document.querySelectorAll('.sg-quick-date button').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
+  const today = new Date().toISOString().slice(0,10);
+  let from = today;
+  if(mode==='7d'){ const d = new Date(); d.setDate(d.getDate()-6); from = d.toISOString().slice(0,10); }
+  else if(mode==='month'){ const d = new Date(); from = d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-01'; }
+  document.getElementById('sgAuditFrom').value = from;
+  document.getElementById('sgAuditTo').value = today;
+  sgAuditPage = 1;
+  sgAuditLoad();
+}
+function sgAuditReset(){
+  document.querySelectorAll('.sg-quick-date button').forEach(b=>b.classList.remove('active'));
+  document.getElementById('sgAuditFrom').value = '';
+  document.getElementById('sgAuditTo').value = '';
+  document.getElementById('sgAuditAction').value = '';
+  document.getElementById('sgAuditKw').value = '';
+  sgAuditPage = 1;
+  sgAuditLoad();
+}
+async function sgAuditLoad(){
+  const from = document.getElementById('sgAuditFrom').value;
+  const to   = document.getElementById('sgAuditTo').value;
+  const act  = document.getElementById('sgAuditAction').value;
+  const kw   = document.getElementById('sgAuditKw').value.trim();
+  document.getElementById('sgAuditLoading').style.display = 'flex';
+  try{
+    const u = `/api/audit?page=${sgAuditPage}&page_size=${sgAuditPageSize}`
+      + (from?`&date_from=${from}`:'')
+      + (to?`&date_to=${to}`:'')
+      + (act?`&action=${act}`:'')
+      + (kw?`&keyword=${encodeURIComponent(kw)}`:'');
+    const d = await (await fetch(u)).json();
+    const r = d.data || d;
+    sgRenderAudit(r);
+  }finally{
+    document.getElementById('sgAuditLoading').style.display = 'none';
+  }
+}
+function sgRenderAudit(r){
+  const tbody = document.getElementById('sgAuditTbody');
+  if(!r.items || !r.items.length){
+    tbody.innerHTML = '<tr><td colspan="6" class="muted" style="text-align:center;padding:24px;">暂无符合条件的日志</td></tr>';
+    document.getElementById('sgAuditPager').innerHTML = `<span class="muted">共 0 条</span>`;
+    return;
+  }
+  tbody.innerHTML = r.items.map((a,i)=>{
+    const time = (a.created_at||'').replace('T',' ');
+    const actCn = ACTION_CN[a.action] || a.action;
+    // target_label 已经是可读文本（业务单号/对象描述），不再附加 target_id
+    const obj = _escHtml(a.target_label || a.target_type || '');
+    const detail = (a.detail || '').slice(0,30) + ((a.detail||'').length>30?'…':'');
+    return `<tr>
+      <td class="muted" style="font-variant-numeric:tabular-nums;font-size:12px;">${time}</td>
+      <td><span class="badge badge-blue">${_escHtml(actCn)}</span></td>
+      <td class="sg-cell-ellipsis" title="${obj}">${obj}</td>
+      <td>${_escHtml(a.operator||'—')}</td>
+      <td class="sg-cell-ellipsis muted" title="${_escHtml(a.detail||'')}">${_escHtml(detail||'—')}</td>
+      <td><button class="btn btn-sm btn-outline" onclick='sgOpenDrawer(${JSON.stringify(a).replace(/'/g,"&#39;")})'>查看详情</button></td>
+    </tr>`;
+  }).join('');
+  sgRenderPager(r);
+}
+function sgRenderPager(r){
+  const pager = document.getElementById('sgAuditPager');
+  const p = r.page||1, ps = r.page_size||20, total = r.total||0, pages = r.pages||1;
+  let html = `<span class="muted">共 ${total} 条 · 每页 ${ps} · 第 ${p}/${pages} 页</span>`;
+  html += `<button class="btn btn-sm btn-outline" ${p<=1?'disabled':''} onclick="sgAuditGoto(${p-1})">上一页</button>`;
+  // 最多显示 7 个页码
+  let start = Math.max(1, p-3), end = Math.min(pages, start+6);
+  if(end - start < 6) start = Math.max(1, end-6);
+  for(let i=start;i<=end;i++){
+    html += `<button class="btn btn-sm ${i===p?'':'btn-outline'}" style="min-width:32px;" onclick="sgAuditGoto(${i})">${i}</button>`;
+  }
+  html += `<button class="btn btn-sm btn-outline" ${p>=pages?'disabled':''} onclick="sgAuditGoto(${p+1})">下一页</button>`;
+  pager.innerHTML = html;
+}
+function sgAuditGoto(p){
+  sgAuditPage = p; sgAuditLoad();
+}
+
+/* ===== 详情抽屉 ===== */
+function sgOpenDrawer(a){
+  document.getElementById('sgDrawerTitle').textContent = ACTION_CN[a.action] || a.action;
+  const body = document.getElementById('sgDrawerBody');
+  
+  // 安全解析 detail JSON
+  let detailObj = {};
+  try {
+    if(a.detail) detailObj = JSON.parse(a.detail);
+  } catch(e) { detailObj = { legacy: a.detail }; }
+  
+  const time = (a.created_at || '').replace('T', ' ');
+  const act = _escHtml(ACTION_CN[a.action] || a.action);
+  const actColor = (a.action || '').includes('quick_fix') || (a.action || '').includes('manual') ? 'badge-orange' 
+    : (a.action || '').includes('confirm') ? 'badge-green'
+    : (a.action || '').includes('reject') ? 'badge-gray'
+    : 'badge-blue';
+  
+  // 中部：关联对象（有业务单号就展示 + 跳转）
+  const invNo = detailObj.invoice_no || '';
+  const rebNo = detailObj.reimburse_no || '';
+  const mid = detailObj.match_id || '';
+  let objLinks = '';
+  if(rebNo) {
+    const rebId = detailObj.reimburse_id || '';
+    objLinks += `<div style="margin:4px 0;"><span class="sg-dk" style="display:inline-block;width:72px;color:var(--muted);">报销单号</span>
+      <a href="${rebId ? '/reimburses?focus_id=' + rebId : '#'}" style="color:#2563eb;">${_escHtml(rebNo)}</a></div>`;
+  }
+  if(invNo) {
+    const invId = detailObj.invoice_id || '';
+    objLinks += `<div style="margin:4px 0;"><span class="sg-dk" style="display:inline-block;width:72px;color:var(--muted);">发票号</span>
+      <a href="${invId ? '/invoices/' + invId : '#'}" style="color:#2563eb;">${_escHtml(invNo)}</a></div>`;
+  }
+  if(mid) {
+    objLinks += `<div style="margin:4px 0;"><span class="sg-dk" style="display:inline-block;width:72px;color:var(--muted);">匹配ID</span>
+      <span class="muted">#${mid}</span></div>`;
+  }
+  if(!objLinks) {
+    objLinks = `<div class="muted">（无关联单号）</div>`;
+  }
+  
+  // 底部：变更对比表
+  let changesHtml = '';
+  const changes = detailObj.changes;
+  if(Array.isArray(changes) && changes.length) {
+    changesHtml = `<table style="width:100%;border-collapse:collapse;margin-top:8px;font-size:13px;">
+      <thead><tr style="background:#f9fafb;">
+        <th style="padding:6px 10px;text-align:left;border-bottom:1px solid var(--border);">字段</th>
+        <th style="padding:6px 10px;text-align:left;border-bottom:1px solid var(--border);">修改前</th>
+        <th style="padding:6px 10px;text-align:left;border-bottom:1px solid var(--border);">修改后</th>
+      </tr></thead><tbody>`;
+    changes.forEach(c => {
+      changesHtml += `<tr>
+        <td style="padding:5px 10px;border-bottom:1px solid #f0f0f0;">${_escHtml(c.field || '')}</td>
+        <td style="padding:5px 10px;border-bottom:1px solid #f0f0f0;color:#dc2626;">${_escHtml(String(c.old ?? '—'))}</td>
+        <td style="padding:5px 10px;border-bottom:1px solid #f0f0f0;color:#16a34a;">${_escHtml(String(c.new ?? '—'))}</td>
+      </tr>`;
+    });
+    changesHtml += '</tbody></table>';
+  }
+  
+  const why = detailObj.why || detailObj.legacy || a.detail || '';
+  const reasonOpt = detailObj.reason_option || '';
+  
+  body.innerHTML = `
+    <!-- 顶部：基本信息 -->
+    <div style="border-bottom:1px solid var(--border);padding-bottom:10px;margin-bottom:12px;">
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px;">
+        <span class="badge ${actColor}">${act}</span>
+        ${reasonOpt ? `<span class="badge badge-gray">${_escHtml(reasonOpt)}</span>` : ''}
+      </div>
+      <div class="sg-detail-row"><span class="sg-dk">时间</span><span>${_escHtml(time)}</span></div>
+      <div class="sg-detail-row"><span class="sg-dk">操作人</span><span>${_escHtml(a.operator || '—')}</span></div>
+      <div class="sg-detail-row"><span class="sg-dk">对象</span><span class="wrap">${_escHtml(a.target_label || a.target_type || '—')}</span></div>
+    </div>
+    
+    <!-- 中部：关联对象 -->
+    <div style="border-bottom:1px solid var(--border);padding-bottom:12px;margin-bottom:12px;">
+      <div style="font-size:12px;color:var(--muted);margin-bottom:6px;">关联对象</div>
+      ${objLinks}
+    </div>
+    
+    <!-- 底部：变更对比 -->
+    <div>
+      ${why ? `<div style="font-size:12px;color:var(--muted);margin-bottom:4px;">操作原因</div>
+        <div style="font-size:13px;margin-bottom:10px;">${_escHtml(why)}</div>` : ''}
+      <div style="font-size:12px;color:var(--muted);margin-bottom:4px;">变更明细</div>
+      ${changesHtml || '<div class="muted">无字段变更</div>'}
+    </div>
+  `;
+  document.getElementById('sgDrawerBg').classList.add('on');
+  document.getElementById('sgDrawer').classList.add('open');
+}
+function sgCloseDrawer(){
+  document.getElementById('sgDrawerBg').classList.remove('on');
+  document.getElementById('sgDrawer').classList.remove('open');
+}
+/* ESC 关闭抽屉 */
+document.addEventListener('keydown', e=>{ if(e.key==='Escape') sgCloseDrawer(); });
+
+/* ===== 设置页原有 JS（公司/规则/分类/备份恢复）===== */
 async function delCompany(id){if(await confirmDlg('确认删除该公司抬头？'))post(`/api/companies/${id}/delete`).then(()=>location.reload());}
 async function delRule(id){if(await confirmDlg('确认删除该规则？'))post(`/api/rules/${id}/delete`).then(()=>location.reload());}
 function toggleRule(id){post(`/api/rules/${id}/toggle`).then(()=>location.reload());}
 
-// ---- 分类字典：新增（相似词提示合并）/ 启用禁用（不提供物理删除）----
 const CAT_LIST = {{ categories|tojson }};
 async function _catPost(url, obj){
   const fd = new FormData();
@@ -177,7 +688,6 @@ async function toggleCat(id){
   if(d.ok){ toast(d.message || '已更新'); setTimeout(()=>location.reload(), 600); }
   else toast(d.message || '操作失败', false);
 }
-// 自定义分类【重命名】：仅限未被历史数据使用；已被使用时后端会拒绝并提示走【合并】
 async function renameCat(id, name){
   const nn = await promptDlg('重命名自定义分类「' + name + '」\n仅当该分类尚未被任何发票/报销单使用时允许直接改名。\n请输入新名称：', name);
   if(nn === null) return;
@@ -193,7 +703,6 @@ async function renameCat(id, name){
   if(d && d.ok){ toast(d.message); setTimeout(()=>location.reload(), 700); }
   else toast((d && d.message) || '重命名失败', false);
 }
-// 自定义分类【合并】：选择目标分类，历史数据全部改为目标分类，源分类自动禁用（保留备查）
 async function mergeCat(id, name){
   const opts = (CAT_LIST || []).filter(c => c.id !== id && c.enabled)
     .map(c => '<option value="' + c.id + '">' + c.name + (c.is_builtin ? '（系统预设）' : '（自定义）') + '</option>').join('');
@@ -220,45 +729,27 @@ async function mergeCat(id, name){
   else toast((d && d.message) || '合并失败', false);
 }
 
-// ---- 数据备份：直接跳转下载（浏览器自动保存 zip）----
-function downloadBackup(){
-  toast('正在生成备份压缩包，请稍候…');
-  window.location.href = '/api/backup';
-}
+function downloadBackup(){ toast('正在生成备份压缩包，请稍候…'); window.location.href = '/api/backup'; }
 
-// ---- 数据恢复：高危操作，先弹警告，确认后再打开文件选择框 ----
 async function askRestore(){
   const ok = await confirmDlg('警告：恢复数据将彻底覆盖您当前的所有发票和报销记录，且不可逆！\n确定要继续吗？');
   if(!ok) return;
   document.getElementById('restoreFile').click();
 }
-
 async function doRestore(input){
   const f = input.files[0];
-  input.value = '';   // 允许重复选择同一文件
+  input.value = '';
   if(!f) return;
-  if(!f.name.toLowerCase().endsWith('.zip')){
-    toast('仅支持 .zip 格式的备份文件', false);
-    return;
-  }
-  const fd = new FormData();
-  fd.append('file', f);
+  if(!f.name.toLowerCase().endsWith('.zip')){ toast('仅支持 .zip 格式的备份文件', false); return; }
+  const fd = new FormData(); fd.append('file', f);
   busyIndet('正在恢复数据…', '正在覆盖数据库与发票附件，请勿关闭窗口');
   try{
     const r = await fetch('/api/backup/restore', {method:'POST', body:fd});
-    const j = await r.json();
-    const data = j.data || j;
+    const j = await r.json(); const data = j.data || j;
     busyDone();
-    if(data.ok){
-      await confirmDlg((data.message || '数据恢复成功') + '\n点击确认后页面将自动刷新。');
-      location.reload();
-    }else{
-      toast(data.message || '恢复失败', false);
-    }
-  }catch(e){
-    busyDone();
-    toast('恢复请求失败：' + e, false);
-  }
+    if(data.ok){ await confirmDlg((data.message || '数据恢复成功') + '\n点击确认后页面将自动刷新。'); location.reload(); }
+    else toast(data.message || '恢复失败', false);
+  }catch(e){ busyDone(); toast('恢复请求失败：' + e, false); }
 }
 </script>
 {% endblock %}

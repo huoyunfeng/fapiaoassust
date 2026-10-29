@@ -36,6 +36,10 @@ class InvoiceDTO:
     tax_rate: str = ""
     item_summary: str = ""
     is_red_flush: bool = False                  # 是否红冲（负数发票）
+    # ---- 无票号发票（打车票/行程单）的票面特征 ----
+    plate_no: str = ""                          # 车牌号（如 沪A12345）
+    ride_time: str = ""                         # 上下车时间（原文或 ISO8601）
+    traffic_text: str = ""                      # 票面关键文字（线路/上下车地点等）
 
     def filled_fields(self) -> list[str]:
         """返回已填充的必填字段名（用于解析引擎终止判断）。"""
@@ -65,6 +69,11 @@ class ReimburseDTO:
     source_row: Optional[int] = None            # 原始 Excel 行号（数据行，1-based）
     parent_id: Optional[int] = None             # 拆行的父行 id（one_to_many / many_to_one）
     split_type: str = "none"                    # none / one_to_many / many_to_one
+    # ---- 行程明细类报销单的业务特征（无票号场景匹配用）----
+    reason: str = ""                            # 事由
+    origin: str = ""                            # 起始地点
+    destination: str = ""                       # 到达地点
+    plate_no: str = ""                          # 车牌号（行程单如已登记）
 
     def __post_init__(self):
         if self.extra_data is None:

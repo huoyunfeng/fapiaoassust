@@ -1,0 +1,147 @@
+{% extends "base.html" %}
+{% block title %}并排比对 - 发票报销核对助手{% endblock %}
+{% block content %}
+<style>
+.cmp-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;gap:10px;}
+.cmp-head h1{font-size:20px;}
+.cmp-grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;}
+.cmp-card{background:#fff;border:1px solid var(--border);border-radius:12px;padding:18px 20px;}
+.cmp-card h2{font-size:15px;margin-bottom:14px;display:flex;align-items:center;gap:8px;}
+.cmp-card .tag{font-size:12px;font-weight:400;color:var(--muted);}
+.kv{display:flex;justify-content:space-between;gap:14px;padding:8px 0;border-bottom:1px dashed #eef0f3;font-size:13px;}
+.kv:last-child{border-bottom:0;}
+.kv .k{color:var(--muted);white-space:nowrap;}
+.kv .v{text-align:right;font-weight:600;word-break:break-all;}
+.kv .v.mono{font-variant-numeric:tabular-nums;}
+.kv .v.empty{color:#9ca3af;font-weight:400;}
+.hit-box{background:#f0fdf4;border:1px solid #bbf7d0;border-radius:12px;padding:14px 18px;margin:16px 0;}
+.hit-box h3{font-size:14px;color:#166534;margin-bottom:10px;}
+.hit-list{display:flex;flex-wrap:wrap;gap:8px;}
+.hit{display:inline-block;padding:4px 11px;border-radius:999px;font-size:13px;font-weight:600;}
+.hit.ok{background:#dcfce7;color:#166534;border:1px solid #86efac;}
+.hit.bad{background:#fee2e2;color:#991b1b;border:1px solid #fca5a5;}
+.traffic-text{background:#f8fafc;border:1px solid var(--border);border-radius:8px;padding:10px 12px;
+  font-size:12px;color:#475569;line-height:1.6;word-break:break-all;max-height:120px;overflow:auto;}
+.tie-head{display:flex;align-items:center;gap:10px;margin:20px 0 12px;}
+.tie-head h2{font-size:16px;}
+.ties{display:grid;grid-template-columns:repeat(auto-fill,minmax(420px,1fr));gap:14px;}
+.tie{background:#fff;border:1px solid var(--border);border-radius:12px;padding:16px 18px;}
+.tie.current{border-color:#2563eb;box-shadow:0 0 0 2px #dbeafe inset;}
+.tie-head-row{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;gap:8px;}
+.tie-score{font-size:12px;color:var(--muted);}
+.tie-actions{margin-top:12px;display:flex;justify-content:flex-end;gap:8px;}
+.muted-note{color:var(--muted);font-size:12px;margin-top:6px;}
+</style>
+
+<div class="cmp-head">
+  <h1>并排比对 <span class="badge {{ data.status|badge }}">{{ data.status|dstatus|status_cn }}</span></h1>
+  <a class="btn btn-outline" href="/matches">返回匹配中心</a>
+</div>
+
+<div class="cmp-grid">
+  <section class="cmp-card">
+    <h2>报销单 <span class="tag">{{ data.reimburse.reimburse_no or '—' }}{% if data.reimburse.submitter %} · {{ data.reimburse.submitter }}{% endif %}</span></h2>
+    <div class="kv"><span class="k">金额</span>
+      <span class="v mono">¥{{ '%.2f'|format(data.reimburse.amount) if data.reimburse.amount is not none else '—' }}</span></div>
+    <div class="kv"><span class="k">日期</span>
+      <span class="v">{{ data.reimburse.date or '—' }}</span></div>
+    <div class="kv"><span class="k">事由</span>
+      <span class="v{% if not data.reimburse.reason %} empty{% endif %}">{{ data.reimburse.reason or '—' }}</span></div>
+    <div class="kv"><span class="k">起止地点</span>
+      <span class="v{% if not (data.reimburse.origin or data.reimburse.destination) %} empty{% endif %}">
+        {{ data.reimburse.origin or '—' }} → {{ data.reimburse.destination or '—' }}</span></div>
+    <div class="kv"><span class="k">费用类型</span>
+      <span class="v{% if not data.reimburse.expense_type %} empty{% endif %}">{{ data.reimburse.expense_type or '—' }}</span></div>
+    <div class="kv"><span class="k">登记发票号</span>
+      <span class="v{% if not data.reimburse.invoice_no %} empty{% endif %}">{{ data.reimburse.invoice_no or '（未填写）' }}</span></div>
+  </section>
+
+  <section class="cmp-card">
+    <h2>系统推荐发票 <span class="tag">匹配 #{{ data.invoice.match_id }}</span></h2>
+    <div class="kv"><span class="k">金额</span>
+      <span class="v mono">¥{{ '%.2f'|format(data.invoice.total_amount) if data.invoice.total_amount is not none else '—' }}</span></div>
+    <div class="kv"><span class="k">日期</span>
+      <span class="v">{{ data.invoice.invoice_date or '—' }}</span></div>
+    <div class="kv"><span class="k">发票号</span>
+      <span class="v{% if not data.invoice.invoice_no %} empty{% endif %}">{{ data.invoice.invoice_no or '（无票号）' }}</span></div>
+    <div class="kv"><span class="k">销方名称</span>
+      <span class="v{% if not data.invoice.seller_name %} empty{% endif %}">{{ data.invoice.seller_name or '—' }}</span></div>
+    <div class="kv"><span class="k">报销内容</span>
+      <span class="v{% if not data.invoice.item_summary %} empty{% endif %}">{{ data.invoice.item_summary or '—' }}</span></div>
+    <div class="kv"><span class="k">车牌号</span>
+      <span class="v{% if not data.invoice.plate_no %} empty{% endif %}">{{ data.invoice.plate_no or '—' }}</span></div>
+    <div class="kv"><span class="k">上下车时间</span>
+      <span class="v{% if not data.invoice.ride_time %} empty{% endif %}">{{ data.invoice.ride_time or '—' }}</span></div>
+    {% if data.invoice.traffic_text %}
+    <div style="margin-top:10px;">
+      <div class="muted-note" style="margin-bottom:6px;">票面文字</div>
+      <div class="traffic-text">{{ data.invoice.traffic_text }}</div>
+    </div>
+    {% endif %}
+  </section>
+</div>
+
+<div class="hit-box">
+  <h3>匹配成功的点</h3>
+  <div class="hit-list">
+    {% for p in data.invoice.match_points %}
+    <span class="hit {{ 'ok' if p.startswith('✅') else 'bad' }}">{{ p }}</span>
+    {% else %}
+    <span class="muted-note">暂无命中点（该发票不是业务特征碰撞产生的候选）</span>
+    {% endfor %}
+  </div>
+</div>
+
+{% if data.candidates|length > 1 %}
+<div class="tie-head">
+  <h2>平局候选（{{ data.candidates|length }} 张）</h2>
+  <span class="muted-note">金额/日期相同的候选全部列出，请人工点选归属；未选中的候选会被自动淘汰。</span>
+</div>
+<div class="ties">
+  {% for c in data.candidates %}
+  <section class="tie{% if c.match_id == data.match_id %} current{% endif %}">
+    <div class="tie-head-row">
+      <strong>{{ c.invoice_no or '（无票号）' }}</strong>
+      <span class="tie-score">
+        {% if c.match_id == data.match_id %}<span class="badge badge-blue">当前推荐</span>{% endif %}
+        得分 {{ '%.2f'|format(c.score or 0) }}
+      </span>
+    </div>
+    <div class="kv"><span class="k">金额 / 日期</span>
+      <span class="v mono">¥{{ '%.2f'|format(c.total_amount) if c.total_amount is not none else '—' }} · {{ c.invoice_date or '—' }}</span></div>
+    <div class="kv"><span class="k">销方 / 内容</span>
+      <span class="v">{{ c.seller_name or '—' }}{% if c.item_summary %} · {{ c.item_summary }}{% endif %}</span></div>
+    {% if c.plate_no or c.ride_time %}
+    <div class="kv"><span class="k">车牌 / 时间</span>
+      <span class="v">{{ c.plate_no or '—' }} · {{ c.ride_time or '—' }}</span></div>
+    {% endif %}
+    <div class="hit-list" style="margin-top:10px;">
+      {% for p in c.match_points %}
+      <span class="hit {{ 'ok' if p.startswith('✅') else 'bad' }}">{{ p }}</span>
+      {% endfor %}
+    </div>
+    <div class="tie-actions">
+      <button class="btn btn-sm" onclick="choose({{ c.match_id }})">选择此发票</button>
+    </div>
+  </section>
+  {% endfor %}
+</div>
+{% endif %}
+
+<script>
+async function choose(id){
+  const r = await reasonModal('确认将这张发票与该报销单绑定');
+  if(!r) return false;
+  const fd = new FormData();
+  fd.set('operator', 'admin');
+  fd.set('note', r.reason);
+  fd.set('reason_option', r.reason_option);
+  const res = await fetch('/api/match/' + id + '/confirm', {method:'POST', body:fd});
+  const j = await res.json();
+  const d = j.data || j;
+  if(d && d.ok === false){ alert(d.message || '操作失败'); return false; }
+  location.href = '/matches';
+  return false;
+}
+</script>
+{% endblock %}

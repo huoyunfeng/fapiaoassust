@@ -5,7 +5,13 @@
 2. 命中 mapping_cache -> 直接用缓存映射；
 3. 未命中 -> 自动推断 + 映射向导；
 4. 解析后按 fields_config 落库，自定义字段进 extra_data。
+
+报销单号规则（全局唯一、防撞号）：
+- 格式：BX-YYYYMMDD-{全局自增ID}，如 BX-20261029-1024
+- 全局自增不受批次 / 模板影响，跨模板连续递增
+- Excel 缺号 / 手动录入未填号时自动生成；用户显式填写的号保留（做唯一性校验）
 """
+import re
 import uuid
 from datetime import datetime
 from typing import List, Optional
@@ -24,6 +30,44 @@ from app.service.mapping_service import mapping_service
 from app.service.template_service import template_service
 
 logger = get_logger(__name__)
+
+# 单号解析 / 生成：允许 BX-YYYYMMDD-NNNNN
+_BX_RE = re.compile(r"^BX-(\d{8})-(\d+)$")
+_BX_NEXT = "seq_bx_reimburse"  # 存储键（SQLite 临时表或 kv 表；无则用 MAX + 1）
+
+
+def _next_reimburse_no(conn) -> str:
+    """在当前事务内原子生成下一个全局递增的报销单号（日期取今天）。
+
+    优先用 kv 表 seq_bx_reimburse；没有 kv 表则退化为 MAX + 1，
+    并在首次生成时初始化 kv 表以避免并发竞态。
+    """
+    today = datetime.now().strftime("%Y%m%d")
+    # 尝试用 kv 表（有则原子自增，无则初始化）
+    try:
+        row = conn.execute(
+            "INSERT INTO kv (k, v) VALUES (?, 0) "
+            "ON CONFLICT(k) DO UPDATE SET v = CAST(CAST(v AS INTEGER) + 1 AS TEXT) "
+            "WHERE k = ? RETURNING v",
+            (_BX_NEXT, _BX_NEXT)).fetchone()
+        seq = int(row["v"])
+    except Exception:
+        # 没有 kv 表 -> 退化：查当前最大的 BX-* 序号，+1
+        row = conn.execute(
+            "SELECT reimburse_no FROM reimburse WHERE reimburse_no LIKE 'BX-%' "
+            "ORDER BY id DESC LIMIT 1").fetchone()
+        seq = 0
+        if row:
+            m = _BX_RE.match(row["reimburse_no"] or "")
+            if m:
+                seq = int(m.group(2))
+        seq += 1
+    return f"BX-{today}-{seq}"
+
+
+def _is_auto_no(no: str) -> bool:
+    """判断是否为系统自动生成的 BX-* 单号（用于审计留痕）。"""
+    return bool(_BX_RE.match(no or ""))
 
 
 def _to_dto(record: dict, batch_id: str, template_id: Optional[int] = None) -> ReimburseDTO:
@@ -94,7 +138,6 @@ def import_excel(file_name: str, content: bytes, batch_id: str = None,
         records = split_multi_invoice(records, sep)
 
     rows: List[dict] = []
-    auto_no = 0
     for record in records:
         dto = _to_dto(record, batch_id, template_id)
         # 锚点校验：金额必填（设计 §3.3 原则 1）
@@ -102,14 +145,12 @@ def import_excel(file_name: str, content: bytes, batch_id: str = None,
             errors.append({"row_index": dto.row_index,
                            "message": f"金额无效（原始值: {record.get('amount')}），已跳过"})
             continue
-        # 报销单号缺失时自动补号（很多报销明细表没有单号列），保证可导入
-        if not dto.reimburse_no:
-            auto_no += 1
-            dto.reimburse_no = f"自动-{batch_id[-6:]}-{auto_no:04d}"
+        # 报销单号缺失时，延迟到事务内生成全局递增的 BX-YYYYMMDD-NNNN
+        # （用户显式填了号就保留，做唯一性校验）
         rows.append({
             "batch_id": dto.batch_id,
             "template_id": dto.template_id,
-            "reimburse_no": dto.reimburse_no,
+            "reimburse_no": dto.reimburse_no or "",   # 空串占位，事务内统一补
             "submitter": dto.submitter,
             "reimburse_date": dto.reimburse_date,
             "period_start": dto.period_start,
@@ -130,6 +171,9 @@ def import_excel(file_name: str, content: bytes, batch_id: str = None,
     with db.tx() as conn:
         imported = 0
         for r in rows:
+            # 空号 -> 原子生成；用户填了号 -> 保留
+            if not r["reimburse_no"]:
+                r["reimburse_no"] = _next_reimburse_no(conn)
             try:
                 reimburse_repo.insert(conn, r)
                 imported += 1
@@ -192,11 +236,12 @@ def import_excel(file_name: str, content: bytes, batch_id: str = None,
 
 
 def manual_create(fields: dict, operator: str = None) -> dict:
-    """手动录入单条报销单（设计 §12.4 降级入口）。"""
+    """手动录入单条报销单（设计 §12.4 降级入口）。
+
+    报销单号未填时自动生成 BX-YYYYMMDD-NNNN。
+    """
     operator = operator or settings.default_operator
     reimburse_no = clean(fields.get("reimburse_no"))
-    if not reimburse_no:
-        return {"ok": False, "message": "报销单号必填"}
     amount = to_decimal(fields.get("amount"))
     if amount is None:
         return {"ok": False, "message": "金额无效"}
@@ -204,7 +249,7 @@ def manual_create(fields: dict, operator: str = None) -> dict:
     row = {
         "batch_id": batch_id,
         "template_id": None,
-        "reimburse_no": reimburse_no,
+        "reimburse_no": reimburse_no or "",
         "submitter": clean(fields.get("submitter")),
         "reimburse_date": parse_date(fields.get("reimburse_date")),
         "period_start": parse_date(fields.get("period_start")),
@@ -220,9 +265,12 @@ def manual_create(fields: dict, operator: str = None) -> dict:
         "row_index": 1,
     }
     with db.tx() as conn:
+        if not row["reimburse_no"]:
+            row["reimburse_no"] = _next_reimburse_no(conn)
         reimburse_repo.insert(conn, row)
-    logger.info("手动录入报销单: %s 金额=%s (by %s)", reimburse_no, amount, operator)
-    return {"ok": True, "message": f"已手动录入报销单 {reimburse_no}", "batch_id": batch_id}
+    logger.info("手动录入报销单: %s 金额=%s (by %s)", row["reimburse_no"], amount, operator)
+    return {"ok": True, "message": f"已手动录入报销单 {row['reimburse_no']}",
+            "batch_id": batch_id, "reimburse_no": row["reimburse_no"]}
 
 
 def _release_active_matches(conn, reimburse_ids: List[int], operator: str) -> List[int]:

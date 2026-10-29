@@ -176,6 +176,7 @@ CREATE TABLE IF NOT EXISTS match_result (
     status       TEXT NOT NULL
                  CHECK(status IN ('PENDING','MATCHED','SUSPICIOUS','CONFLICT','UNMATCHED','CONFIRMED','REJECTED')),
     diff_fields  TEXT NOT NULL DEFAULT '[]',
+    match_points TEXT NOT NULL DEFAULT '[]',
     message      TEXT NOT NULL DEFAULT '',
     confirmed_by TEXT,
     confirmed_at TEXT,
@@ -291,6 +292,13 @@ CREATE TABLE IF NOT EXISTS audit_log (
 );
 
 CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log(created_at);
+
+-- 轻量 KV：存自增序列等全局状态（reimburse_service 的 BX-* 自增等）
+CREATE TABLE IF NOT EXISTS kv (
+    k TEXT PRIMARY KEY,
+    v TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
 """
 
 
@@ -383,6 +391,12 @@ def _migrate(conn: sqlite3.Connection) -> None:
         if col not in cols:
             conn.execute(ddl)
             logger.info("迁移: reimburse 表新增列 %s", col)
+
+    # 1a. match_result 表新增 match_points（无票号场景的 ✅ 命中点，供并排比对展示）
+    mcols = {r[1] for r in conn.execute("PRAGMA table_info(match_result)").fetchall()}
+    if "match_points" not in mcols:
+        conn.execute("ALTER TABLE match_result ADD COLUMN match_points TEXT NOT NULL DEFAULT '[]'")
+        logger.info("迁移: match_result 表新增列 match_points")
 
     # 1b. invoice 表移除冗余列（items_detail 已合并为 item_summary）
     inv_cols = {r[1] for r in conn.execute("PRAGMA table_info(invoice)").fetchall()}

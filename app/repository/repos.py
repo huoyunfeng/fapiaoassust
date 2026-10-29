@@ -388,12 +388,13 @@ class MatchRepo:
         cur = conn.execute(
             """INSERT INTO match_result
                (invoice_id, reimburse_id, match_type, match_score, status,
-                diff_fields, message, confirmed_by, confirmed_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                diff_fields, match_points, message, confirmed_by, confirmed_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 data["invoice_id"], data.get("reimburse_id"), data["match_type"],
                 data.get("match_score", 0.0), data["status"],
                 json.dumps(data.get("diff_fields", []), ensure_ascii=False),
+                json.dumps(data.get("match_points", []), ensure_ascii=False),
                 data.get("message", ""), data.get("confirmed_by"),
                 data.get("confirmed_at"),
             ),
@@ -412,6 +413,7 @@ class MatchRepo:
         d = _row_to_dict(row)
         if d:
             d["diff_fields"] = json.loads(d.get("diff_fields") or "[]")
+            d["match_points"] = json.loads(d.get("match_points") or "[]")
         return d
 
     def update_status(self, conn: sqlite3.Connection, mid: int, status: str,
@@ -522,6 +524,7 @@ class MatchRepo:
              limit: int = 500) -> List[dict]:
         sql = """SELECT m.*, i.invoice_no, i.invoice_date, i.total_amount,
                         i.buyer_name, i.seller_name, i.status AS invoice_status,
+                        i.item_summary, i.raw_json,
                         r.reimburse_no, r.amount AS reimburse_amount, r.submitter,
                         r.expense_type, r.reimburse_date, r.period_start, r.period_end
                  FROM match_result m
@@ -537,6 +540,7 @@ class MatchRepo:
         out = _rows_to_dicts(conn.execute(sql, params))
         for d in out:
             d["diff_fields"] = json.loads(d.get("diff_fields") or "[]")
+            d["match_points"] = json.loads(d.get("match_points") or "[]")
         return out
 
     def pairs_of(self, conn: sqlite3.Connection, match_ids: List[int]) -> Dict[int, List[dict]]:
@@ -935,14 +939,51 @@ class AuditRepo:
         return cur.lastrowid
 
     def list(self, conn: sqlite3.Connection, limit: int = 100,
-             target_type: str = None) -> List[dict]:
-        sql, params = "SELECT * FROM audit_log", []
+             target_type: str = None, action: str = None,
+             keyword: str = None, date_from: str = None, date_to: str = None,
+             page: int = 1, page_size: int = 20) -> dict:
+        """分页 + 多维度筛选，返回 {items, total, page, page_size}。
+
+        兼容旧签名：limit 仅作为无 page 参数时的简易上限，
+        有 page 时以 page_size 为准。
+        """
+        conds: list = []
+        params: list = []
         if target_type:
-            sql += " WHERE target_type = ?"
+            conds.append("target_type = ?")
             params.append(target_type)
-        sql += " ORDER BY id DESC LIMIT ?"
-        params.append(limit)
-        return _rows_to_dicts(conn.execute(sql, params))
+        if action:
+            conds.append("action = ?")
+            params.append(action)
+        if keyword:
+            conds.append("(operator LIKE ? OR target_label LIKE ? OR detail LIKE ?)")
+            like = f"%{keyword}%"
+            params.extend([like, like, like])
+        if date_from:
+            conds.append("created_at >= ?")
+            params.append(date_from)
+        if date_to:
+            conds.append("created_at <= ?")
+            params.append(date_to + " 23:59:59")
+
+        where = (" WHERE " + " AND ".join(conds)) if conds else ""
+
+        total_sql = f"SELECT COUNT(*) AS c FROM audit_log{where}"
+        total = conn.execute(total_sql, params).fetchone()["c"]
+
+        use_page = page and page >= 1
+        if use_page:
+            ps = max(1, min(500, page_size or 20))
+            offset = (page - 1) * ps
+            sql = f"SELECT * FROM audit_log{where} ORDER BY id DESC LIMIT ? OFFSET ?"
+            rows = _rows_to_dicts(conn.execute(sql, params + [ps, offset]))
+            return {"items": rows, "total": total, "page": page,
+                    "page_size": ps, "pages": max(1, (total + ps - 1) // ps)}
+        else:
+            sql = f"SELECT * FROM audit_log{where} ORDER BY id DESC LIMIT ?"
+            rows = _rows_to_dicts(conn.execute(sql, params + [limit]))
+            return {"items": rows, "total": total, "page": 1,
+                    "page_size": limit, "pages": 1}
 
 
 invoice_repo = InvoiceRepo()

@@ -1,147 +1,300 @@
 {% extends "base.html" %}
 {% block content %}
 <style>
-/* ===== 费用构成分析卡片 ===== */
-.expense-card { display:flex; flex-direction:column; }
-.expense-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:18px; }
-.expense-header h2 { margin-bottom:0; font-size:16px; }
-.expense-header select { padding:6px 10px; border:1px solid var(--border); border-radius:6px; background:#fff; font-size:13px; outline:none; }
-.expense-header-right { display:flex; align-items:center; gap:10px; }
-.expense-date-range { display:none; align-items:center; gap:6px; font-size:12px; color:var(--muted); }
-.expense-date-range.show { display:flex; }
-.expense-date-range input[type=date] {
-  padding:5px 8px; border:1px solid var(--border); border-radius:6px;
-  background:#fff; font-size:12px; outline:none; color:var(--text);
-  font-family:inherit;
+/* ===== 仪表盘驾驶舱（局部命名空间 .db-） ===== */
+.db-wrap{display:flex;flex-direction:column;gap:16px;}
+/* 顶栏标题 + 刷新按钮 */
+.db-head{display:flex;align-items:center;justify-content:space-between;}
+.db-head h1{font-size:18px;margin:0;display:flex;align-items:center;gap:8px;}
+.db-head h1::before{content:"📊";font-size:20px;}
+
+/* ---- 顶部指标卡片 ---- */
+.db-cards{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;}
+.db-card{background:#fff;border:1px solid var(--border);border-radius:12px;padding:14px 18px;
+  display:flex;align-items:center;gap:14px;cursor:pointer;
+  box-shadow:0 2px 8px rgba(15,23,42,.04);transition:box-shadow .15s,transform .15s;}
+.db-card:hover{box-shadow:0 6px 18px rgba(37,99,235,.12);transform:translateY(-1px);}
+.db-card .db-icon{width:44px;height:44px;border-radius:10px;display:flex;align-items:center;justify-content:center;
+  font-size:22px;flex-shrink:0;}
+.db-card .db-body{flex:1;min-width:0;}
+.db-card .db-label{font-size:12px;color:var(--muted);margin-bottom:4px;display:flex;align-items:center;gap:4px;}
+.db-card .db-num{font-size:24px;font-weight:700;color:var(--text);font-variant-numeric:tabular-nums;line-height:1.1;}
+.db-card .db-sub{font-size:11px;color:#9ca3af;margin-top:3px;}
+/* 四种图标底色 */
+.db-icon.blue{background:#dbeafe;color:#1e40af;}
+.db-icon.green{background:#dcfce7;color:#166534;}
+.db-icon.purple{background:#f3e8ff;color:#6b21a8;}
+.db-icon.red{background:#fee2e2;color:#991b1b;}
+/* 红色警示卡：边框 + 极浅红底 */
+.db-card.danger{border-color:#fecaca;background:#fef2f2;}
+.db-card.danger .db-num{color:#991b1b;}
+.db-card.danger .db-sub{color:#b91c1c;}
+
+/* ---- 核心区 左6 + 右4 ---- */
+.db-main{display:grid;grid-template-columns:minmax(0,6fr) minmax(0,4fr);gap:16px;align-items:start;}
+
+/* 通用卡片 */
+.db-panel{background:#fff;border:1px solid var(--border);border-radius:12px;padding:18px;
+  box-shadow:0 2px 8px rgba(15,23,42,.04);}
+.db-panel-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;}
+.db-panel-head h2{font-size:15px;margin:0;display:flex;align-items:center;gap:6px;}
+
+/* ---- 费用构成分析（左栏）---- */
+.expense-card{display:flex;flex-direction:column;}
+.expense-header-right{display:flex;align-items:center;gap:10px;}
+.expense-date-range{display:none;align-items:center;gap:6px;font-size:12px;color:var(--muted);}
+.expense-date-range.show{display:flex;}
+.expense-date-range input[type=date]{
+  padding:4px 6px;border:1px solid var(--border);border-radius:4px;
+  background:#fff;font-size:12px;outline:none;color:var(--text);font-family:inherit;}
+.expense-date-range input[type=date]:focus{border-color:#2563eb;}
+.expense-row-right{display:flex;align-items:center;gap:10px;flex-shrink:0;}
+.expense-row-pct{font-size:12px;color:#9ca3af;font-variant-numeric:tabular-nums;min-width:44px;text-align:right;}
+.expense-body{display:flex;gap:40px;min-height:320px;align-items:center;}
+.expense-chart-wrap{position:relative;width:300px;flex-shrink:0;}
+.expense-chart{width:100%;height:300px;}
+.expense-loading{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(255,255,255,.85);z-index:5;border-radius:8px;}
+.expense-loading.hidden{display:none;}
+.spinner{width:28px;height:28px;border:3px solid #e5e7eb;border-top-color:#2563eb;border-radius:50%;animation:spin .8s linear infinite;}
+@keyframes spin{to{transform:rotate(360deg);}}
+.expense-list{flex:1;min-width:280px;display:flex;flex-direction:column;gap:12px;}
+.expense-row{display:flex;flex-direction:column;gap:6px;cursor:pointer;padding:8px 10px;margin:0 -10px;border-radius:8px;transition:background .15s;}
+.expense-row:hover{background:#f1f5f9;}
+.expense-row-top{display:flex;align-items:center;justify-content:space-between;}
+.expense-row-title{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text);}
+.expense-dot{width:10px;height:10px;border-radius:50%;display:inline-block;flex-shrink:0;}
+.expense-row-amt{font-size:14px;font-weight:700;color:var(--text);font-variant-numeric:tabular-nums;}
+.expense-bar-bg{width:100%;height:6px;background:#f1f5f9;border-radius:3px;overflow:hidden;}
+.expense-bar-fill{height:100%;border-radius:3px;transition:width .4s ease;opacity:.85;}
+.expense-empty{width:100%;text-align:center;color:var(--muted);padding:60px 0;font-size:14px;}
+.expense-pending-tip{display:none;align-items:center;gap:6px;background:#fef3c7;border:1px solid #fcd34d;
+  color:#92400e;border-radius:8px;padding:7px 12px;font-size:12px;margin:-2px 0 14px;}
+.expense-pending-tip.show{display:flex;}
+.expense-pending-tip a{color:#92400e;font-weight:700;text-decoration:none;}
+.expense-pending-tip a:hover{text-decoration:underline;}
+.cat-pending-mark{display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;
+  border-radius:50%;background:#fef3c7;color:#92400e;border:1px solid #fcd34d;font-size:10px;
+  font-weight:700;cursor:help;flex-shrink:0;}
+
+/* ---- 右栏：快捷操作 + 待办 ---- */
+.db-quick{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-bottom:18px;}
+.db-quick a{display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--border);border-radius:8px;
+  text-decoration:none;color:var(--text);font-size:13px;background:#fff;transition:all .15s;}
+.db-quick a:hover{border-color:var(--primary);color:var(--primary);background:#eff6ff;}
+.db-quick .q-icon{width:28px;height:28px;border-radius:6px;display:flex;align-items:center;justify-content:center;
+  font-size:14px;background:#f1f5f9;}
+.db-quick a:hover .q-icon{background:#dbeafe;}
+.db-quick .q-text{flex:1;}
+.db-quick .q-title{font-weight:600;font-size:13px;}
+.db-quick .q-sub{font-size:11px;color:#9ca3af;margin-top:1px;}
+
+.db-sub-tabs{display:flex;border-bottom:2px solid var(--border);margin-bottom:12px;}
+.db-sub-tabs button{padding:8px 14px;border:0;background:none;cursor:pointer;font-size:13px;
+  color:var(--muted);border-bottom:2px solid transparent;margin-bottom:-2px;}
+.db-sub-tabs button.on{color:var(--primary);border-color:var(--primary);font-weight:600;}
+.db-sub-pane{display:none;}
+.db-sub-pane.on{display:block;}
+
+/* 待办表格紧凑版 */
+.db-mini-table{width:100%;border-collapse:collapse;font-size:12px;}
+.db-mini-table th,.db-mini-table td{padding:6px 8px;border-bottom:1px solid #f1f5f9;text-align:left;white-space:nowrap;}
+.db-mini-table th{background:#fafbfc;color:#666;font-weight:600;font-size:11px;}
+.db-mini-table tbody tr:hover td{background:#f8fafc;}
+.db-mini-table td.wrap{white-space:normal;max-width:180px;overflow:hidden;text-overflow:ellipsis;}
+.db-mini-table .go{font-size:11px;padding:3px 8px;}
+.db-empty{text-align:center;padding:28px 0;color:#9ca3af;}
+.db-empty .ok-icon{font-size:36px;margin-bottom:6px;}
+.db-empty p{font-size:13px;}
+
+/* 响应式：窄屏下核心区变单列 */
+@media (max-width:1100px){
+  .db-main{grid-template-columns:1fr;}
+  .expense-body{flex-direction:column;gap:20px;align-items:center;}
+  .expense-chart-wrap{width:280px;}
+  .expense-list{max-width:360px;}
 }
-.expense-date-range input[type=date]:focus { border-color:#2563eb; }
-.expense-row-right { display:flex; align-items:center; gap:10px; flex-shrink:0; }
-.expense-row-pct { font-size:12px; color:#9ca3af; font-variant-numeric:tabular-nums; min-width:44px; text-align:right; }
-.expense-body { display:flex; gap:60px; min-height:280px; align-items:flex-start; justify-content:center; }
-.expense-chart-wrap { position:relative; width:280px; flex-shrink:0; }
-.expense-chart { width:100%; height:280px; }
-.expense-loading { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; background:rgba(255,255,255,.85); z-index:5; border-radius:8px; }
-.expense-loading.hidden { display:none; }
-.spinner { width:32px; height:32px; border:3px solid #e5e7eb; border-top-color:#2563eb; border-radius:50%; animation:spin .8s linear infinite; }
-@keyframes spin { to { transform: rotate(360deg); } }
-.expense-list { flex:0 0 300px; max-width:300px; display:flex; flex-direction:column; gap:14px; padding-top:30px; }
-.expense-row { display:flex; flex-direction:column; gap:6px; }
-.expense-row-top { display:flex; align-items:center; justify-content:space-between; }
-.expense-row-title { display:flex; align-items:center; gap:8px; font-size:13px; color:var(--text); }
-.expense-dot { width:10px; height:10px; border-radius:50%; display:inline-block; flex-shrink:0; }
-.expense-row-amt { font-size:14px; font-weight:700; color:var(--text); font-variant-numeric:tabular-nums; }
-.expense-bar-bg { width:100%; height:6px; background:#f1f5f9; border-radius:3px; overflow:hidden; }
-.expense-bar-fill { height:100%; border-radius:3px; transition:width .4s ease; }
-.expense-empty { width:100%; text-align:center; color:var(--muted); padding:60px 0; font-size:14px; }
-/* 下钻：环形图与排行榜行都可点击 */
-.expense-row { cursor:pointer; padding:6px 8px; margin:0 -8px; border-radius:8px; transition:background .15s; }
-.expense-row:hover { background:#f1f5f9; }
-.expense-hint { text-align:right; font-size:11px; color:#9ca3af; margin-top:-6px; }
-/* 含待确认（系统推测）数据提示：金额照常计入图表，但提醒财务去核实 */
-.expense-pending-tip { display:none; align-items:center; gap:6px; background:#fef3c7; border:1px solid #fcd34d;
-  color:#92400e; border-radius:8px; padding:7px 12px; font-size:12px; margin:-4px 0 14px; }
-.expense-pending-tip.show { display:flex; }
-.expense-pending-tip a { color:#92400e; font-weight:700; text-decoration:none; }
-.expense-pending-tip a:hover { text-decoration:underline; }
-.cat-pending-mark { display:inline-flex; align-items:center; justify-content:center; width:14px; height:14px;
-  border-radius:50%; background:#fef3c7; color:#92400e; border:1px solid #fcd34d; font-size:10px;
-  font-weight:700; cursor:help; flex-shrink:0; }
+@media (max-width:760px){
+  .db-cards{grid-template-columns:repeat(2,1fr);}
+}
 </style>
 
-<h1 style="font-size:20px;margin-bottom:18px;">仪表盘</h1>
+<div class="db-wrap">
 
-<div class="grid g4">
-  <div class="stat stat-link" onclick="location.href='/invoices'"><div class="label">发票总数</div><div class="num">{{ inv_counts.values()|sum }}</div>
-    <div class="muted mt">未匹配 {{ inv_counts.get('NORMAL',0) }} · 已匹配 {{ inv_counts.get('MATCHED',0) }} · 异常 {{ inv_counts.get('ABNORMAL',0) }} · 重复 {{ inv_counts.get('DUPLICATE',0) }}</div></div>
-  <div class="stat stat-link" onclick="location.href='/reimburses'"><div class="label">报销单总数</div><div class="num">{{ reb_total }}</div>
-    <div class="muted mt" style="text-decoration:underline;" onclick="event.stopPropagation();location.href='/reimburses?status=unmatched'">未匹配 {{ unmatched_reimburses|length }} 张</div></div>
-  <div class="stat stat-link" onclick="location.href='/matches?tab=matched'"><div class="label">生效匹配</div><div class="num">{{ active_matches }}</div>
-    <div class="muted mt" onclick="event.stopPropagation();location.href='/matches?tab=pending'">待确认 {{ match_counts.get('SUSPICIOUS',0) }} · 冲突 {{ match_counts.get('CONFLICT',0) }}</div></div>
-  <div class="stat stat-link{% if unmatched_invoices %} stat-danger{% endif %}" onclick="location.href='/invoices?status=unmatched'"><div class="label">未匹配发票</div><div class="num">{{ unmatched_invoices|length }}</div>
-    <div class="muted mt{% if unmatched_invoices %} text-danger{% endif %}">无候选配对</div></div>
-</div>
-
-<!-- 费用构成分析 -->
-<div class="card expense-card mt" id="expenseCard">
-  <div class="expense-header">
-    <h2>费用构成分析</h2>
-    <div class="expense-header-right">
-      <select id="expenseFilter" onchange="onExpenseFilterChange()">
-        <option value="all">全部时间</option>
-        <option value="month">本月</option>
-        <option value="last_month">上月</option>
-        <option value="year">今年</option>
-        <option value="custom">自定义时间</option>
-      </select>
-      <div class="expense-date-range" id="expenseDateRange">
-        <input type="date" id="expenseDateFrom" onchange="onCustomDateChange()">
-        <span>至</span>
-        <input type="date" id="expenseDateTo" onchange="onCustomDateChange()">
+  <!-- 顶部 4 指标卡（紧凑 + 图标 + 警示） -->
+  <div class="db-cards">
+    <div class="db-card" onclick="location.href='/invoices'">
+      <div class="db-icon blue">🧾</div>
+      <div class="db-body">
+        <div class="db-label">发票总数</div>
+        <div class="db-num">{{ inv_counts.values()|sum }}</div>
+        <div class="db-sub">已匹配 {{ inv_counts.get('MATCHED',0) }} · 异常 {{ inv_counts.get('ABNORMAL',0) }}</div>
+      </div>
+    </div>
+    <div class="db-card" onclick="location.href='/reimburses'">
+      <div class="db-icon green">📝</div>
+      <div class="db-body">
+        <div class="db-label">报销单总数</div>
+        <div class="db-num">{{ reb_total }}</div>
+        <div class="db-sub" style="text-decoration:underline;" onclick="event.stopPropagation();location.href='/reimburses?status=unmatched'">未匹配 {{ unmatched_reimburses|length }}</div>
+      </div>
+    </div>
+    <div class="db-card" onclick="location.href='/matches?tab=matched'">
+      <div class="db-icon purple">🔗</div>
+      <div class="db-body">
+        <div class="db-label">生效匹配</div>
+        <div class="db-num">{{ active_matches }}</div>
+        <div class="db-sub" onclick="event.stopPropagation();location.href='/matches?tab=pending'">待处理 {{ match_counts.get('SUSPICIOUS',0) }} · 冲突 {{ match_counts.get('CONFLICT',0) }}</div>
+      </div>
+    </div>
+    <div class="db-card{% if unmatched_invoices %} danger{% endif %}" onclick="location.href='/invoices?status=unmatched'">
+      <div class="db-icon red">⚠️</div>
+      <div class="db-body">
+        <div class="db-label">未匹配发票</div>
+        <div class="db-num">{{ unmatched_invoices|length }}</div>
+        <div class="db-sub">{{ '需尽快处理' if unmatched_invoices else '无候选配对' }}</div>
       </div>
     </div>
   </div>
-  <div class="expense-pending-tip" id="expensePendingTip"></div>
-  <div class="expense-body" id="expenseBody">
-    <div class="expense-chart-wrap">
-      <div class="expense-loading" id="expenseLoading"><div class="spinner"></div></div>
-      <div class="expense-chart" id="expenseChart"></div>
+
+  <!-- 核心区：左6 费用构成 + 右4 快捷操作/待办 -->
+  <div class="db-main">
+
+    <!-- ========== 左栏：费用构成分析 ========== -->
+    <div class="db-panel expense-card" id="expenseCard">
+      <div class="db-panel-head">
+        <h2>📈 费用构成分析</h2>
+        <div class="expense-header-right">
+          <select id="expenseFilter" onchange="onExpenseFilterChange()" style="padding:5px 10px;border:1px solid var(--border);border-radius:6px;background:#fff;font-size:12px;outline:none;">
+            <option value="all">全部时间</option>
+            <option value="month">本月</option>
+            <option value="last_month">上月</option>
+            <option value="year">今年</option>
+            <option value="custom">自定义</option>
+          </select>
+          <div class="expense-date-range" id="expenseDateRange">
+            <input type="date" id="expenseDateFrom" onchange="onCustomDateChange()">
+            <span>至</span>
+            <input type="date" id="expenseDateTo" onchange="onCustomDateChange()">
+          </div>
+        </div>
+      </div>
+      <div class="expense-pending-tip" id="expensePendingTip"></div>
+      <div class="expense-body" id="expenseBody">
+        <div class="expense-chart-wrap">
+          <div class="expense-loading" id="expenseLoading"><div class="spinner"></div></div>
+          <div class="expense-chart" id="expenseChart"></div>
+        </div>
+        <div class="expense-list" id="expenseList"></div>
+      </div>
+      <div class="expense-empty" id="expenseEmpty" style="display:none;">暂无该时间段的发票数据</div>
     </div>
-    <div class="expense-list" id="expenseList"></div>
-  </div>
-  <div class="expense-empty" id="expenseEmpty" style="display:none;">暂无该时间段的发票数据</div>
-</div>
 
-<div class="grid g2 mt">
-  <div class="card">
-    <h2>待人工处理（待确认 / 冲突）</h2>
-    {% if suspicious %}
-    <table><tr><th>匹配</th><th>发票号</th><th>报销单号</th><th>分数</th><th>状态</th><th>差异</th><th>操作</th></tr>
-    {% for d in suspicious %}
-      <tr class="clickable" title="点击定位到匹配中心处理" onclick="location.href='/matches?tab=pending&focus_id={{ d.match.id }}'"><td>#{{ d.match.id }}</td><td>{{ d.match.invoice_no }}</td>
-          <td>{{ d.reimburse.reimburse_no if d.reimburse else (d.match.reimburse_no or '汇总') }}</td>
-          <td>{{ '%.2f'|format(d.match.match_score) }}</td>
-          <td><span class="badge {{ d.match.status|badge }}">{{ d.match.status|dstatus|status_cn }}</span></td>
-          <td class="wrap muted">{{ d.match.message }}</td>
-          <td><a class="btn btn-sm btn-outline" href="/matches?tab=pending&focus_id={{ d.match.id }}" onclick="event.stopPropagation()">去处理</a></td></tr>
-    {% endfor %}</table>
-    <div class="mt"><a class="btn btn-sm" href="/matches">去处理</a></div>
-    {% else %}<p class="muted">暂无待处理项</p>{% endif %}
-  </div>
+    <!-- ========== 右栏：快捷操作 + 待办 ========== -->
+    <div class="db-panel">
+      <div class="db-panel-head">
+        <h2>⚡ 工作台</h2>
+      </div>
 
-  <div class="card">
-    <h2>异常发票（可人工修正）</h2>
-    {% if abnormal %}
-    <table><tr><th>ID</th><th>发票号</th><th>文件</th><th>原因</th><th>操作</th></tr>
-    {% for i in abnormal %}
-      <tr><td>#{{ i.id }}</td><td>{{ i.invoice_no or '—' }}</td>
-          <td class="wrap muted">{{ (i.raw|fromjson).file_name or i.source_path }}</td>
-          <td class="wrap muted">{{ ((i.raw|fromjson).error or ((i.raw|fromjson).issues|map(attribute='message')|join('; ')) or '—') }}</td>
-          <td><a class="btn btn-sm btn-outline" href="/invoices/{{ i.id }}">去处理</a></td></tr>
-    {% endfor %}</table>
-    {% else %}<p class="muted">暂无异常发票</p>{% endif %}
-  </div>
-</div>
+      <!-- 快捷入口 -->
+      <div class="db-quick">
+        <a href="/invoices">
+          <div class="q-icon">🧾</div>
+          <div class="q-text"><div class="q-title">导入发票</div><div class="q-sub">XML / 图片 / 录入</div></div>
+        </a>
+        <a href="/reimburses">
+          <div class="q-icon">📝</div>
+          <div class="q-text"><div class="q-title">导入报销单</div><div class="q-sub">Excel / 录入</div></div>
+        </a>
+        <a href="/matches">
+          <div class="q-icon">🔗</div>
+          <div class="q-text"><div class="q-title">执行匹配</div><div class="q-sub">自动 / 人工确认</div></div>
+        </a>
+        <a href="/report">
+          <div class="q-icon">📊</div>
+          <div class="q-text"><div class="q-title">差异报告</div><div class="q-sub">查看 / 导出</div></div>
+        </a>
+      </div>
 
-<div class="card">
-  <h2>核心闭环</h2>
-  <p class="muted">导入 → 解析 → 标准化 → 校验 → 去重 → 匹配 → 差异报告 → 人工确认 → 导出</p>
-  <div class="mt">
-    <a class="btn" href="/invoices">① 导入发票</a>
-    <a class="btn btn-outline" href="/reimburses">② 导入报销单</a>
-    <a class="btn btn-outline" href="/matches">③ 执行匹配 / 人工确认</a>
-    <a class="btn btn-outline" href="/report">④ 查看差异报告 / 导出</a>
+      <!-- Tab：待人工处理 / 异常发票 -->
+      <div class="db-sub-tabs">
+        <button class="on" onclick="dbSubTab(this,'tab-pending')">待人工处理</button>
+        <button onclick="dbSubTab(this,'tab-abnormal')">异常发票</button>
+      </div>
+
+      <div class="db-sub-pane on" id="tab-pending">
+        {% if suspicious %}
+        <table class="db-mini-table">
+          <thead><tr><th>匹配</th><th>发票号</th><th>报销单</th><th>分数</th><th>说明</th><th>操作</th></tr></thead>
+          <tbody>
+          {% for d in suspicious[:8] %}
+            <tr class="clickable" title="点击定位" onclick="location.href='/matches?tab=pending&focus_id={{ d.match.id }}'">
+              <td>#{{ d.match.id }}</td>
+              <td>{{ d.match.invoice_no or '—' }}</td>
+              <td>{{ d.reimburse.reimburse_no if d.reimburse else (d.match.reimburse_no or '汇总') }}</td>
+              <td style="font-weight:600;">{{ '%.2f'|format(d.match.match_score) }}</td>
+              <td class="wrap muted">{{ (d.match.message or '')[:30] }}{% if d.match.message and d.match.message|length > 30 %}…{% endif %}</td>
+              <td><a class="btn btn-sm btn-outline go" href="/matches?tab=pending&focus_id={{ d.match.id }}" onclick="event.stopPropagation()">去处理</a></td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+        {% if suspicious|length > 8 %}
+        <div class="muted mt" style="text-align:right;font-size:11px;">共 {{ suspicious|length }} 条，<a href="/matches?tab=pending" class="link">查看全部 →</a></div>
+        {% endif %}
+        {% else %}
+        <div class="db-empty">
+          <div class="ok-icon">✅</div>
+          <p>所有账目均已处理完毕，暂无异常</p>
+        </div>
+        {% endif %}
+      </div>
+
+      <div class="db-sub-pane" id="tab-abnormal">
+        {% if abnormal %}
+        <table class="db-mini-table">
+          <thead><tr><th>ID</th><th>发票号</th><th>异常原因</th><th>操作</th></tr></thead>
+          <tbody>
+          {% for i in abnormal[:8] %}
+            <tr>
+              <td>#{{ i.id }}</td>
+              <td>{{ i.invoice_no or '—' }}</td>
+              <td class="wrap muted">{{ ((i.raw|fromjson).error or ((i.raw|fromjson).issues|map(attribute='message')|join('; ')) or '—')[:40] }}</td>
+              <td><a class="btn btn-sm btn-outline go" href="/invoices/{{ i.id }}">去处理</a></td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+        {% if abnormal|length > 8 %}
+        <div class="muted mt" style="text-align:right;font-size:11px;">共 {{ abnormal|length }} 张，<a href="/invoices?status=abnormal" class="link">查看全部 →</a></div>
+        {% endif %}
+        {% else %}
+        <div class="db-empty">
+          <div class="ok-icon">✅</div>
+          <p>所有发票均解析正常</p>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+
   </div>
 </div>
 {% endblock %}
 
 {% block scripts %}
 <script>
+/* ---- Tab 切换 ---- */
+function dbSubTab(btn, paneId){
+  btn.parentElement.querySelectorAll('button').forEach(b=>b.classList.remove('on'));
+  btn.classList.add('on');
+  btn.closest('.db-panel').querySelectorAll('.db-sub-pane').forEach(p=>p.classList.remove('on'));
+  document.getElementById(paneId).classList.add('on');
+}
+
 /* ===== 费用构成分析（ECharts 环形图 + 排行榜） ===== */
 const EXPENSE_COLORS = ['#60a5fa', '#4ade80', '#fbbf24', '#f87171', '#a78bfa', '#059669'];
 let expenseChart = null;
-let expenseRange = { from:'', to:'' };   // 当前生效的时间筛选（下钻跳转时随分类一起带过去）
+let expenseRange = { from:'', to:'' };
 
-/** 点击分类下钻：跳转发票管理列表，携带 分类 + 起止日期。 */
 function expenseDrill(category){
   if(!category) return;
   const u = new URL('/invoices', location.origin);
@@ -150,15 +303,12 @@ function expenseDrill(category){
   if(expenseRange.to)   u.searchParams.set('date_to',   expenseRange.to);
   location.href = u.toString();
 }
-
 function fmtMoney(n){
   if(n == null) return '¥0.00';
   const v = Number(n);
   if(!isFinite(v)) return '¥0.00';
   return '¥' + v.toLocaleString('zh-CN', {minimumFractionDigits:2, maximumFractionDigits:2});
 }
-
-/** 快捷筛选：根据 filterKey 返回 { from, to, label }。 */
 function getDateRange(filterKey){
   const today = new Date();
   const y = today.getFullYear();
@@ -179,60 +329,36 @@ function getDateRange(filterKey){
     default:           return { from:'', to:'', label:'历史总支出' };
   }
 }
-
-/** 下拉框切换：控制日期选择器显隐 + 触发重载。 */
 function onExpenseFilterChange(){
   const key = document.getElementById('expenseFilter').value;
   const rangeBox = document.getElementById('expenseDateRange');
   if(key === 'custom'){
     rangeBox.classList.add('show');
-    // 选中自定义时，如果两个日期都已有值则立即重载，否则等用户填
     const f = document.getElementById('expenseDateFrom').value;
     const t = document.getElementById('expenseDateTo').value;
-    if(f && t){
-      reloadExpenseBreakdown('custom', f, t);
-    }
+    if(f && t) reloadExpenseBreakdown('custom', f, t);
   } else {
     rangeBox.classList.remove('show');
     reloadExpenseBreakdown(key);
   }
 }
-
-/** 自定义日期输入变化：两个日期都填上才触发重载；顺序反了自动交换。 */
 function onCustomDateChange(){
   let f = document.getElementById('expenseDateFrom').value;
   let t = document.getElementById('expenseDateTo').value;
   if(!f || !t) return;
-  if(f > t){
-    // 顺序反了自动交换（不打扰用户）
-    document.getElementById('expenseDateFrom').value = t;
-    document.getElementById('expenseDateTo').value = f;
-    [f, t] = [t, f];
-  }
+  if(f > t){ document.getElementById('expenseDateFrom').value = t; document.getElementById('expenseDateTo').value = f; [f, t] = [t, f]; }
   reloadExpenseBreakdown('custom', f, t);
 }
-
-/** 核心重载函数：快捷选项传 filterKey；自定义额外传 customFrom/customTo。 */
 async function reloadExpenseBreakdown(filterKey, customFrom, customTo){
   const loading = document.getElementById('expenseLoading');
   const body = document.getElementById('expenseBody');
   const empty = document.getElementById('expenseEmpty');
   loading.classList.remove('hidden');
-  body.style.display = 'flex';
-  empty.style.display = 'none';
-
-  let range;
-  if(filterKey === 'custom'){
-    range = {
-      from: customFrom || '',
-      to:   customTo   || '',
-      label: '自选时间段总支出'
-    };
-  } else {
-    range = getDateRange(filterKey);
-  }
-  expenseRange = { from: range.from || '', to: range.to || '' };
-
+  body.style.display = 'flex'; empty.style.display = 'none';
+  let range = filterKey === 'custom'
+    ? { from: customFrom||'', to: customTo||'', label: '自选时间段总支出' }
+    : getDateRange(filterKey);
+  expenseRange = { from: range.from||'', to: range.to||'' };
   const params = new URLSearchParams();
   if(range.from) params.set('date_from', range.from);
   if(range.to)   params.set('date_to',   range.to);
@@ -240,165 +366,114 @@ async function reloadExpenseBreakdown(filterKey, customFrom, customTo){
     const j = await fetch('/api/dashboard/expense-breakdown?' + params.toString()).then(r=>r.json());
     renderExpenseBreakdown(j.data || {}, range.label);
   }catch(e){
-    console.error('expense breakdown fetch failed', e);
     renderExpenseBreakdown({total_amount:0, total_count:0, items:[]}, range.label);
-  }finally{
-    loading.classList.add('hidden');
-  }
+  }finally{ loading.classList.add('hidden'); }
 }
-
-/** 核心渲染：环形图 + 排行榜。 */
 function renderExpenseBreakdown(data, fallbackLabel){
   const body = document.getElementById('expenseBody');
   const empty = document.getElementById('expenseEmpty');
   const chartEl = document.getElementById('expenseChart');
   const listEl = document.getElementById('expenseList');
-
   const items = data.items || [];
   const total = data.total_amount || 0;
-  // 中心文案优先用后端返回，没有时用前端计算的 fallback（自定义时间会走到 fallback）
   const label = data.label_when_all || fallbackLabel;
-
   if(items.length === 0 || total <= 0){
-    body.style.display = 'none';
-    empty.style.display = 'block';
+    body.style.display = 'none'; empty.style.display = 'block';
     if(expenseChart){ expenseChart.dispose(); expenseChart = null; }
     listEl.innerHTML = '';
     const tip0 = document.getElementById('expensePendingTip');
     if(tip0){ tip0.classList.remove('show'); tip0.innerHTML = ''; }
     return;
   }
-  body.style.display = 'flex';
-  empty.style.display = 'none';
+  body.style.display = 'flex'; empty.style.display = 'none';
 
-  // ---- 百分比计算：用原始金额算，保证所有项加起来 = 100% ----
-  // 后端独立 round 可能导致 33.33+33.33+33.33 = 99.99，这里前端重算并修正
   const rawAmts = items.map(it => it.amount);
   const rawSum = rawAmts.reduce((a,b)=>a+b, 0);
-  const flooredPcts = rawAmts.map(a => Math.floor(a / rawSum * 1000) / 10);   // 向下取到 0.1%
+  const flooredPcts = rawAmts.map(a => Math.floor(a / rawSum * 1000) / 10);
   const flooredSum  = flooredPcts.reduce((a,b)=>a+b, 0);
-  const diff = Math.round((100 - flooredSum) * 10) / 10;                      // 差多少
-  // 把差额补给最后一项（通常金额最小的"其他"或末位分类）
+  const diff = Math.round((100 - flooredSum) * 10) / 10;
   flooredPcts[flooredPcts.length - 1] = Math.round((flooredPcts[flooredPcts.length - 1] + diff) * 10) / 10;
-  // 最终每项 pct 从 0.1% 精度统一 round 到 0.1（防浮点）
   const finalPcts = flooredPcts.map(p => Math.round(p * 10) / 10);
 
-  // ---- 环形图 ----
   const isSingle = items.length === 1;
-  const chartData = items.map((it, idx) => {
-    const c = EXPENSE_COLORS[idx % EXPENSE_COLORS.length];
-    return {
-      name: it.name,
-      value: it.amount,
-      itemStyle: { color: c, borderColor: c, borderWidth: 0 }
-    };
-  });
+  const chartData = items.map((it, idx) => ({
+    name: it.name, value: it.amount,
+    itemStyle: { color: EXPENSE_COLORS[idx % EXPENSE_COLORS.length], borderColor: EXPENSE_COLORS[idx % EXPENSE_COLORS.length], borderWidth: 0 }
+  }));
   const option = {
-    tooltip: {
-      trigger: 'item',
+    tooltip: { trigger: 'item',
       formatter: p => {
         const it = items[p.dataIndex] || {};
         let s = `${p.name}<br/>金额：${fmtMoney(p.value)}<br/>占比：${finalPcts[p.dataIndex]}%<br/>笔数：${it.count}`;
         if(it.has_pending) s += `<br/><span style="color:#92400e;">含待确认：${fmtMoney(it.pending_amount)}（${it.pending_count} 笔）</span>`;
         return s;
-      }
-    },
+      } },
     series: [{
       type: 'pie',
       radius: isSingle ? ['45%', '78%'] : ['50%', '75%'],
       center: ['50%', '50%'],
       avoidLabelOverlap: false,
-      label: {
-        show: true,
-        position: 'center',
+      label: { show: true, position: 'center',
         formatter: () => `{title|${label}}\n{amount|${fmtMoney(total)}}`,
-        rich: {
-          title: { fontSize: 13, fill: '#9ca3af', fontWeight: 400 },
-          amount: { fontSize: 22, fill: '#1f2937', fontWeight: 700, padding: [4, 0, 0, 0] }
-        },
-        lineHeight: 28
-      },
+        rich: { title: { fontSize: 12, fill: '#9ca3af', fontWeight: 400 },
+               amount: { fontSize: 24, fill: '#1f2937', fontWeight: 700, padding: [6, 0, 0, 0] } },
+        lineHeight: 32 },
       labelLine: { show: false },
       data: chartData,
-      emphasis: isSingle
-        ? { disabled: true }
-        : { scale: true, scaleSize: 8, label: { show: false } },
+      emphasis: isSingle ? { disabled: true }
+                         : { scale: true, scaleSize: 8, label: { show: false } },
     }]
   };
-  // ECharts CDN 加载失败（网络抖动）时跳过图表，保证排行榜/提示条照常渲染
-  if(typeof echarts === 'undefined'){
-    if(chartEl) chartEl.style.display = 'none';
-  }else{
-    if(chartEl) chartEl.style.display = '';
+  if(typeof echarts !== 'undefined'){
     try{
       if(!expenseChart){
         expenseChart = echarts.init(chartEl);
-        // 环形图点击下钻：按分类名跳转发票列表
         expenseChart.on('click', p => { if(p && p.name) expenseDrill(p.name); });
         window.addEventListener('resize', ()=> expenseChart && expenseChart.resize());
       }
       expenseChart.setOption(option, true);
-    }catch(e){
-      console.error('expense chart render failed', e);
-      if(chartEl) chartEl.style.display = 'none';
-    }
+    }catch(e){ console.error('expense chart render failed', e); }
   }
 
-  // ---- 含待确认 / 分类差异数据提醒：金额照常计入统计，但需财务核实 ----
   const tip = document.getElementById('expensePendingTip');
   if(tip){
     let html = '';
     if(data.has_pending){
-      html += '<span>⚠ 含待确认推测数据 ' + fmtMoney(data.pending_amount)
-        + '（' + data.pending_count + ' 笔），金额已计入下方统计。</span>'
+      html += '<span>⚠ 含待确认推测数据 ' + fmtMoney(data.pending_amount) + '（' + data.pending_count + ' 笔）</span>'
         + '<a href="/invoices" title="去发票列表确认分类">去确认 ›</a>';
     }
     if(data.has_conflict){
-      html += '<span style="color:#b45309;">⚠ 存在 ' + data.conflict_count + ' 笔分类差异数据，已按发票明细分类统计。</span>'
-        + '<a href="/matches?tab=conflict" style="color:#b45309;" title="去匹配中心处理分类差异">去处理 ›</a>';
+      html += '<span style="color:#b45309;">⚠ 存在 ' + data.conflict_count + ' 笔分类差异数据</span>'
+        + '<a href="/matches?tab=conflict" style="color:#b45309;">去处理 ›</a>';
     }
     tip.classList.toggle('show', !!(data.has_pending || data.has_conflict));
     tip.innerHTML = html;
   }
 
-  // ---- 右侧排行榜（点击行同样下钻） ----
   listEl.innerHTML = items.map((it, idx) => {
     const color = EXPENSE_COLORS[idx % EXPENSE_COLORS.length];
     const pct = finalPcts[idx];
-    // 进度条宽度：单分类硬 cap 80%；多分类按实际百分比（max 100）
     const barWidth = isSingle ? 80 : Math.min(pct, 100);
     const pendingMark = it.has_pending
-      ? '<span class="cat-pending-mark" title="含待确认推测数据：' + fmtMoney(it.pending_amount)
-        + '（' + it.pending_count + ' 笔），点击处理后统计更准确">?</span>'
-      : '';
-    const conflictMark = it.has_conflict
-      ? '<span class="cat-pending-mark" style="background:#fef3c7;color:#92400e;border-color:#fcd34d;" title="存在分类差异：'
-        + it.conflict_count + ' 笔，已按发票明细分类统计；请到匹配中心处理">⚠</span>'
+      ? '<span class="cat-pending-mark" title="含待确认推测数据">' + fmtMoney(it.pending_amount) + '</span>'
       : '';
     return `
       <div class="expense-row" onclick="expenseDrill('${it.name}')" title="点击查看「${it.name}」发票明细">
         <div class="expense-row-top">
           <div class="expense-row-title">
-            <span class="expense-dot" style="background:${color};"></span>
-            <span>${it.name}</span>
-            ${pendingMark}
-            ${conflictMark}
-            <span style="color:#9ca3af;font-size:12px;">· ${it.count} 笔</span>
+            <span class="expense-dot" style="background:${color};opacity:.85;"></span>
+            <span>${it.name}</span>${pendingMark}
+            <span style="color:#9ca3af;font-size:11px;">· ${it.count} 笔</span>
           </div>
           <div class="expense-row-right">
             <span class="expense-row-pct">${pct}%</span>
             <div class="expense-row-amt">${fmtMoney(it.amount)}</div>
           </div>
         </div>
-        <div class="expense-bar-bg">
-          <div class="expense-bar-fill" style="width:${barWidth}%;background:${color};"></div>
-        </div>
-      </div>
-    `;
+        <div class="expense-bar-bg"><div class="expense-bar-fill" style="width:${barWidth}%;background:${color};"></div></div>
+      </div>`;
   }).join('');
 }
-
-// 首次加载
 reloadExpenseBreakdown('all');
 </script>
 {% endblock %}

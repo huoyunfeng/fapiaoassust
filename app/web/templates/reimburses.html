@@ -35,6 +35,8 @@
 .text-ellipsis{display:inline-block;max-width:180px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;vertical-align:middle;}
 /* 费用类型列：分类标签可能比单元格宽，不能省略号截断 */
 .reb-table .cell-cat{overflow:visible;text-overflow:clip;}
+/* 报销单号：弱化显示 */
+.cell-reimburse-no{color:#6b7280;font-size:12px;}
 
 /* ===== 右侧固定列（状态/操作）：视觉分隔 ===== */
 .reb-table .col-state,
@@ -144,7 +146,7 @@
         <tr id="row-{{ r.id }}"{% if not r.matched %} class="row-unmatched"{% endif %}>
           {% for c in columns %}
           {% set cell = r.cells[loop.index0] %}
-          <td{% if cell.amount %} class="cell-amount"{% elif cell.long %} class="cell-long" title="{{ cell.text }}"{% elif cell.cat is defined %} class="cell-cat"{% endif %}>
+          <td{% if c.key == 'reimburse_no' %} class="cell-reimburse-no"{% elif cell.amount %} class="cell-amount"{% elif cell.long %} class="cell-long" title="{{ cell.text }}"{% elif cell.cat is defined %} class="cell-cat"{% endif %}>
             {%- if cell.amount -%}<b>{{ cell.text }}</b>
             {%- elif cell.long -%}<span class="text-ellipsis">{{ cell.text }}</span>
             {%- elif cell.cat is defined -%}

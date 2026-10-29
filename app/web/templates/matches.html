@@ -44,6 +44,7 @@
           <div class="dropdown">
             <button class="btn btn-sm btn-outline action-btn" onclick="toggleDropdown(this)">操作 ▾</button>
             <div class="dropdown-menu">
+              <button onclick="window.open('/matches/{{ m.id }}/compare','_blank')">并排比对</button>
               <button onclick="autoCorrect({{ m.id }})">一键更正</button>
               <button class="danger" onclick="act('reject',{{ m.id }})">拒绝</button>
             </div>
@@ -134,17 +135,17 @@
 <div class="tabpane" id="paneManual">
   <div class="card">
     <h2>人工指定匹配（直接生效）</h2>
-    <form class="inline" onsubmit="submitForm(event,'/api/match/manual')">
+    <form class="inline" onsubmit="manualMatch(event)">
       <select name="invoice_id" required style="min-width:280px;">
         <option value="">选择发票（状态为未匹配）</option>
         {% for i in opt_invoices %}
-        <option value="{{ i.id }}">#{{ i.id }} {{ i.invoice_no or '(无号)' }} ¥{{ i.total_amount or '?' }} {{ i.invoice_date or '' }}</option>
+        <option value="{{ i.id }}">{{ i.invoice_no or '(无号)' }} ¥{{ i.total_amount or '?' }} {{ i.invoice_date or '' }}</option>
         {% endfor %}
       </select>
       <select name="reimburse_id" required style="min-width:280px;">
         <option value="">选择报销单（未占用）</option>
         {% for r in opt_reimburses %}
-        <option value="{{ r.id }}">#{{ r.id }} {{ r.reimburse_no }} ¥{{ r.amount }} {{ r.submitter }}</option>
+        <option value="{{ r.id }}">{{ r.reimburse_no }} ¥{{ r.amount }} {{ r.submitter }}</option>
         {% endfor %}
       </select>
       <button class="btn">指定匹配</button>
@@ -174,9 +175,12 @@ async function resolveCf(rid, mode){
   });
 }
 async function act(action, id){
-  const note = await promptDlg(action==='confirm'?'确认备注（可空）：':'拒绝原因（可空）：','') ;
-  if(note===null)return;
-  const fd=new FormData();fd.set('note',note);fd.set('operator','admin');
+  const r = await reasonModal(action==='confirm' ? '确认匹配' : '拒绝匹配');
+  if(!r) return;
+  const fd=new FormData();
+  fd.set('note', r.reason);
+  fd.set('reason_option', r.reason_option);
+  fd.set('operator','admin');
   post(`/api/match/${id}/${action}`,fd).then(()=>location.reload());
 }
 async function autoCorrect(id){
@@ -189,10 +193,28 @@ async function autoCorrect(id){
   setTimeout(()=>location.reload(), 1200);
 }
 async function unmatchFn(id){
-  const reason = await promptDlg('解除匹配的原因（必填，记录留痕）：','');
-  if(!reason)return;
-  const fd=new FormData();fd.set('reason',reason);fd.set('operator','admin');
+  const r = await reasonModal('解除匹配');
+  if(!r) return;
+  const fd=new FormData();
+  fd.set('reason', r.reason);
+  fd.set('reason_option', r.reason_option);
+  fd.set('operator','admin');
   post(`/api/match/${id}/unmatch`,fd).then(()=>location.reload());
+}
+// 人工指定匹配：必须选择绑定依据（模块二）
+async function manualMatch(ev){
+  ev.preventDefault();
+  const f = ev.target;
+  if(!f.invoice_id.value || !f.reimburse_id.value){ toast('请先选择发票与报销单', false); return; }
+  const r = await reasonModal('人工指定匹配');
+  if(!r) return;
+  const fd = new FormData();
+  fd.set('invoice_id', f.invoice_id.value);
+  fd.set('reimburse_id', f.reimburse_id.value);
+  fd.set('reason_option', r.reason_option);
+  fd.set('reason', r.reason);
+  fd.set('operator', 'admin');
+  post('/api/match/manual', fd).then(()=>location.reload());
 }
 </script>
 {% endblock %}

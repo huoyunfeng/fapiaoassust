@@ -1,90 +1,1056 @@
 {% extends "base.html" %}
-{% from "_pager.html" import render_pager %}
 {% block content %}
-<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
-  <h1 style="font-size:20px;">差异报告</h1>
-  <a class="btn" href="/api/report/export">导出 Excel</a>
+<style>
+/* ===== 布局：顶部统计 + 左右分栏工作台 ===== */
+.rp-layout{display:flex;gap:20px;align-items:flex-start;}
+.rp-nav{width:220px;flex-shrink:0;background:#fff;border:1px solid var(--border);border-radius:12px;
+  padding:8px 0;position:sticky;top:16px;}
+.rp-nav-title{font-size:12px;color:var(--muted);padding:10px 16px 6px;font-weight:600;letter-spacing:.5px;}
+.rp-nav-item{display:flex;align-items:center;gap:8px;padding:9px 16px;cursor:pointer;font-size:13px;
+  color:var(--text);border-left:3px solid transparent;transition:background .15s;}
+.rp-nav-item:hover{background:#f8fafc;}
+.rp-nav-item.active{background:#eff6ff;color:var(--primary);border-left-color:var(--primary);font-weight:600;}
+.rp-nav-icon{width:18px;text-align:center;font-size:14px;}
+.rp-nav-cnt{margin-left:auto;min-width:20px;text-align:center;background:#f3f4f6;color:#4b5563;
+  border-radius:9px;font-size:11px;padding:1px 6px;font-weight:600;font-variant-numeric:tabular-nums;}
+.rp-nav-item.active .rp-nav-cnt{background:#dbeafe;color:#1e40af;}
+.rp-nav-cnt.warn{background:#fee2e2;color:#991b1b;}
+.rp-nav-cnt.zero{background:#f3f4f6;color:#9ca3af;}
+.rp-main{flex:1;min-width:0;}
+.rp-view{display:none;}
+.rp-view.active{display:block;}
+
+/* ===== 统计卡片 ===== */
+.stat.is-zero{opacity:.85;}
+.stat.is-zero .num{color:#6b7280;}
+.stat.is-zero.stat-danger{border-color:var(--border);}
+.stat.is-zero.stat-danger .num{color:#16a34a;}
+.stat-filter-on{outline:2px solid var(--primary);outline-offset:-1px;border-color:var(--primary);}
+.stat-foot{margin-top:6px;font-size:11px;color:var(--muted);}
+
+/* ===== 工具栏 ===== */
+.rp-head{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px;}
+.rp-head h2{font-size:16px;margin:0;}
+.rp-ops{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
+.rp-search{width:280px;}
+/* 列设置浮层 */
+.col-panel{display:none;gap:14px;flex-wrap:wrap;padding:10px 12px;margin-bottom:12px;
+  background:#f8fafc;border:1px dashed var(--border);border-radius:8px;}
+.col-panel.on{display:flex;}
+.col-panel label{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:#374151;}
+
+/* ===== 主表：固定布局 + 吸顶表头 ===== */
+.rp-table{table-layout:fixed;width:100%;}
+.rp-table th,.rp-table td{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.rp-table thead th{position:sticky;top:0;z-index:3;background:#fafbfc;box-shadow:inset 0 -1px 0 var(--border);}
+.rp-table td.num-cell,.rp-table .num-cell{text-align:right;font-variant-numeric:tabular-nums;}
+.rp-table .rp-diff{max-width:300px;}
+.rp-diff-txt{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.diff-danger{color:#dc2626;font-weight:700;}
+.amt-ok{color:#15803d;}
+.amt-diff{margin-left:6px;color:#dc2626;font-weight:700;font-size:12px;}
+/* 合并单元格：单号纵向居中 */
+.rp-table td.rowspan-cell{vertical-align:middle;font-weight:600;color:#334155;}
+/* 状态翻转动画 */
+tr.row-fixed td{background:#dcfce7 !important;transition:background .25s;}
+tr.row-out{opacity:0;transform:translateX(24px);transition:opacity .3s,transform .3s;}
+
+/* ===== 盲区清单 ===== */
+.inv-bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:10px;}
+.th-hint{font-size:11px;color:var(--muted);font-weight:400;}
+.chk-th{width:110px;}
+.sub-head{font-size:13px;font-weight:600;color:#334155;margin:6px 0 10px;display:flex;align-items:center;gap:8px;}
+
+/* 绑定弹窗 */
+.bind-row{display:flex;align-items:center;gap:10px;padding:9px 12px;border-bottom:1px solid var(--border);cursor:pointer;}
+.bind-row:last-child{border-bottom:0;}
+.bind-row:hover{background:#f8fafc;}
+.bind-row.on{background:#eff6ff;}
+.bind-no{font-weight:600;color:#1f2937;}
+.bind-amt{font-variant-numeric:tabular-nums;color:#1f2937;}
+.bind-tag{margin-left:auto;background:#dcfce7;color:#166534;border:1px solid #86efac;
+  border-radius:999px;padding:2px 9px;font-size:12px;font-weight:600;}
+
+/* 快捷修复抽屉 */
+.rp-drawer-bg{display:none;position:fixed;inset:0;background:rgba(15,23,42,.35);z-index:190;}
+.rp-drawer-bg.on{display:block;}
+.rp-drawer{position:fixed;top:0;right:0;height:100vh;width:520px;max-width:96vw;background:#fff;z-index:200;
+  box-shadow:-8px 0 28px rgba(15,23,42,.18);transform:translateX(102%);transition:transform .22s ease;
+  display:flex;flex-direction:column;}
+.rp-drawer.on{transform:translateX(0);}
+.rp-drawer-head{display:flex;justify-content:space-between;align-items:center;padding:16px 20px;border-bottom:1px solid var(--border);}
+.rp-drawer-head h2{font-size:16px;margin:0;}
+.rp-x{border:0;background:none;font-size:22px;line-height:1;cursor:pointer;color:var(--muted);}
+.rp-drawer-body{padding:16px 20px;overflow:auto;flex:1;display:flex;flex-direction:column;gap:12px;}
+.rp-drawer-body label{display:flex;flex-direction:column;gap:5px;font-size:13px;color:#374151;}
+.rp-drawer-body input,.rp-drawer-body select{width:100%;}
+.rp-drawer-body .rp-check{flex-direction:row;align-items:center;gap:8px;background:#fffbeb;border:1px solid #fde68a;
+  border-radius:8px;padding:9px 12px;font-weight:600;color:#92400e;}
+.rp-drawer-body .rp-check input{width:auto;}
+.cmp{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+.cmp-col{border:1px solid var(--border);border-radius:8px;padding:10px 12px;background:#fafbfc;}
+.cmp-col h4{font-size:13px;margin-bottom:8px;color:#334155;}
+.cmp-kv{display:flex;justify-content:space-between;gap:8px;font-size:12px;padding:3px 0;}
+.cmp-kv span{color:var(--muted);}
+.cmp-kv b{font-weight:600;text-align:right;word-break:break-all;}
+.rp-quick{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
+.rp-quick .btn{font-size:12px;padding:6px 8px;white-space:normal;line-height:1.4;}
+.rp-drawer-foot{padding:14px 20px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:10px;}
+.btn.is-loading{opacity:.7;cursor:progress;}
+.modal-bg{z-index:300;}
+.modal{z-index:310;}
+</style>
+
+<div class="grid g4" style="margin-bottom:18px;">
+  <div class="stat stat-link" id="cardInvoice" onclick="setView('all')" title="点击查看全部匹配明细">
+    <div class="label">发票总数</div><div class="num" id="statInvoice">—</div>
+    <div class="stat-foot">点击查看全部匹配明细</div>
+  </div>
+  <div class="stat stat-link" id="cardReimburse" onclick="setView('unb')" title="点击查看未匹配报销单">
+    <div class="label">报销单总数</div><div class="num" id="statReimburse">—</div>
+    <div class="stat-foot">点击查看未匹配报销单</div>
+  </div>
+  <div class="stat stat-link" id="cardActive" onclick="setView('active')" title="点击只看生效匹配">
+    <div class="label">生效匹配</div><div class="num" id="statActive">—</div>
+    <div class="stat-foot">点击只看生效匹配</div>
+  </div>
+  <div class="stat stat-link stat-danger" id="cardPending" onclick="setView('pending')" title="点击只看待处理">
+    <div class="label">待处理</div><div class="num" id="statPending">—</div>
+    <div class="stat-foot">点击只看待处理</div>
+  </div>
 </div>
 
-<div class="grid g4">
-  <div class="stat"><div class="label">发票总数</div><div class="num">{{ r.inv_counts.values()|sum }}</div></div>
-  <div class="stat"><div class="label">报销单总数</div><div class="num">{{ r.reb_total }}</div></div>
-  <div class="stat"><div class="label">生效匹配</div><div class="num">{{ r.active_matches }}</div></div>
-  <div class="stat"><div class="label">待处理</div><div class="num">{{ r.match_counts.get('SUSPICIOUS',0) + r.match_counts.get('CONFLICT',0) }}</div></div>
+<div class="rp-layout">
+  <!-- ===== 左侧导航 ===== -->
+  <aside class="rp-nav">
+    <div class="rp-nav-title">匹配流水</div>
+    <div class="rp-nav-item" data-view="active" onclick="setView('active')">
+      <span class="rp-nav-icon">✅</span>生效匹配<span class="rp-nav-cnt" id="badge-active">0</span>
+    </div>
+    <div class="rp-nav-item" data-view="pending" onclick="setView('pending')">
+      <span class="rp-nav-icon">⏳</span>待处理<span class="rp-nav-cnt warn" id="badge-pending">0</span>
+    </div>
+    <div class="rp-nav-item" data-view="all" onclick="setView('all')">
+      <span class="rp-nav-icon">📋</span>全部匹配明细<span class="rp-nav-cnt" id="badge-all">0</span>
+    </div>
+    <div class="rp-nav-title">盲区数据</div>
+    <div class="rp-nav-item" data-view="unb" onclick="setView('unb')">
+      <span class="rp-nav-icon">🧾</span>未匹配报销单<span class="rp-nav-cnt warn" id="badge-unb">0</span>
+    </div>
+    <div class="rp-nav-item" data-view="uninv" onclick="setView('uninv')">
+      <span class="rp-nav-icon">🧾</span>未报销发票<span class="rp-nav-cnt warn" id="badge-uninv">0</span>
+    </div>
+    <div class="rp-nav-item" data-view="issues" onclick="setView('issues')">
+      <span class="rp-nav-icon">⚠️</span>异常/重复发票<span class="rp-nav-cnt" id="badge-issues">0</span>
+    </div>
+  </aside>
+
+  <!-- ===== 右侧内容区 ===== -->
+  <main class="rp-main">
+
+    <!-- 匹配明细（生效 / 待处理 / 全部） -->
+    <div class="rp-view" id="view-details">
+      <div class="card">
+        <div class="rp-head">
+          <h2 id="detailTitle">匹配明细 <span class="muted" id="detailFilterHint"></span></h2>
+          <div class="rp-ops">
+            <input class="rp-search" id="qInput" placeholder="搜索发票号 / 报销单号 / 提交人 / 差异说明"
+                   oninput="onSearchInput()">
+            <button class="btn btn-outline btn-sm" onclick="toggleColPanel()">列设置</button>
+            <button class="btn btn-sm" id="exportBtn" onclick="exportExcel()">导出 Excel</button>
+          </div>
+        </div>
+        <div class="col-panel" id="colPanel"></div>
+        <div id="detailTable"></div>
+        <div id="detailPager"></div>
+      </div>
+    </div>
+
+    <!-- 未匹配报销单 -->
+    <div class="rp-view" id="view-unb">
+      <div class="card">
+        <div class="rp-head">
+          <h2>未匹配报销单 <span class="muted">这些报销单还没有任何生效匹配</span></h2>
+          <input class="rp-search" placeholder="搜索单号 / 提交人 / 费用类型" oninput="onSearchInput(this)">
+        </div>
+        <div id="tblUnmatchedReb"></div>
+        <div id="pagerReb"></div>
+      </div>
+    </div>
+
+    <!-- 未报销发票（盲区批量绑定） -->
+    <div class="rp-view" id="view-uninv">
+      <div class="card">
+        <div class="rp-head">
+          <h2>未报销发票 <span class="muted">未匹配任何报销单的发票</span></h2>
+          <input class="rp-search" placeholder="搜索发票号 / 销方 / 摘要" oninput="onSearchInput(this)">
+        </div>
+        <div class="inv-bar">
+          <span class="muted">已选 <b id="invSelCnt">0</b> 张发票，合计 <b id="invSelTotal">0.00</b></span>
+          <button class="btn btn-sm" onclick="batchBindSelected()">批量绑定到报销单</button>
+          <span class="muted">勾选后可批量绑定到同一张报销单（仅全选当前页）</span>
+        </div>
+        <div id="tblUnmatchedInv"></div>
+        <div id="pagerInv"></div>
+      </div>
+    </div>
+
+    <!-- 异常 / 重复发票 -->
+    <div class="rp-view" id="view-issues">
+      <div class="card">
+        <div class="sub-head">⚠️ 异常发票 <span class="muted" id="cntAbn" style="font-weight:400;">0</span></div>
+        <div id="tblAbnormal"></div>
+        <div id="pagerAbn"></div>
+      </div>
+      <div class="card">
+        <div class="sub-head">📄 重复发票 <span class="muted" id="cntDup" style="font-weight:400;">0</span></div>
+        <div id="tblDuplicate"></div>
+        <div id="pagerDup"></div>
+      </div>
+    </div>
+
+  </main>
 </div>
 
-<div class="card">
-  <h2>匹配明细</h2>
-  {% if r.details %}
-  <table>
-    <tr><th>匹配</th><th>状态</th><th>类型</th><th>分数</th><th>报销单号</th><th>报销金额</th>
-        <th>发票号</th><th>价税合计</th><th>金额差异</th><th>差异说明</th></tr>
-    {% for d in r.details %}
-    <tr>
-      <td>#{{ d.match.id }}</td>
-      <td><span class="badge {{ d.match.status|badge }}">{{ d.match.status|dstatus|status_cn }}</span></td>
-      <td class="muted">{{ d.match.match_type|match_type_cn }}</td>
-      <td>{{ '%.2f'|format(d.match.match_score) }}</td>
-      <td>{{ d.reimburse.reimburse_no if d.reimburse else '—' }}</td>
-      <td>{{ d.reimburse_amount if d.reimburse_amount is not none else '—' }}</td>
-      <td>{{ d.match.invoice_no or '—' }}</td>
-      <td>{{ d.invoice_total if d.invoice_total is not none else '—' }}</td>
-      <td>{{ d.amount_diff if d.amount_diff is not none else '—' }}</td>
-      <td class="wrap muted">{{ d.match.message }}</td>
-    </tr>
-    {% endfor %}
-  </table>
-  {{ render_pager(pagers.dpage, 'dpage') }}
-  {% else %}<p class="empty-state">暂无相关数据</p>{% endif %}
-</div>
+<!-- 快捷修复抽屉 -->
+<div class="rp-drawer-bg" id="fixBg" onclick="closeFix()"></div>
+<aside class="rp-drawer" id="fixDrawer" aria-hidden="true">
+  <div class="rp-drawer-head">
+    <h2 id="fixTitle">快捷修复</h2>
+    <button class="rp-x" onclick="closeFix()" aria-label="关闭">×</button>
+  </div>
+  <div class="rp-drawer-body">
+    <p class="muted" id="fixMeta"></p>
+    <div class="cmp">
+      <div class="cmp-col">
+        <h4>发票</h4>
+        <div class="cmp-kv"><span>发票号</span><b id="cmpInvNo">—</b></div>
+        <div class="cmp-kv"><span>价税合计</span><b id="cmpInvTotal">—</b></div>
+        <div class="cmp-kv"><span>开票日期</span><b id="cmpInvDate">—</b></div>
+        <div class="cmp-kv"><span>费用分类</span><b id="cmpInvCat">—</b></div>
+      </div>
+      <div class="cmp-col">
+        <h4>报销单</h4>
+        <div class="cmp-kv"><span>单号</span><b id="cmpRebNo">—</b></div>
+        <div class="cmp-kv"><span>报销金额</span><b id="cmpRebAmount">—</b></div>
+        <div class="cmp-kv"><span>提交人</span><b id="cmpRebSubmitter">—</b></div>
+        <div class="cmp-kv"><span>费用类型</span><b id="cmpRebExpense">—</b></div>
+      </div>
+    </div>
+    <div class="rp-quick">
+      <button class="btn btn-outline" onclick="quickAmount('inv')">以发票价税合计更正报销金额</button>
+      <button class="btn btn-outline" onclick="quickAmount('reb')">以报销金额更正发票价税合计</button>
+      <button class="btn btn-outline" onclick="quickCategory('inv')">报销费用类型 → 发票分类</button>
+      <button class="btn btn-outline" onclick="quickCategory('reb')">发票分类 → 报销费用类型</button>
+    </div>
+    <label>发票号<input id="fixInvoiceNo" placeholder="留空表示不修改"></label>
+    <label>发票价税合计<input id="fixInvoiceTotal" placeholder="留空表示不修改"></label>
+    <label>报销金额<input id="fixRebAmount" placeholder="留空表示不修改"></label>
+    <label>报销单登记发票号<input id="fixRebInvoiceNo" placeholder="留空表示不修改"></label>
+    <label>报销费用类型<input id="fixRebExpenseType" placeholder="留空表示不修改"></label>
+    <label>发票分类<select id="fixCategory"></select></label>
+    <label class="rp-check">
+      <input type="checkbox" id="fixForce"> 强制绑定（跳过评分，直接生效）
+    </label>
+    <label>操作原因（分类）<select id="fixReasonOption">
+      <option value="">— 请选择 —</option>
+      <option>业务人员已确认</option>
+      <option>员工补了凭证</option>
+      <option>票号填错已核实</option>
+      <option>特殊情况</option>
+    </select></label>
+    <label>操作原因（详细说明）<input id="fixReason" placeholder="可留空"></label>
+    <p class="muted">保存后只对当前这一条报销单重新匹配：成功则状态翻转为已匹配，仍存在差异则更新差异原因；全部操作写入审计日志。</p>
+  </div>
+  <div class="rp-drawer-foot">
+    <button class="btn btn-outline" onclick="closeFix()">取消</button>
+    <button class="btn" id="fixSubmit" onclick="submitFix()">保存并重新匹配</button>
+  </div>
+</aside>
+{% endblock %}
 
-<div class="grid g2">
-  <div class="card">
-    <h2>未匹配报销单 ({{ pagers.rpage.total }})</h2>
-    {% if r.unmatched_reimburses %}
-    <table><tr><th>ID</th><th>单号</th><th>金额</th><th>提交人</th><th>登记发票号</th></tr>
-    {% for i in r.unmatched_reimburses %}
-      <tr class="clickable" title="点击定位到报销单管理" onclick="location.href='/reimburses?status=unmatched&focus_id={{ i.id }}'"><td>#{{ i.id }}</td><td>{{ i.reimburse_no }}</td><td>{{ i.amount }}</td>
-          <td>{{ i.submitter }}</td><td>{{ i.invoice_no or '—' }}</td></tr>
-    {% endfor %}</table>
-    {{ render_pager(pagers.rpage, 'rpage') }}
-    {% else %}<p class="empty-state">暂无相关数据</p>{% endif %}
-  </div>
-  <div class="card">
-    <h2>未匹配发票 ({{ pagers.ipage.total }})</h2>
-    {% if r.unmatched_invoices %}
-    <table><tr><th>ID</th><th>发票号</th><th>价税合计</th><th>开票日期</th></tr>
-    {% for i in r.unmatched_invoices %}
-      <tr class="clickable" title="点击定位到发票管理" onclick="location.href='/invoices?status=unmatched&focus_id={{ i.id }}'"><td>#{{ i.id }}</td><td>{{ i.invoice_no or '—' }}</td>
-          <td>{{ i.total_amount or '—' }}</td><td>{{ i.invoice_date or '—' }}</td></tr>
-    {% endfor %}</table>
-    {{ render_pager(pagers.ipage, 'ipage') }}
-    {% else %}<p class="empty-state">暂无相关数据</p>{% endif %}
-  </div>
-</div>
+{% block scripts %}
+<script>
+const INIT = {{ initial|tojson }};
 
-<div class="grid g2">
-  <div class="card">
-    <h2>异常发票 ({{ pagers.apage.total }})</h2>
-    {% if r.abnormal %}
-    <table><tr><th>ID</th><th>发票号</th><th>状态</th></tr>
-    {% for i in r.abnormal %}
-      <tr><td><a class="link" href="/invoices/{{ i.id }}">#{{ i.id }}</a></td>
-          <td>{{ i.invoice_no or '—' }}</td><td><span class="badge {{ i.status|badge }}">{{ i.status|status_cn }}</span></td></tr>
-    {% endfor %}</table>
-    {{ render_pager(pagers.apage, 'apage') }}
-    {% else %}<p class="empty-state">暂无相关数据</p>{% endif %}
-  </div>
-  <div class="card">
-    <h2>重复发票 ({{ pagers.xpage.total }})</h2>
-    {% if r.duplicates %}
-    <table><tr><th>ID</th><th>发票号</th><th>状态</th></tr>
-    {% for i in r.duplicates %}
-      <tr><td><a class="link" href="/invoices/{{ i.id }}">#{{ i.id }}</a></td>
-          <td>{{ i.invoice_no or '—' }}</td><td><span class="badge {{ i.status|badge }}">{{ i.status|status_cn }}</span></td></tr>
-    {% endfor %}</table>
-    {{ render_pager(pagers.xpage, 'xpage') }}
-    {% else %}<p class="empty-state">暂无相关数据</p>{% endif %}
-  </div>
-</div>
+const STATUS_CN = {
+  MATCHED:'已匹配', CONFIRMED:'已确认', SUSPICIOUS:'待人工确认', CONFLICT:'字段冲突',
+  UNMATCHED:'无候选', REJECTED:'已拒绝', PENDING:'匹配中'
+};
+const STATUS_BADGE = {
+  MATCHED:'badge-purple', CONFIRMED:'badge-green', SUSPICIOUS:'badge-yellow',
+  CONFLICT:'badge-red', UNMATCHED:'badge-red', REJECTED:'badge-gray', PENDING:'badge-gray'
+};
+const TYPE_CN = {exact:'系统精确匹配', fuzzy:'系统模糊匹配', composite:'组合匹配',
+                 many_to_one:'多对一凑票', manual:'人工指定'};
+const PAGE_SIZES = [20, 50, 100];
+const COL_STORE = 'report_cols_v2';
+
+// 视图 -> 分页参数：每个视图独立分页
+const VIEWS = {
+  active: {param:'dpage', title:'生效匹配'},
+  pending:{param:'dpage', title:'待处理'},
+  all:    {param:'dpage', title:'全部匹配明细'},
+  unb:    {param:'rpage', title:'未匹配报销单'},
+  uninv:  {param:'ipage', title:'未报销发票'},
+  issues: {param:'apage', title:'异常/重复发票'}
+};
+
+// 核心列（固定展示，不可隐藏）+ 高级列（默认隐藏，列入列设置）
+const CORE_COLS = [
+  {k:'status', t:'状态', w:96},
+  {k:'reimburse_no', t:'报销单号', w:150},
+  {k:'amount_cmp', t:'金额对比（报销 / 发票）', w:230, num:1},
+  {k:'type', t:'匹配方式', w:110},
+  {k:'message', t:'差异说明', w:300, diff:1},
+  {k:'actions', t:'操作', w:214, noHide:1}
+];
+const ADV_COLS = [
+  {k:'submitter', t:'提交人', w:90},
+  {k:'expense_type', t:'费用类型', w:100},
+  {k:'invoice_no', t:'发票号', w:150},
+  {k:'invoice_date', t:'开票日期', w:110},
+  {k:'score', t:'分数', w:70, num:1},
+  {k:'amount_diff', t:'金额差异', w:100, num:1},
+  {k:'category', t:'费用分类', w:110}
+];
+const COLS = CORE_COLS.concat(ADV_COLS);
+
+function loadCols(){
+  try{
+    const raw = localStorage.getItem(COL_STORE);
+    if(!raw) return new Set();
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? new Set(arr) : new Set();
+  }catch(e){ return new Set(); }
+}
+
+// 全页唯一状态源
+const S = {
+  view: INIT.filter === 'pending' ? 'pending' : INIT.filter === 'active' ? 'active' : 'all',
+  q: INIT.q || '',
+  size: {
+    dpage:(INIT.pagers&&INIT.pagers.dpage.page_size)||20,
+    rpage:(INIT.pagers&&INIT.pagers.rpage.page_size)||20,
+    ipage:(INIT.pagers&&INIT.pagers.ipage.page_size)||20,
+    apage:(INIT.pagers&&INIT.pagers.apage.page_size)||20,
+    xpage:(INIT.pagers&&INIT.pagers.xpage.page_size)||20
+  },
+  pages: {dpage:1, rpage:1, ipage:1, apage:1, xpage:1},
+  data: INIT,
+  fix: null,
+  colVis: loadCols(),
+  selInv: new Set(),
+  bindIds: [], bindTotal: 0, bindSel: null, bindOpts: []
+};
+const PAGE_KEYS = ['dpage','rpage','ipage','apage','xpage'];
+
+function esc(v){
+  return String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function money(v){
+  return (v === null || v === undefined || v === '') ? '—' : Number(v).toFixed(2);
+}
+function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
+function visibleCols(){
+  return CORE_COLS.concat(ADV_COLS.filter(c => S.colVis.has(c.k)));
+}
+
+// ---------------- 视图切换（分页强制重置为 1） ----------------
+function setView(v){
+  if(!VIEWS[v]) v = 'all';
+  S.view = v;
+  PAGE_KEYS.forEach(k => S.pages[k] = 1);
+  S.selInv.clear();
+  const f = (v === 'pending' || v === 'active') ? v : '';
+  const u = new URL(location.href);
+  if(f) u.searchParams.set('filter', f); else u.searchParams.delete('filter');
+  history.replaceState(null, '', u.toString());
+  loadData();
+}
+
+// ---------------- 全量刷新 ----------------
+async function loadData(retry){
+  const params = new URLSearchParams({filter:(S.view==='pending'||S.view==='active')?S.view:'', q:S.q});
+  PAGE_KEYS.forEach(k => {
+    params.set(k, S.pages[k]);
+    params.set(k.replace('page','size'), S.size[k]);
+  });
+  try {
+    const res = await fetch('/api/report/data?' + params.toString());
+    const j = await res.json();
+    const d = (j && j.data) ? j.data : j;
+    if(!d || d.ok === false) throw new Error((d && d.message) || '数据加载失败');
+    S.data = d;
+    PAGE_KEYS.forEach(k => {
+      if(d.pagers && d.pagers[k]){
+        S.pages[k] = d.pagers[k].page;
+        S.size[k] = d.pagers[k].page_size || S.size[k];
+      }
+    });
+    S.selInv.clear();
+    renderAll();
+    // 智能回退：最后一页被清空时自动请求上一页
+    if(retry !== false && currentRowsEmpty() && S.pages[VIEWS[S.view].param] > 1){
+      S.pages[VIEWS[S.view].param] -= 1;
+      return loadData(false);
+    }
+  } catch(e) {
+    notice('刷新失败', e.message);
+  }
+}
+
+function currentRowsEmpty(){
+  if(S.view === 'unb') return !(S.data.unmatched_reimburses||[]).length;
+  if(S.view === 'uninv') return !(S.data.unmatched_invoices||[]).length;
+  if(S.view === 'issues') return !(S.data.abnormal||[]).length && !(S.data.duplicates||[]).length;
+  return !(S.data.details||[]).length;
+}
+
+function renderAll(){
+  renderStats();
+  renderBadges();
+  document.getElementById('view-details').classList.toggle('active', ['active','pending','all'].includes(S.view));
+  document.getElementById('view-unb').classList.toggle('active', S.view === 'unb');
+  document.getElementById('view-uninv').classList.toggle('active', S.view === 'uninv');
+  document.getElementById('view-issues').classList.toggle('active', S.view === 'issues');
+  document.querySelectorAll('.rp-nav-item').forEach(el =>
+    el.classList.toggle('active', el.dataset.view === S.view));
+  if(['active','pending','all'].includes(S.view)) renderDetails();
+  if(S.view === 'unb') renderUnmatchedReb();
+  if(S.view === 'uninv') renderUnmatchedInv();
+  if(S.view === 'issues') renderIssues();
+  document.querySelectorAll('.rp-search').forEach(el => { el.value = S.q; });
+}
+
+// ---------------- 统计卡片 + 导航红点 ----------------
+function renderStats(){
+  const s = S.data.stats || {};
+  document.getElementById('statInvoice').textContent = s.invoice_total ?? 0;
+  document.getElementById('statReimburse').textContent = s.reimburse_total ?? 0;
+  document.getElementById('statActive').textContent = s.active_matches ?? 0;
+  document.getElementById('statPending').textContent = s.pending ?? 0;
+  document.getElementById('cardPending').classList.toggle('is-zero', !s.pending);
+  document.getElementById('cardActive').classList.toggle('is-zero', !s.active_matches);
+  document.getElementById('cardActive').classList.toggle('stat-filter-on', S.view === 'active');
+  document.getElementById('cardPending').classList.toggle('stat-filter-on', S.view === 'pending');
+  document.getElementById('cardInvoice').classList.toggle('stat-filter-on', S.view === 'all');
+  document.getElementById('cardReimburse').classList.toggle('stat-filter-on', S.view === 'unb');
+}
+
+function renderBadges(){
+  const b = S.data.badges || {};
+  const set = (id, n, warn) => {
+    const el = document.getElementById(id);
+    if(!el) return;
+    el.textContent = n ?? 0;
+    el.classList.toggle('zero', !n);
+    el.classList.toggle('warn', !!warn && !!n);
+  };
+  set('badge-active', b.active);
+  set('badge-pending', b.pending, true);
+  set('badge-all', b.all);
+  set('badge-unb', b.unmatched_reimburses, true);
+  set('badge-uninv', b.unmatched_invoices, true);
+  set('badge-issues', b.issues);
+  document.getElementById('cntAbn').textContent = (b.abnormal ?? 0) + ' 张';
+  document.getElementById('cntDup').textContent = (b.duplicates ?? 0) + ' 张';
+}
+
+// ---------------- 主表（精简 6 列 + 相邻同单号合并） ----------------
+function amountCell(d){
+  const a = d.reimburse_amount, b = d.invoice_total;
+  const diff = (a !== null && a !== undefined && b !== null && b !== undefined)
+    ? Math.abs(Number(a) - Number(b)) : null;
+  const bad = diff !== null && diff > 0.005;
+  return `<span>报销: <b>${money(a)}</b></span><span class="amt-sep"> / </span>`
+       + `<span>发票: <b class="${bad ? 'diff-danger' : 'amt-ok'}">${money(b)}</b></span>`
+       + (bad ? `<span class="amt-diff" title="金额不一致">Δ${diff.toFixed(2)}</span>` : '');
+}
+
+function detailActions(d){
+  if(d.pending && d.reimburse_id){
+    return `<div class="rp-ops">
+      <button class="btn btn-sm" onclick="openFix(${d.id})">快捷修复</button>
+      <a class="btn btn-sm btn-outline" href="${d.compare_url}" target="_blank">并排比对</a>
+      <button class="btn btn-sm btn-outline" onclick="confirmRow(${d.id}, event)">确认</button>
+      <button class="btn btn-sm btn-outline" onclick="rejectRow(${d.id}, event)">拒绝</button>
+    </div>`;
+  }
+  if(d.active) return `<button class="btn btn-sm btn-danger" onclick="unmatchRow(${d.id}, event)">解除匹配</button>`;
+  if(d.status === 'UNMATCHED' && d.invoice_id)
+    return `<button class="btn btn-sm" onclick="openBindOne(${d.invoice_id})">手动关联</button>`;
+  return '<span class="muted">—</span>';
+}
+
+function cellHtml(d, c){
+  switch(c.k){
+    case 'status':
+      return `<span class="badge ${STATUS_BADGE[d.status] || 'badge-gray'}">${esc(STATUS_CN[d.status] || d.status)}</span>`;
+    case 'reimburse_no': return esc(d.reimburse_no || '—');
+    case 'amount_cmp': return amountCell(d);
+    case 'type': return `<span class="muted">${esc(TYPE_CN[d.match_type] || d.match_type || '—')}</span>`;
+    case 'score': return Number(d.score || 0).toFixed(2);
+    case 'submitter': return esc(d.submitter || '—');
+    case 'expense_type': return esc(d.expense_type || '—');
+    case 'invoice_no': return esc(d.invoice_no || '—');
+    case 'invoice_date': return esc(d.invoice_date || '—');
+    case 'amount_diff':
+      return `<span class="${Number(d.amount_diff) > 0 ? 'diff-danger' : ''}">${money(d.amount_diff)}</span>`;
+    case 'message':
+      return `<span class="rp-diff-txt" title="${esc(d.message || '')}">${esc(d.message || '—')}</span>`;
+    case 'category': return esc(d.category || '—');
+    case 'actions': return detailActions(d);
+    default: return '';
+  }
+}
+
+function renderDetails(){
+  const rows = S.data.details || [];
+  const box = document.getElementById('detailTable');
+  const pagerBox = document.getElementById('detailPager');
+  document.getElementById('detailTitle').innerHTML =
+    (VIEWS[S.view].title || '匹配明细') +
+    ` <span class="muted" id="detailFilterHint">${S.q ? `（搜索：${esc(S.q)}）` : ''}</span>`;
+
+  if(!rows.length){
+    box.innerHTML = '<p class="empty-state">暂无相关数据</p>';
+    pagerBox.innerHTML = pagerHtml('dpage', S.data.pagers && S.data.pagers.dpage);
+    return;
+  }
+
+  let cols = visibleCols();
+  // 单号列：当前页全部相同则自动隐藏整列
+  const nos = rows.map(r => r.reimburse_no || '');
+  const allSameNo = nos.length > 1 && nos.every(v => v && v === nos[0]);
+  if(allSameNo) cols = cols.filter(c => c.k !== 'reimburse_no');
+
+  // 相邻行同单号 -> 行合并（rowspan）
+  const spanOf = {}, skip = new Set();
+  if(!allSameNo){
+    let i = 0;
+    while(i < rows.length){
+      const v = rows[i].reimburse_no || '';
+      if(!v){ i++; continue; }
+      let j = i + 1;
+      while(j < rows.length && (rows[j].reimburse_no || '') === v) j++;
+      if(j - i > 1){
+        spanOf[i] = j - i;
+        for(let k = i + 1; k < j; k++) skip.add(k);
+      }
+      i = j;
+    }
+  }
+
+  const colgroup = '<colgroup>' + cols.map(c => `<col style="width:${c.w}px">`).join('') + '</colgroup>';
+  const thead = '<thead><tr>' + cols.map(c =>
+    `<th class="${c.num ? 'num-cell' : ''}">${esc(c.t)}</th>`).join('') + '</tr></thead>';
+  const tbody = '<tbody>' + rows.map((d, idx) => {
+    const tds = cols.map(c => {
+      if(c.k === 'reimburse_no' && skip.has(idx)) return '';
+      const cls = [c.num ? 'num-cell' : '', c.diff ? 'rp-diff' : '',
+                   c.k === 'reimburse_no' ? 'rowspan-cell' : ''].filter(Boolean).join(' ');
+      const rs = (c.k === 'reimburse_no' && spanOf[idx]) ? ` rowspan="${spanOf[idx]}"` : '';
+      return `<td class="${cls}"${rs}>${cellHtml(d, c)}</td>`;
+    }).join('');
+    return `<tr id="drow-${d.id}">${tds}</tr>`;
+  }).join('') + '</tbody>';
+  box.innerHTML = `<table class="rp-table">${colgroup}${thead}${tbody}</table>`;
+  pagerBox.innerHTML = pagerHtml('dpage', S.data.pagers && S.data.pagers.dpage);
+}
+
+// ---------------- 未匹配报销单 ----------------
+function renderUnmatchedReb(){
+  const rows = S.data.unmatched_reimburses || [];
+  document.getElementById('tblUnmatchedReb').innerHTML = rows.length ? `<table>
+    <thead><tr><th>单号</th><th class="num-cell">金额</th><th>提交人</th><th>费用类型</th><th>登记发票号</th><th>操作</th></tr></thead>
+    <tbody>${rows.map(r => `
+      <tr><td><b>${esc(r.reimburse_no || ('#' + r.id))}</b></td><td class="num-cell">${money(r.amount)}</td>
+        <td>${esc(r.submitter || '—')}</td><td>${esc(r.expense_type || '—')}</td><td>${esc(r.invoice_no || '—')}</td>
+        <td><a class="link" href="/reimburses?status=unmatched&focus_id=${r.id}">去处理</a></td></tr>`).join('')}
+    </tbody></table>` : '<p class="empty-state">暂无未匹配报销单</p>';
+  document.getElementById('pagerReb').innerHTML = pagerHtml('rpage', S.data.pagers && S.data.pagers.rpage);
+}
+
+// ---------------- 未报销发票：摘要/销方 + 当前页多选 ----------------
+function renderUnmatchedInv(){
+  const rows = S.data.unmatched_invoices || [];
+  const box = document.getElementById('tblUnmatchedInv');
+  if(rows.length){
+    box.innerHTML = `<table>
+      <thead><tr>
+        <th class="chk-th"><input type="checkbox" id="invAll" onclick="toggleAllInv(this)">
+          <div class="th-hint">仅全选当前页</div></th>
+        <th>发票号</th><th>报销内容摘要</th><th>销方名称</th>
+        <th class="num-cell">价税合计</th><th>开票日期</th><th>操作</th>
+      </tr></thead>
+      <tbody>${rows.map(r => `
+        <tr id="irow-${r.id}">
+          <td><input type="checkbox" class="inv-chk" value="${r.id}"
+               ${S.selInv.has(r.id) ? 'checked' : ''} onchange="toggleInv(${r.id}, this.checked)"></td>
+          <td><b>${esc(r.invoice_no || ('#' + r.id))}</b></td>
+          <td class="wrap">${esc(r.item_summary || '—')}</td>
+          <td class="wrap">${esc(r.seller_name || '—')}</td>
+          <td class="num-cell">${money(r.total_amount)}</td>
+          <td>${esc(r.invoice_date || '—')}</td>
+          <td><button class="btn btn-sm btn-outline" onclick="openBindOne(${r.id})">绑定报销单</button></td>
+        </tr>`).join('')}
+      </tbody></table>`;
+  } else {
+    box.innerHTML = '<p class="empty-state">暂无未报销发票</p>';
+  }
+  const all = document.getElementById('invAll');
+  if(all) all.checked = rows.length > 0 && rows.every(r => S.selInv.has(r.id));
+  syncInvSelection();
+  document.getElementById('pagerInv').innerHTML = pagerHtml('ipage', S.data.pagers && S.data.pagers.ipage);
+}
+
+// ---------------- 异常 / 重复发票 ----------------
+function renderIssues(){
+  renderSimple('abnormal', 'tblAbnormal', 'pagerAbn', 'apage', '异常发票');
+  renderSimple('duplicates', 'tblDuplicate', 'pagerDup', 'xpage', '重复发票');
+}
+function renderSimple(key, tableId, pagerId, param, emptyText){
+  const rows = S.data[key] || [];
+  document.getElementById(tableId).innerHTML = rows.length ? `<table>
+    <thead><tr><th>发票号</th><th>状态</th></tr></thead>
+    <tbody>${rows.map(r => `
+      <tr><td><a class="link" href="/invoices/${r.id}"><b>${esc(r.invoice_no || ('#' + r.id))}</b></a></td>
+        <td><span class="badge ${STATUS_BADGE[r.status] || 'badge-gray'}">${esc(STATUS_CN[r.status] || r.status)}</span></td></tr>`).join('')}
+    </tbody></table>` : `<p class="empty-state">暂无${emptyText}</p>`;
+  document.getElementById(pagerId).innerHTML = pagerHtml(param, S.data.pagers && S.data.pagers[param]);
+}
+
+// ---------------- 勾选（仅当前页） ----------------
+function toggleInv(id, checked){
+  if(checked) S.selInv.add(id); else S.selInv.delete(id);
+  syncInvSelection();
+}
+function toggleAllInv(el){
+  const rows = S.data.unmatched_invoices || [];
+  rows.forEach(r => el.checked ? S.selInv.add(r.id) : S.selInv.delete(r.id));
+  document.querySelectorAll('.inv-chk').forEach(c => { c.checked = el.checked; });
+  syncInvSelection();
+}
+function syncInvSelection(){
+  const rows = S.data.unmatched_invoices || [];
+  const selected = rows.filter(r => S.selInv.has(r.id));
+  const total = selected.reduce((s, r) => s + (Number(r.total_amount) || 0), 0);
+  document.getElementById('invSelCnt').textContent = selected.length;
+  document.getElementById('invSelTotal').textContent = total.toFixed(2);
+}
+
+// ---------------- 分页 ----------------
+function pagerHtml(param, p){
+  if(!p) return '';
+  const btn = (n, label, dis) =>
+    `<button class="btn btn-sm btn-outline" ${dis ? 'disabled' : ''} onclick="gotoPage('${param}',${n})">${label}</button>`;
+  const cur = S.size[param] || 20;
+  const opts = PAGE_SIZES.map(n =>
+    `<option value="${n}"${n === cur ? ' selected' : ''}>${n} 条/页</option>`).join('');
+  return `<div class="pager">
+    <span class="muted">共 ${p.total} 条 · 第 ${p.page}/${p.pages} 页</span>
+    ${btn(1, '首页', p.page <= 1)} ${btn(p.page - 1, '上一页', p.page <= 1)}
+    ${btn(p.page + 1, '下一页', p.page >= p.pages)} ${btn(p.pages, '末页', p.page >= p.pages)}
+    <select onchange="changePageSize('${param}', this.value)">${opts}</select>
+  </div>`;
+}
+function gotoPage(param, page){ S.pages[param] = page; loadData(); }
+function changePageSize(param, v){
+  S.size[param] = parseInt(v, 10) || 20;
+  S.pages[param] = 1;
+  loadData();
+}
+
+// ---------------- 搜索（强制回第一页） ----------------
+let _qTimer = null;
+function onSearchInput(el){
+  clearTimeout(_qTimer);
+  const val = ((el && el.value) || '').trim();
+  _qTimer = setTimeout(() => {
+    S.q = val;
+    PAGE_KEYS.forEach(k => S.pages[k] = 1);
+    const u = new URL(location.href);
+    if(S.q) u.searchParams.set('q', S.q); else u.searchParams.delete('q');
+    history.replaceState(null, '', u.toString());
+    loadData();
+  }, 350);
+}
+
+// ---------------- 列设置（存 LocalStorage） ----------------
+function toggleColPanel(){
+  const panel = document.getElementById('colPanel');
+  if(panel.classList.toggle('on')) renderColPanel();
+}
+function renderColPanel(){
+  document.getElementById('colPanel').innerHTML = ADV_COLS.map(c => `
+    <label><input type="checkbox" ${S.colVis.has(c.k) ? 'checked' : ''}
+      onchange="toggleCol('${c.k}', this.checked)"> ${esc(c.t)}</label>`).join('')
+    + '<span class="muted">核心列固定展示；高级列勾选后出现在表格与导出文件中</span>';
+}
+function toggleCol(key, checked){
+  if(checked) S.colVis.add(key); else S.colVis.delete(key);
+  try { localStorage.setItem(COL_STORE, JSON.stringify([...S.colVis])); } catch(e) {}
+  renderDetails();
+}
+
+// ---------------- 导出（与当前视图一致，流式 + 遮罩） ----------------
+async function exportExcel(){
+  if(!['active','pending','all'].includes(S.view)){
+    toast('请先切换到匹配明细视图再导出', false);
+    return;
+  }
+  const cols = ['status','type','reimburse_no','reimburse_amount','invoice_total',
+                'amount_diff','message']
+    .concat(ADV_COLS.filter(c => S.colVis.has(c.k)).map(c => c.k));
+  const uniq = [...new Set(cols)];
+  const qs = new URLSearchParams({filter:(S.view==='pending'||S.view==='active')?S.view:'',
+                                  q:S.q, cols:uniq.join(',')});
+  busyShow('正在导出 Excel…', '按当前筛选与可见列生成文件，数据量大时流式输出');
+  try {
+    const res = await fetch('/api/report/export?' + qs.toString());
+    if(!res.ok) throw new Error('导出失败（HTTP ' + res.status + '）');
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = '差异报告.xlsx';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+    toast('导出完成');
+  } catch(e) {
+    toast('导出失败：' + e.message, false);
+  } finally {
+    busyDone();
+  }
+}
+
+// ---------------- 操作：Loading 锁 + 状态翻转 + 并发防呆 ----------------
+async function withLoading(btn, fn){
+  if(!btn) return fn();
+  const label = btn.textContent;
+  btn.disabled = true; btn.classList.add('is-loading'); btn.textContent = '处理中…';
+  try { return await fn(); }
+  finally { btn.disabled = false; btn.classList.remove('is-loading'); btn.textContent = label; }
+}
+
+async function postForm(url, data){
+  const fd = new FormData();
+  Object.entries(data || {}).forEach(([k, v]) => {
+    if(v !== null && v !== undefined && String(v) !== '') fd.append(k, v);
+  });
+  const res = await fetch(url, {method: 'POST', body: fd});
+  let j = {};
+  try { j = await res.json(); } catch(e) {}
+  const d = (j && j.data) ? j.data : j || {};
+  d.__status = res.status;
+  d.__stale = (res.status === 409);
+  return d;
+}
+
+async function handleStale(d){
+  notice('数据已在其他页面变更', (d && d.message) || '请刷新后重试，正在为您刷新当前页…');
+  await loadData();
+}
+
+async function afterSuccess(matchId, message, removeFromView){
+  clearDashboardCache();
+  const tr = document.getElementById('drow-' + matchId);
+  if(tr){
+    tr.classList.add(removeFromView ? 'row-out' : 'row-fixed');
+    await sleep(removeFromView ? 300 : 240);
+  }
+  toast(message || '操作成功');
+  await loadData();
+}
+
+function clearDashboardCache(){
+  try {
+    Object.keys(sessionStorage).filter(k => k.indexOf('dash') === 0)
+      .forEach(k => sessionStorage.removeItem(k));
+  } catch(e) {}
+}
+
+async function confirmRow(id, ev){
+  const d0 = findDetail(id);
+  const r = await reasonModal('确认匹配');
+  if(!r) return;
+  await withLoading(ev && ev.currentTarget, async () => {
+    const d = await postForm(`/api/match/${id}/confirm`,
+      {note: r.reason, operator: 'admin', expect_status: d0 ? d0.status : '', reason_option: r.reason_option});
+    if(d.__stale){ await handleStale(d); return; }
+    if(!d || d.ok === false){ notice('操作未生效', d.message || '确认失败'); return; }
+    await afterSuccess(id, d.message, S.view === 'pending');
+  });
+}
+
+async function rejectRow(id, ev){
+  const d0 = findDetail(id);
+  const r = await reasonModal('拒绝匹配');
+  if(!r) return;
+  await withLoading(ev && ev.currentTarget, async () => {
+    const d = await postForm(`/api/match/${id}/reject`,
+      {note: r.reason, operator: 'admin', expect_status: d0 ? d0.status : '', reason_option: r.reason_option});
+    if(d.__stale){ await handleStale(d); return; }
+    if(!d || d.ok === false){ notice('操作未生效', d.message || '拒绝失败'); return; }
+    await afterSuccess(id, d.message, S.view === 'pending');
+  });
+}
+
+async function unmatchRow(id, ev){
+  const d0 = findDetail(id);
+  const r = await reasonModal('解除匹配');
+  if(!r) return;
+  await withLoading(ev && ev.currentTarget, async () => {
+    const d = await postForm(`/api/match/${id}/unmatch`,
+      {reason: r.reason, operator: 'admin', expect_status: d0 ? d0.status : '', reason_option: r.reason_option});
+    if(d.__stale){ await handleStale(d); return; }
+    if(!d || d.ok === false){ notice('操作未生效', d.message || '解除失败'); return; }
+    await afterSuccess(id, d.message, S.view === 'active');
+  });
+}
+
+// ---------------- 快捷修复 ----------------
+function findDetail(id){
+  return (S.data.details || []).find(d => d.id === id) || null;
+}
+function openFix(matchId){
+  const d = findDetail(matchId);
+  if(!d) return;
+  S.fix = {
+    id: d.id, invoice_id: d.invoice_id, reimburse_id: d.reimburse_id, status: d.status,
+    base: {
+      invoice_no: d.invoice_no || '',
+      invoice_total: d.invoice_total === null ? '' : String(d.invoice_total),
+      reb_amount: d.reimburse_amount === null ? '' : String(d.reimburse_amount),
+      reb_invoice_no: d.reb_invoice_no || '',
+      reb_expense_type: d.expense_type || ''
+    }
+  };
+  document.getElementById('fixMeta').textContent =
+    `报销单 ${d.reimburse_no || '—'} · 发票 ${d.invoice_no || '（无号）'}`;
+  document.getElementById('cmpInvNo').textContent = d.invoice_no || '—';
+  document.getElementById('cmpInvTotal').textContent = money(d.invoice_total);
+  document.getElementById('cmpInvDate').textContent = d.invoice_date || '—';
+  document.getElementById('cmpInvCat').textContent = d.category || '—';
+  document.getElementById('cmpRebNo').textContent = d.reimburse_no || '—';
+  document.getElementById('cmpRebAmount').textContent = money(d.reimburse_amount);
+  document.getElementById('cmpRebSubmitter').textContent = d.submitter || '—';
+  document.getElementById('cmpRebExpense').textContent = d.expense_type || '—';
+
+  document.getElementById('fixInvoiceNo').value = d.invoice_no || '';
+  document.getElementById('fixInvoiceTotal').value = d.invoice_total === null ? '' : d.invoice_total;
+  document.getElementById('fixRebAmount').value = d.reimburse_amount === null ? '' : d.reimburse_amount;
+  document.getElementById('fixRebInvoiceNo').value = d.reb_invoice_no || '';
+  document.getElementById('fixRebExpenseType').value = '';
+  document.getElementById('fixForce').checked = false;
+  document.getElementById('fixReasonOption').value = '';
+  document.getElementById('fixReason').value = '';
+
+  const sel = document.getElementById('fixCategory');
+  const cats = S.data.categories || [];
+  sel.innerHTML = '<option value="">（保持不变）</option>' +
+    cats.map(c => `<option value="${esc(c)}"${c === d.category ? ' selected' : ''}>${esc(c)}</option>`).join('');
+
+  document.getElementById('fixBg').classList.add('on');
+  document.getElementById('fixDrawer').classList.add('on');
+  document.getElementById('fixDrawer').setAttribute('aria-hidden', 'false');
+}
+function closeFix(){
+  document.getElementById('fixBg').classList.remove('on');
+  document.getElementById('fixDrawer').classList.remove('on');
+  document.getElementById('fixDrawer').setAttribute('aria-hidden', 'true');
+  S.fix = null;
+}
+function quickAmount(from){
+  const d = S.fix && findDetail(S.fix.id);
+  if(!d) return;
+  if(from === 'inv'){
+    if(d.invoice_total === null){ toast('发票价税合计为空，无法更正', false); return; }
+    document.getElementById('fixRebAmount').value = Number(d.invoice_total).toFixed(2);
+  } else {
+    if(d.reimburse_amount === null){ toast('报销金额为空，无法更正', false); return; }
+    document.getElementById('fixInvoiceTotal').value = Number(d.reimburse_amount).toFixed(2);
+  }
+  toast('已填入更正金额，请点击「保存并重新匹配」生效');
+}
+function quickCategory(from){
+  const d = S.fix && findDetail(S.fix.id);
+  if(!d) return;
+  if(from === 'inv'){
+    if(!d.expense_type){ toast('报销单费用类型为空，无法同步', false); return; }
+    const sel = document.getElementById('fixCategory');
+    if(![...sel.options].find(o => o.value === d.expense_type)){
+      sel.insertAdjacentHTML('beforeend',
+        `<option value="${esc(d.expense_type)}">${esc(d.expense_type)}</option>`);
+    }
+    sel.value = d.expense_type;
+    toast(`发票分类将同步为「${d.expense_type}」`);
+  } else {
+    if(!d.category){ toast('发票尚未分类，无法同步', false); return; }
+    document.getElementById('fixRebExpenseType').value = d.category;
+    toast(`报销费用类型将同步为「${d.category}」`);
+  }
+}
+
+async function submitFix(){
+  const f = S.fix;
+  if(!f) return;
+  const btn = document.getElementById('fixSubmit');
+  const val = id => document.getElementById(id).value.trim();
+  const invNo = val('fixInvoiceNo');
+  const invTotal = val('fixInvoiceTotal');
+  const rebAmount = val('fixRebAmount');
+  const rebNo = val('fixRebInvoiceNo');
+  const rebExpType = val('fixRebExpenseType');
+  const category = document.getElementById('fixCategory').value;
+  const force = document.getElementById('fixForce').checked ? 1 : 0;
+
+  const payload = {
+    match_id: f.id, invoice_id: f.invoice_id, reimburse_id: f.reimburse_id,
+    force_bind: force, reason: val('fixReason'), reason_option: document.getElementById('fixReasonOption').value,
+    operator: 'admin', expect_status: f.status
+  };
+  if(invNo && invNo !== f.base.invoice_no) payload.invoice_no = invNo;
+  if(invTotal && invTotal !== f.base.invoice_total) payload.invoice_total = invTotal;
+  if(rebAmount && rebAmount !== f.base.reb_amount) payload.reb_amount = rebAmount;
+  if(rebNo && rebNo !== f.base.reb_invoice_no) payload.reb_invoice_no = rebNo;
+  if(rebExpType && rebExpType !== f.base.reb_expense_type) payload.reb_expense_type = rebExpType;
+  if(category) payload.category = category;
+
+  await withLoading(btn, async () => {
+    try {
+      const d = await postForm('/api/report/quick-fix', payload);
+      if(d.__stale){ closeFix(); await handleStale(d); return; }
+      if(!d || d.ok === false){
+        notice('操作未生效', d.message || '快捷修复失败');
+        return;
+      }
+      const id = f.id;
+      const remove = S.view === 'pending' && d.status === 'MATCHED';
+      closeFix();
+      await afterSuccess(id, d.message, remove);
+    } catch(e) {
+      notice('操作未生效', '网络或服务异常：' + e.message);
+    }
+  });
+}
+
+// ---------------- 批量绑定（复用 manual 匹配） ----------------
+function openBindOne(invoiceId){
+  const row = (S.data.unmatched_invoices || []).find(r => r.id === invoiceId);
+  openBindDlg([invoiceId], row ? Number(row.total_amount) || 0 : 0);
+}
+function batchBindSelected(){
+  const ids = [...S.selInv];
+  if(!ids.length){ notice('请先勾选发票', '请先勾选需要绑定的发票（全选仅作用于当前页）。'); return; }
+  const total = (S.data.unmatched_invoices || [])
+    .filter(r => S.selInv.has(r.id))
+    .reduce((s, r) => s + (Number(r.total_amount) || 0), 0);
+  openBindDlg(ids, total);
+}
+function openBindDlg(ids, total){
+  S.bindIds = ids; S.bindTotal = total; S.bindSel = null; S.bindOpts = [];
+  document.getElementById('modal').innerHTML = `<h2 style="margin-bottom:8px;font-size:16px;">绑定发票到报销单</h2>
+    <p class="muted" id="bindMeta"></p>
+    <input id="bindQ" placeholder="搜索报销单号 / 提交人 / 金额" style="width:100%;margin:10px 0;"
+           oninput="onBindSearch()">
+    <div id="bindList" style="max-height:46vh;overflow:auto;border:1px solid var(--border);border-radius:8px;"></div>
+    <div style="text-align:right;margin-top:14px;">
+      <button class="btn btn-outline" onclick="closeModal()">取消</button>
+      <button class="btn" id="bindOk" onclick="confirmBind()" disabled>确认绑定</button>
+    </div>`;
+  openModal();
+  document.getElementById('bindMeta').textContent =
+    `已选 ${ids.length} 张发票，合计 ¥${total.toFixed(2)}（人工指定匹配，match_type=manual）`;
+  loadBindOpts('');
+}
+let _bindTimer = null;
+function onBindSearch(){
+  clearTimeout(_bindTimer);
+  _bindTimer = setTimeout(() => loadBindOpts(document.getElementById('bindQ').value.trim()), 300);
+}
+async function loadBindOpts(q){
+  let d;
+  try {
+    const res = await fetch('/api/report/options?q=' + encodeURIComponent(q || ''));
+    const j = await res.json();
+    d = (j && j.data) ? j.data : j;
+  } catch(e) {
+    notice('加载失败', '无法获取可绑定报销单：' + e.message);
+    return;
+  }
+  S.bindOpts = (d && d.reimburses) || [];
+  renderBindList();
+}
+function renderBindList(){
+  const box = document.getElementById('bindList');
+  if(!box) return;
+  if(!S.bindOpts.length){
+    box.innerHTML = '<p class="empty-state">没有匹配的报销单（可能均已被占用）</p>';
+    syncBindOk();
+    return;
+  }
+  box.innerHTML = S.bindOpts.map(r => {
+    const perfect = r.amount !== null && r.amount !== undefined
+      && Math.abs(Number(r.amount) - S.bindTotal) < 0.005;
+    return `<label class="bind-row${S.bindSel === r.id ? ' on' : ''}">
+      <input type="radio" name="bindReb" value="${r.id}" ${S.bindSel === r.id ? 'checked' : ''}
+             onchange="pickBind(${r.id})">
+      <span class="bind-no">${esc(r.reimburse_no || ('#' + r.id))}</span>
+      <span class="bind-amt">¥${money(r.amount)}</span>
+      <span class="muted">${esc(r.submitter || '—')}</span>
+      ${perfect ? '<span class="bind-tag">🎯 金额完美匹配</span>' : ''}
+    </label>`;
+  }).join('');
+  syncBindOk();
+}
+function pickBind(id){
+  S.bindSel = id;
+  document.querySelectorAll('#bindList .bind-row').forEach(el => {
+    el.classList.toggle('on', Number(el.querySelector('input[type=radio]').value) === id);
+  });
+  syncBindOk();
+}
+function syncBindOk(){
+  const btn = document.getElementById('bindOk');
+  if(btn) btn.disabled = !S.bindSel;
+}
+async function confirmBind(){
+  if(!S.bindSel) return;
+  const btn = document.getElementById('bindOk');
+  const ids = S.bindIds.slice();
+  const r = await reasonModal('确认绑定');
+  if(!r) return;
+  await withLoading(btn, async () => {
+    const d = await postForm('/api/report/batch-bind',
+      {invoice_ids: ids.join(','), reimburse_id: S.bindSel, operator: 'admin',
+       reason_option: r.reason_option, reason: r.reason});
+    if(d.__stale){ await handleStale(d); return; }
+    if(!d || d.ok === false){ notice('操作未生效', d.message || '绑定失败'); return; }
+    closeModal();
+    clearDashboardCache();
+    S.selInv.clear();
+    toast(d.message || '绑定成功');
+    await loadData();
+  });
+}
+
+// ---------------- 弹窗 ----------------
+function notice(title, msg){
+  document.getElementById('modal').innerHTML = `<h2 style="margin-bottom:10px;font-size:16px;">${esc(title)}</h2>
+    <p style="line-height:1.7;white-space:pre-line;">${esc(msg)}</p>
+    <div style="text-align:right;margin-top:16px;">
+      <button class="btn" onclick="closeModal()">知道了</button>
+    </div>`;
+  openModal();
+}
+
+// ---------------- 首屏 ----------------
+renderAll();
+if(S.q){
+  const u = new URL(location.href);
+  u.searchParams.set('q', S.q);
+  history.replaceState(null, '', u.toString());
+}
+</script>
 {% endblock %}

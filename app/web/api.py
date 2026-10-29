@@ -4,7 +4,8 @@ from typing import List, Optional
 
 from fastapi import APIRouter, File, Form, UploadFile
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import (FileResponse, JSONResponse, Response,
+                               StreamingResponse)
 from starlette.background import BackgroundTask
 
 from app.service import (audit_service, backup_service, category_service,
@@ -21,6 +22,12 @@ api = APIRouter(prefix="/api", tags=["api"])
 
 def _j(data):
     return {"ok": True, "data": data}
+
+
+def _stale(err) -> JSONResponse:
+    """并发失效：409 + 固定错误码，前端据此提示「该数据已失效」并刷新。"""
+    return JSONResponse(status_code=409,
+                        content={"ok": False, "code": "STALE", "message": err.message})
 
 
 # ---------------------------------------------------------------- 发票
@@ -299,13 +306,23 @@ async def run_match(operator: str = Form("admin")):
 
 
 @api.post("/match/{match_id}/confirm")
-async def confirm_match(match_id: int, operator: str = Form("admin"), note: str = Form("")):
-    return _j(match_service.confirm(match_id, operator, note))
+async def confirm_match(match_id: int, operator: str = Form("admin"),
+                        note: str = Form(""), expect_status: str = Form(""),
+                        reason_option: str = Form("")):
+    try:
+        return _j(match_service.confirm(match_id, operator, note, expect_status, reason_option))
+    except match_service.StaleError as e:
+        return _stale(e)
 
 
 @api.post("/match/{match_id}/reject")
-async def reject_match(match_id: int, operator: str = Form("admin"), note: str = Form("")):
-    return _j(match_service.reject(match_id, operator, note))
+async def reject_match(match_id: int, operator: str = Form("admin"),
+                       note: str = Form(""), expect_status: str = Form(""),
+                       reason_option: str = Form("")):
+    try:
+        return _j(match_service.reject(match_id, operator, note, expect_status, reason_option))
+    except match_service.StaleError as e:
+        return _stale(e)
 
 
 @api.post("/match/auto-correct")
@@ -314,17 +331,115 @@ async def auto_correct_match(match_id: int = Form(...), operator: str = Form("ad
 
 
 @api.post("/match/{match_id}/unmatch")
-async def unmatch_match(match_id: int, operator: str = Form("admin"), reason: str = Form("")):
-    return _j(match_service.unmatch(match_id, operator, reason))
+async def unmatch_match(match_id: int, operator: str = Form("admin"),
+                        reason: str = Form(""), expect_status: str = Form(""),
+                        reason_option: str = Form("")):
+    try:
+        return _j(match_service.unmatch(match_id, operator, reason, expect_status, reason_option))
+    except match_service.StaleError as e:
+        return _stale(e)
 
 
 @api.post("/match/manual")
 async def manual_match(invoice_id: int = Form(...), reimburse_id: int = Form(...),
-                       operator: str = Form("admin")):
-    return _j(match_service.manual_match(invoice_id, reimburse_id, operator))
+                       operator: str = Form("admin"),
+                       reason_option: str = Form(""), reason: str = Form("")):
+    return _j(match_service.manual_match(invoice_id, reimburse_id, operator, reason_option, reason))
 
 
 # ---------------------------------------------------------------- 报告
+@api.get("/report/data")
+def report_data(filter: str = "", q: str = "", page_size: int = 20, dpage: int = 1,
+                rpage: int = 1, ipage: int = 1, apage: int = 1, xpage: int = 1,
+                dsize: str = "", rsize: str = "", isize: str = "",
+                asize: str = "", xsize: str = ""):
+    """差异报告状态驱动数据包（卡片统计 + 四类清单分页）——前端操作后全量刷新入口。
+
+    dsize/rsize/isize/asize/xsize：各分页器独立的每页条数（主表与底部 Tab 互不干扰）。
+    """
+    from app.web.pages import _norm_page_size
+    sizes = {"dpage": dsize, "rpage": rsize, "ipage": isize,
+             "apage": asize, "xpage": xsize}
+    return _j(report_service.report_payload(
+        filter=filter or "", q=(q or "").strip(), page_size=_norm_page_size(page_size),
+        dpage=dpage, rpage=rpage, ipage=ipage, apage=apage, xpage=xpage,
+        page_sizes=sizes))
+
+
+@api.get("/report/options")
+def report_options(q: str = ""):
+    """差异报告绑定向导下拉：未占用报销单（支持关键词搜索）。"""
+    keyword = (q or "").strip().lower()
+    reb_rows = match_service.matchable_options()["reimburses"]
+    if keyword:
+        reb_rows = [r for r in reb_rows
+                    if keyword in " ".join(str(r.get(k) or "") for k in
+                                           ("reimburse_no", "submitter", "expense_type", "amount")).lower()]
+    return _j({
+        "reimburses": [{"id": r["id"], "reimburse_no": r["reimburse_no"],
+                        "amount": _num_or_none(r.get("amount")),
+                        "submitter": r.get("submitter") or "",
+                        "expense_type": r.get("expense_type") or ""}
+                       for r in reb_rows],
+    })
+
+
+def _num_or_none(v):
+    """报销金额字符串 -> float（前端做汇总金额比对），空值返回 None。"""
+    if v is None or str(v).strip() == "":
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+@api.post("/report/quick-fix")
+async def report_quick_fix(
+    match_id: int = Form(None), invoice_id: int = Form(None),
+    reimburse_id: int = Form(None),
+    invoice_no: str = Form(""), invoice_total: str = Form(""),
+    reb_amount: str = Form(""), reb_invoice_no: str = Form(""),
+    reb_expense_type: str = Form(""),
+    category: str = Form(""), force_bind: int = Form(0),
+    operator: str = Form("admin"), reason: str = Form(""),
+    expect_status: str = Form(""), reason_option: str = Form(""),
+):
+    """快捷修复：单点重匹配（改金额/补票号/改分类/强制绑定）。"""
+    inv_fields, reb_fields = {}, {}
+    if invoice_no.strip():
+        inv_fields["invoice_no"] = invoice_no.strip()
+    if invoice_total.strip():
+        inv_fields["total_amount"] = invoice_total.strip()
+    if reb_amount.strip():
+        reb_fields["amount"] = reb_amount.strip()
+    if reb_invoice_no.strip():
+        reb_fields["invoice_no"] = reb_invoice_no.strip()
+    if reb_expense_type.strip():
+        reb_fields["expense_type"] = reb_expense_type.strip()
+    try:
+        return _j(match_service.quick_fix(
+            match_id=match_id, invoice_id=invoice_id, reimburse_id=reimburse_id,
+            inv_fields=inv_fields, reb_fields=reb_fields,
+            category=category.strip(), force_bind=bool(force_bind),
+            operator=operator, reason=reason, expect_status=expect_status,
+            reason_option=reason_option))
+    except match_service.StaleError as e:
+        return _stale(e)
+
+
+@api.post("/report/batch-bind")
+async def report_batch_bind(invoice_ids: str = Form(""), reimburse_id: int = Form(...),
+                            operator: str = Form("admin"),
+                            reason_option: str = Form(""), reason: str = Form("")):
+    """未报销发票批量绑定到报销单（复用人工匹配存法，match_type=manual）。"""
+    ids = [int(x) for x in invoice_ids.split(",") if x.strip().isdigit()]
+    try:
+        return _j(match_service.manual_batch_bind(ids, reimburse_id, operator, reason_option, reason))
+    except match_service.StaleError as e:
+        return _stale(e)
+
+
 @api.get("/invoices/export")
 def export_invoices(status: str = "", q: str = "", ids: str = ""):
     from datetime import datetime
@@ -340,11 +455,12 @@ def export_invoices(status: str = "", q: str = "", ids: str = ""):
 
 
 @api.get("/report/export")
-def export_report():
-    report = report_service.build_report()
-    content = report_service.export_excel(report)
-    return Response(
-        content,
+def export_report(filter: str = "", q: str = "", cols: str = ""):
+    """流式导出差异报告：与当前视图（筛选/关键词/可见列）保持一致。"""
+    col_keys = [c.strip() for c in cols.split(",") if c.strip()] or None
+    stream = report_service.export_excel_stream(filter or "", (q or "").strip(), col_keys)
+    return StreamingResponse(
+        stream,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": 'attachment; filename="report.xlsx"'},
     )
@@ -453,8 +569,19 @@ async def resolve_conflict(reimburse_id: int, mode: str = Form(...),
 
 # ---------------------------------------------------------------- 审计日志（模块六）
 @api.get("/audit")
-def audit_list(limit: int = 100, target_type: str = ""):
-    return _j(audit_service.list_recent(limit, target_type or None))
+def audit_list(limit: int = 100, target_type: str = "", action: str = "",
+               keyword: str = "", date_from: str = "", date_to: str = "",
+               page: int = 1, page_size: int = 20):
+    return _j(audit_service.list_recent(
+        limit=limit,
+        target_type=target_type or None,
+        action=action or None,
+        keyword=keyword or None,
+        date_from=date_from or None,
+        date_to=date_to or None,
+        page=page,
+        page_size=page_size,
+    ))
 
 
 # ---------------------------------------------------------------- 设置

@@ -579,6 +579,47 @@ def _filter_away_amount_noise(s: str) -> str:
     return " ".join(kept)
 
 
+# ---- 无票号交通票据（打车票/行程单）的票面特征 ----
+# 车牌号：优先取「车牌号」标签后的值，退化到文本中任意合法车牌
+_RE_PLATE = re.compile(r"(?:车牌号?|车辆牌号)\s*[:：]?\s*([\u4e00-\u9fa5][A-Z][A-Z0-9]{4,7})")
+_RE_PLATE_FREE = re.compile(
+    r"([京津沪渝冀豫云辽黑湘皖鲁新苏浙赣鄂桂甘晋蒙陕吉闽贵粤青藏川宁琼][A-Z][A-Z0-9]{4,7})")
+# 上下车/用车时间：带标签优先
+_RE_RIDE_TIME = re.compile(
+    r"(?:上车时间|下车时间|乘车时间|用车时间|行程时间|出发时间|乘车日期|用车日期)"
+    r"\s*[:：]?\s*(\d{4}[-/.年]\d{1,2}[-/.月]\d{1,2}日?(?:\s*\d{1,2}[:：]\d{2}(?::\d{2})?)?)")
+# 交通票据常见关键词：命中才把原文作为「票面文字」收纳，避免普通发票误入
+_TRAFFIC_HINTS = ("出租", "打车", "网约车", "客运", "滴滴", "行程", "用车", "乘车",
+                  "上车", "下车", "车牌", "里程", "起步价", "高速")
+
+
+def _iso_date(raw: str) -> str:
+    """把「2026年8月25日」「2026/8/25」等写法归一为 YYYY-MM-DD。"""
+    m = re.match(r"\s*(\d{4})[年\-/.](\d{1,2})[月\-/.](\d{1,2})", str(raw or ""))
+    if not m:
+        return ""
+    return "%s-%02d-%02d" % (m.group(1), int(m.group(2)), int(m.group(3)))
+
+
+def _extract_traffic(text: str, dto: InvoiceDTO) -> None:
+    """提取无票号票据的车牌号 / 上下车时间 / 票面文字（无发票号场景匹配用）。
+
+    无开票日期时，用乘车日期兜底（打车票通常只打印乘车时间）。
+    """
+    m = _RE_PLATE.search(text) or _RE_PLATE_FREE.search(text)
+    if m:
+        dto.plate_no = m.group(1)
+    m = _RE_RIDE_TIME.search(text)
+    if m:
+        dto.ride_time = m.group(1).strip()
+        iso = _iso_date(dto.ride_time)
+        if iso and not dto.invoice_date:
+            dto.invoice_date = iso
+    if any(h in text for h in _TRAFFIC_HINTS):
+        # 保留原文供「事由/起止地点」做模糊碰撞（限长，避免 raw_json 膨胀）
+        dto.traffic_text = re.sub(r"\s+", " ", text).strip()[:300]
+
+
 def extract_fields_from_text(text: str) -> InvoiceDTO:
     """从发票文本（PDF 文本层 / OCR 结果）中抽取字段。
 
@@ -629,6 +670,8 @@ def extract_fields_from_text(text: str) -> InvoiceDTO:
     # 项目名称（完整处理折行 + 多商品 + 金额列剥离）
     # 策略：找到所有 *税收分类* 所在行，向下收集折行，剥掉金额列后合并
     dto.item_summary = _extract_item_summary_block(text)
+    # 无票号交通票据特征（车牌号 / 上下车时间 / 票面文字）
+    _extract_traffic(text, dto)
     return dto
 
 

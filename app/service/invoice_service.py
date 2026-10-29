@@ -218,6 +218,15 @@ def _import_one(file_name: str, content: bytes, operator: str) -> dict:
             alias = alias_repo.get(conn, result.dto.item_summary or "")
             if alias:
                 result.dto.item_summary = alias
+            # 无票号票据特征（车牌号 / 上下车时间 / 票面文字）随 raw_json 持久化，
+            # 匹配时由 _inv_dto 回读，供「业务特征碰撞」使用
+            if (result.dto.plate_no or result.dto.ride_time
+                    or result.dto.traffic_text):
+                raw["traffic"] = {
+                    "plate_no": result.dto.plate_no,
+                    "ride_time": result.dto.ride_time,
+                    "text": result.dto.traffic_text,
+                }
             t_u = time.perf_counter()
             invoice_repo.update(conn, invoice_id, {
                 **_row_fields_from_dto(result.dto),

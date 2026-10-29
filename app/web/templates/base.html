@@ -540,6 +540,44 @@ function promptDlg(msg, def=''){
     input.onkeydown = e=>{if(e.key==='Enter'){e.preventDefault();document.getElementById('pfOk').click();}};
   });
 }
+// 人工干预强制原因选择（模块二）：确认/拒绝/解除/人工绑定/强制修复都必须选择依据
+const REASON_OPTIONS = ['业务人员已确认', '员工补了凭证', '票号填错已核实', '特殊情况'];
+// 返回 Promise<{reason_option, reason}|null>；选「特殊情况」时详细说明必填，未填则确认按钮置灰
+function reasonModal(title){
+  return new Promise(resolve=>{
+    const bg = document.getElementById('modalBg');
+    const dlg = document.createElement('div');
+    dlg.className = 'modal';
+    dlg.style.width = '460px';
+    dlg.style.display = 'block';
+    bg.style.display = 'block';
+    const done = v=>{ dlg.remove(); bg.style.display='none'; bg.onclick=()=>closeModal(); resolve(v); };
+    dlg.innerHTML = '<h2 style="margin-bottom:12px;font-size:16px;">' + (title||'请选择原因') + '</h2>'
+      + '<label class="muted" style="display:block;margin-bottom:6px;">原因（必选）</label>'
+      + '<select id="rmOpt" style="width:100%;padding:6px 10px;border:1px solid var(--border);border-radius:6px;">'
+      + '<option value="">— 请选择 —</option>'
+      + REASON_OPTIONS.map(o=>'<option value="'+o+'">'+o+'</option>').join('')
+      + '</select>'
+      + '<div id="rmCustomWrap" style="display:none;margin-top:10px;">'
+      + '<label class="muted" style="display:block;margin-bottom:6px;">详细说明（必填）</label>'
+      + '<textarea id="rmCustom" rows="3" style="width:100%;padding:6px 10px;border:1px solid var(--border);border-radius:6px;" placeholder="请说明具体情况..."></textarea>'
+      + '</div>'
+      + '<div style="text-align:right;margin-top:14px;">'
+      + '<button class="btn btn-outline" id="rmCancel">取消</button> '
+      + '<button class="btn" id="rmOk" disabled>确认</button></div>';
+    document.body.appendChild(dlg);
+    const opt = dlg.querySelector('#rmOpt');
+    const wrap = dlg.querySelector('#rmCustomWrap');
+    const custom = dlg.querySelector('#rmCustom');
+    const ok = dlg.querySelector('#rmOk');
+    const sync = ()=>{ ok.disabled = !opt.value || (opt.value==='特殊情况' && !custom.value.trim()); };
+    opt.onchange = ()=>{ wrap.style.display = opt.value==='特殊情况' ? 'block' : 'none'; sync(); };
+    custom.oninput = sync;
+    dlg.querySelector('#rmCancel').onclick = ()=>done(null);
+    ok.onclick = ()=>done({reason_option: opt.value, reason: custom.value.trim()});
+    bg.onclick = ()=>done(null);
+  });
+}
 // ---- 底部分页：保留现有筛选参数，仅改写目标页码参数 ----
 function pagerGo(param, page){
   const u = new URL(location.href);
