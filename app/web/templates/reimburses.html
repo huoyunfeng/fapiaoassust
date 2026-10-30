@@ -148,8 +148,16 @@
       <option value="matched" {% if status=='matched' %}selected{% endif %}>已匹配</option>
     </select>
     <input name="q" value="{{ q }}" placeholder="单号/提交人/费用类型">
+    {# 冷热分离：默认只查近 1 年（按报销日期），可切换全部历史 #}
+    <select name="range" title="数据时间范围（按报销日期，非导入时间）">
+      <option value="1y" {% if range_mode == '1y' %}selected{% endif %}>近1年</option>
+      <option value="all" {% if range_mode == 'all' %}selected{% endif %}>全部历史</option>
+    </select>
     <button class="btn btn-sm">筛选</button>
   </form>
+  {% if range_mode == '1y' %}
+  <div class="muted" style="margin-top:8px;">当前仅显示报销日期在 {{ range_since }} 之后的报销单（按业务发生时间，补录历史数据不会被系统导入时间过滤）；切换「全部历史」可查看更早数据。</div>
+  {% endif %}
 </div>
 
 <div class="card table-card" style="position:relative;">

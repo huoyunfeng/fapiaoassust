@@ -1,8 +1,9 @@
 """UI 层 - 页面路由（Jinja2 服务端渲染）。只做展示与交互，不含业务规则。"""
 import json
+from datetime import date, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from pathlib import Path
@@ -37,6 +38,41 @@ MATCH_TYPE_CN = {
 }
 templates.env.filters["match_type_cn"] = lambda s: MATCH_TYPE_CN.get(s, s)
 templates.env.filters["fromjson"] = lambda s: (json.loads(s) if isinstance(s, str) and s else (s if isinstance(s, dict) else {}))
+# 业务规则中文展示（设置页规则列表）
+RULE_TYPE_CN = {
+    "buyer_tax_no": "购买方税号白名单", "seller_blacklist": "销方黑名单",
+    "sensitive_words": "敏感词拦截", "period": "开票日期范围",
+    "amount": "金额区间", "cross_period": "跨期限制",
+    "red_flush": "红冲拦截", "dedup": "红冲拦截", "custom": "自定义",
+}
+RULE_SCOPE_CN = {"invoice": "单张发票", "reimburse": "单笔报销单"}
+RULE_ACTION_CN = {"block": "阻断", "warn": "警告"}
+templates.env.filters["rule_type_cn"] = lambda s: RULE_TYPE_CN.get(s, s)
+templates.env.filters["rule_scope_cn"] = lambda s: RULE_SCOPE_CN.get(s, s)
+templates.env.filters["rule_action_cn"] = lambda s: RULE_ACTION_CN.get(s, s)
+
+
+def _rule_cfg_cn(cfg) -> str:
+    """规则配置一栏的人话摘要（不展示 JSON）。"""
+    if not isinstance(cfg, dict):
+        return "—"
+    tags = cfg.get("tax_nos") or cfg.get("sellers") or cfg.get("words")
+    if tags:
+        return "、".join(str(t) for t in tags)
+    lo, hi = cfg.get("min"), cfg.get("max")
+    if lo not in (None, "") and hi not in (None, ""):
+        return f"{lo} ~ {hi} 元"
+    if lo not in (None, ""):
+        return f"不低于 {lo} 元"
+    if hi not in (None, ""):
+        return f"不超过 {hi} 元"
+    start, end = cfg.get("start"), cfg.get("end")
+    if start or end:
+        return f"{start or '不限'} ~ {end or '不限'}"
+    return "—"
+
+
+templates.env.filters["rule_cfg_cn"] = _rule_cfg_cn
 
 
 # ---------------------------------------------------------------- 分页
@@ -84,9 +120,20 @@ def dashboard(request: Request):
     })
 
 
+def _range_since(range_: str) -> Optional[str]:
+    """列表冷热分离下界：默认近 1 年（业务日期口径），range=all 时取全部历史。
+
+    只用于列表查询，绝不按系统导入时间过滤——补录的历史发票/报销单必须仍可见。
+    """
+    if (range_ or "").strip().lower() == "all":
+        return None
+    return (date.today() - timedelta(days=365)).isoformat()
+
+
 @pages.get("/invoices", response_class=HTMLResponse)
 def invoices_page(request: Request, status: str = "", q: str = "",
                   category: str = "", date_from: str = "", date_to: str = "",
+                  range_: str = Query("1y", alias="range"),
                   page: int = 1, page_size: int = 20, focus_id: int = 0):
     # 路由联动语义参数：unmatched 映射为 NORMAL（未匹配发票 = NORMAL 状态）
     if status == "unmatched":
@@ -95,25 +142,31 @@ def invoices_page(request: Request, status: str = "", q: str = "",
     status_f, kw = status or None, q or None
     category_f = category or None
     date_from_f, date_to_f = date_from or None, date_to or None
+    since = _range_since(range_)
     total = invoice_service.count_invoices(status=status_f, keyword=kw,
                                            category=category_f,
-                                           date_from=date_from_f, date_to=date_to_f)
+                                           date_from=date_from_f, date_to=date_to_f,
+                                           since=since)
     # focus 定位：目标行可能不在第 1 页，先算它所在的页码
     if focus_id:
         page = invoice_service.page_of_invoice(focus_id, status_f, kw, page_size,
                                                category=category_f,
                                                date_from=date_from_f,
-                                               date_to=date_to_f) or page
+                                               date_to=date_to_f,
+                                               since=since) or page
     pages_n = max(1, (total + page_size - 1) // page_size)
     page = min(max(1, page), pages_n)
     rows = invoice_service.list_invoices(status=status_f, keyword=kw,
                                          category=category_f,
                                          date_from=date_from_f, date_to=date_to_f,
-                                         limit=page_size, offset=(page - 1) * page_size)
+                                         limit=page_size, offset=(page - 1) * page_size,
+                                         since=since)
     return templates.TemplateResponse(request, "invoices.html", {
         "request": request, "rows": rows,
         "status": status, "q": q,
         "category": category, "date_from": date_from, "date_to": date_to,
+        "range_mode": "all" if since is None else "1y",
+        "range_since": since or "",
         "categories": category_service.enabled_names(),
         "counts": invoice_service.invoice_status_counts(),
         "pager": {"total": total, "page": page, "pages": pages_n,
@@ -133,14 +186,16 @@ def invoice_detail_page(request: Request, invoice_id: int):
 
 @pages.get("/reimburses", response_class=HTMLResponse)
 def reimburses_page(request: Request, batch_id: Optional[str] = None, q: str = "",
-                    status: str = "", page: int = 1, page_size: int = 20,
-                    focus_id: int = 0):
+                    status: str = "", range_: str = Query("1y", alias="range"),
+                    page: int = 1, page_size: int = 20, focus_id: int = 0):
     batches = reimburse_service.list_batches()
     # 默认激活最新批次：仅在 URL 完全没有 batch_id 参数时生效；
     # ?batch_id=（空串）是用户显式选择「全部批次」，不覆盖
     if batch_id is None:
         batch_id = batches[0]["batch_id"] if batches else ""
-    rows = reimburse_service.list_reimburses(batch_id=batch_id or None, keyword=q or None)
+    since = _range_since(range_)
+    rows = reimburse_service.list_reimburses(batch_id=batch_id or None,
+                                             keyword=q or None, since=since)
     # 路由联动语义参数：按匹配状态过滤（matched 口径与差异报告一致）
     if status == "unmatched":
         rows = [r for r in rows if not r.get("matched")]
@@ -176,6 +231,8 @@ def reimburses_page(request: Request, batch_id: Optional[str] = None, q: str = "
         "batch_id": batch_id, "q": q, "status": status, "columns": columns,
         "pager": pager, "categories": category_service.enabled_names(),
         "all_batches": all_batches,
+        "range_mode": "all" if since is None else "1y",
+        "range_since": since or "",
     })
 
 
@@ -368,13 +425,19 @@ def report_page(request: Request, page_size: int = 20, filter: str = "", q: str 
 def settings_page(request: Request):
     from app.repository import db
     from app.repository.repos import company_repo, rule_repo
+    from app.service import backup_service
     with db.read() as conn:
         companies = company_repo.list(conn)
         rules = rule_repo.list_all(conn)
+    core_rules = [r for r in rules if r.get("is_core")]
     return templates.TemplateResponse(request, "settings.html", {
-        "request": request, "companies": companies, "rules": rules,
+        "request": request, "companies": companies,
+        "rules": [r for r in rules if not r.get("is_core")],
+        "core_rules": core_rules,
         "categories": category_service.list_categories(include_disabled=True),
         # 首页仅展示最新 10 条概览；完整日志由前端通过 /api/audit 动态加载
         "audit_logs": audit_service.list_recent(limit=10)["items"],
+        # 附件容量监控（uploads 物理体积，超过 5GB 时页面黄色预警）
+        "storage": backup_service.storage_usage(),
     })
 

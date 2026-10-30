@@ -45,6 +45,12 @@ td.num{font-variant-numeric:tabular-nums;}
 .badge-orange{background:#ffedd5;color:#9a3412;}.badge-blue{background:#dbeafe;color:#1e40af;}
 .badge-purple{background:#f3e8ff;color:#6b21a8;}.badge-gray{background:#f3f4f6;color:#4b5563;}
 .badge-yellow{background:#fef3c7;color:#92400e;border:1px solid #fcd34d;}
+/* 写操作按钮 Loading：点击后立即禁用并显示转圈，直到接口返回 */
+.btn.is-loading,.btn.is-loading:hover{opacity:.75;cursor:progress;filter:none;}
+.btn-spin{display:inline-block;width:10px;height:10px;margin-right:6px;vertical-align:-1px;
+  border:2px solid currentColor;border-right-color:transparent;border-radius:50%;
+  animation:btnSpin .7s linear infinite;}
+@keyframes btnSpin{to{transform:rotate(360deg);}}
 /* 费用分类标签：分类名 + 确认状态（已确认绿 / 待确认黄），可点击修改 */
 .cat-tag{display:inline-flex;align-items:center;gap:4px;border-radius:999px;padding:2px 9px;font-size:12px;
   cursor:pointer;border:1px solid transparent;white-space:nowrap;line-height:1.6;}
@@ -201,6 +207,79 @@ async function post(url, data, opts){
   }finally{ clearTimeout(timer); busyDone(); }
 }
 function submitForm(e,url,after,title){e.preventDefault();post(url,e.target,{title}).then(j=>{if(!j.data||j.data.ok!==false){if(after)after(j);else location.reload();}});return false;}
+
+// ---- 全局防连击 / 防重复提交（所有写操作按钮 + 跨标签页写入锁）----
+// 1) 点击按钮瞬间：按钮进入 Loading（转圈 + disabled），接口返回后恢复；
+// 2) 写请求（POST/PUT/PATCH/DELETE）在 localStorage 上加跨标签页写锁，
+//    另一标签页同时提交会被拦截，避免重复入库。
+const _FP_TAB_ID = (() => {
+  try{ let v = sessionStorage.getItem('fp_tab_id');
+    if(!v){ v = 't' + Date.now() + Math.random().toString(36).slice(2,8); sessionStorage.setItem('fp_tab_id', v); }
+    return v;
+  }catch(e){ return 't0'; }
+})();
+const _FP_WRITE_LOCK = 'fp_write_lock';
+let _lastActionBtn = null, _lastActionAt = 0;
+document.addEventListener('click', function(e){
+  const b = e.target.closest('button, a.btn, input[type=submit]');
+  if(b && !b.disabled){ _lastActionBtn = b; _lastActionAt = Date.now(); }
+}, true);
+
+function btnBusy(btn, on){
+  if(!btn) return;
+  if(on){
+    if(btn._busy) return;
+    btn._busy = true; btn._busyHtml = btn.innerHTML;
+    btn.disabled = true; btn.classList.add('is-loading');
+    btn.innerHTML = '<span class="btn-spin"></span>' + btn._busyHtml;
+  }else{
+    if(!btn._busy) return;
+    btn._busy = false; btn.disabled = false; btn.classList.remove('is-loading');
+    if(btn._busyHtml !== undefined) btn.innerHTML = btn._busyHtml;
+  }
+}
+
+function _writeLocked(){
+  try{
+    const raw = localStorage.getItem(_FP_WRITE_LOCK);
+    if(!raw) return false;
+    const d = JSON.parse(raw);
+    if(!d || !d.tab || d.tab === _FP_TAB_ID) return false;
+    if(Date.now() - (d.t || 0) > 60000) return false;   // 过期锁自动失效（防标签页崩溃后死锁）
+    return true;
+  }catch(e){ return false; }
+}
+function _blockedResponse(msg){
+  return new Response(JSON.stringify({ok:false, message:msg}),
+    {status:200, headers:{'Content-Type':'application/json; charset=utf-8'}});
+}
+
+const _nativeFetch = window.fetch.bind(window);
+window.fetch = async function(input, init){
+  const url = (typeof input === 'string') ? input : ((input && input.url) || '');
+  const method = String((init && init.method) || (input && input.method) || 'GET').toUpperCase();
+  const isWrite = ['POST','PUT','PATCH','DELETE'].includes(method);
+  if(!isWrite) return _nativeFetch(input, init);
+
+  if(_writeLocked()){
+    return _blockedResponse('另一标签页正在提交写操作，请稍候再试');
+  }
+  // 仅当最近一次点击确实来自某个按钮时才接管它的 Loading 状态
+  const btn = (_lastActionBtn && Date.now() - _lastActionAt < 2000) ? _lastActionBtn : null;
+  _lastActionBtn = null;
+  btnBusy(btn, true);
+  try{ localStorage.setItem(_FP_WRITE_LOCK, JSON.stringify({tab:_FP_TAB_ID, t:Date.now(), url})); }catch(e){}
+  try{
+    return await _nativeFetch(input, init);
+  }finally{
+    try{
+      const raw = localStorage.getItem(_FP_WRITE_LOCK);
+      const d = raw ? JSON.parse(raw) : null;
+      if(!d || d.tab === _FP_TAB_ID) localStorage.removeItem(_FP_WRITE_LOCK);
+    }catch(e){}
+    btnBusy(btn, false);
+  }
+};
 function openModal(){document.getElementById('modalBg').style.display='block';document.getElementById('modal').style.display='block';}
 function closeModal(){document.getElementById('modalBg').style.display='none';document.getElementById('modal').style.display='none';}
 // 下拉菜单：操作列【操作】按钮展开，挂载到 body 用 fixed 定位（避免被表格 overflow 截断），点击外部/滚动时收起

@@ -114,8 +114,14 @@ class RuleDTO:
     """业务规则（来自 rule 表）。"""
     id: int = 0
     name: str = ""
-    rule_type: str = ""        # buyer_tax_no / period / amount / dedup / custom
+    # buyer_tax_no / seller_blacklist / sensitive_words / period / amount
+    # / cross_period / red_flush / dedup(旧) / custom(旧)
+    rule_type: str = ""
+    scope: str = "invoice"     # invoice = 针对单张发票；reimburse = 针对单笔报销单
+    action: str = "block"      # block = 阻断（禁止匹配）；warn = 警告（放行并标黄）
     priority: int = 100
     stop_on_fail: bool = False
     config: dict = field(default_factory=dict)
+    tags: list = field(default_factory=list)
+    is_core: bool = False
     enabled: bool = True

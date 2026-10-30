@@ -66,9 +66,13 @@ class InvoiceRepo:
     @staticmethod
     def _filter_sql(status: str = None, keyword: str = None,
                     date_from: str = None, date_to: str = None,
-                    exclude_status: tuple = None, alias: str = "") -> tuple:
+                    exclude_status: tuple = None, since: str = None,
+                    alias: str = "") -> tuple:
         """发票列表筛选条件片段（list/count/position_of 共用，保证口径一致）。
 
+        since: 冷热分离的业务时间下界（开票日期，YYYY-MM-DD）。
+               必须按业务发生时间过滤，绝不能按系统导入时间（否则补录历史发票会丢失）；
+               无开票日期的行一律保留，避免解析缺失导致数据"消失"。
         alias: 表别名前缀（如 "i."），联表查询时避免与 match_result.status 等同名列冲突。
         """
         sql, params = "", []
@@ -93,6 +97,11 @@ class InvoiceRepo:
         if date_to:
             sql += f" AND {p}invoice_date IS NOT NULL AND {p}invoice_date <= ?"
             params.append(date_to)
+        # 冷热分离：默认只取近 1 年（按开票日期）；无日期的行保留，防止补录/解析缺失数据丢失
+        if since:
+            sql += (f" AND ({p}invoice_date IS NULL OR {p}invoice_date = ''"
+                    f" OR {p}invoice_date >= ?)")
+            params.append(since)
         return sql, params
 
     # 费用归类所需的发票 + 报销单 + 人工决策联表（一次查询，避免逐票 N+1）
@@ -125,13 +134,14 @@ class InvoiceRepo:
     def expense_rows(self, conn: sqlite3.Connection, date_from: str = None,
                      date_to: str = None, status: str = None, keyword: str = None,
                      ids: List[int] = None, exclude_status: tuple = None,
-                     light: bool = False) -> List[dict]:
+                     light: bool = False, since: str = None) -> List[dict]:
         """费用归类数据源：发票 + 生效匹配的报销单 + 人工分类决策。
 
         light=True 时只取归类必需的少量列（分类过滤用，10 万条量级省内存）。
+        since: 冷热分离下界（按开票日期，无日期行保留）。
         """
         f_sql, params = self._filter_sql(status, keyword, date_from, date_to,
-                                         exclude_status, alias="i.")
+                                         exclude_status, since, alias="i.")
         if light:
             sql = ("SELECT i.id AS id, i.item_summary AS item_summary, "
                    "i.seller_name AS seller_name, "
@@ -156,10 +166,11 @@ class InvoiceRepo:
     def list(self, conn: sqlite3.Connection, status: str = None,
              keyword: str = None, limit: int = 500, offset: int = 0,
              ids: List[int] = None, date_from: str = None,
-             date_to: str = None, exclude_status: tuple = None) -> List[dict]:
+             date_to: str = None, exclude_status: tuple = None,
+             since: str = None) -> List[dict]:
         sql, params = "SELECT * FROM invoice WHERE 1=1", []
         f_sql, f_params = self._filter_sql(status, keyword, date_from, date_to,
-                                          exclude_status)
+                                          exclude_status, since)
         sql += f_sql
         params += f_params
         if ids:
@@ -173,25 +184,27 @@ class InvoiceRepo:
     def list_id_summaries(self, conn: sqlite3.Connection, status: str = None,
                           keyword: str = None, date_from: str = None,
                           date_to: str = None,
-                          exclude_status: tuple = None) -> List[tuple]:
+                          exclude_status: tuple = None,
+                          since: str = None) -> List[tuple]:
         """只取 [(id, item_summary)]（id 升序），供分类这类派生条件在内存过滤。
 
         分类 = 用户词典 + 智能归类，无法用 SQL 表达；只取两列可避免全字段全量加载。
         """
         sql, params = "SELECT id, item_summary FROM invoice WHERE 1=1", []
         f_sql, f_params = self._filter_sql(status, keyword, date_from, date_to,
-                                          exclude_status)
+                                          exclude_status, since)
         sql += f_sql + " ORDER BY id ASC"
         params += f_params
         return [(r["id"], r["item_summary"]) for r in conn.execute(sql, params)]
 
     def count(self, conn: sqlite3.Connection, status: str = None,
               keyword: str = None, date_from: str = None,
-              date_to: str = None, exclude_status: tuple = None) -> int:
+              date_to: str = None, exclude_status: tuple = None,
+              since: str = None) -> int:
         """发票总数（与 list 同筛选口径，分页用）。"""
         sql, params = "SELECT COUNT(*) AS n FROM invoice WHERE 1=1", []
         f_sql, f_params = self._filter_sql(status, keyword, date_from, date_to,
-                                          exclude_status)
+                                          exclude_status, since)
         sql += f_sql
         params += f_params
         return conn.execute(sql, params).fetchone()["n"]
@@ -199,11 +212,11 @@ class InvoiceRepo:
     def position_of(self, conn: sqlite3.Connection, invoice_id: int,
                     status: str = None, keyword: str = None,
                     date_from: str = None, date_to: str = None,
-                    exclude_status: tuple = None) -> Optional[int]:
+                    exclude_status: tuple = None, since: str = None) -> Optional[int]:
         """按 id ASC 排序时 invoice_id 之前的行数（用于计算 focus 行所在页码）。"""
         sql, params = "SELECT COUNT(*) AS n FROM invoice WHERE id < ?", [invoice_id]
         f_sql, f_params = self._filter_sql(status, keyword, date_from, date_to,
-                                          exclude_status)
+                                          exclude_status, since)
         sql += f_sql
         params += f_params
         return conn.execute(sql, params).fetchone()["n"]
@@ -290,7 +303,9 @@ class ReimburseRepo:
         return self._to_dict(row)
 
     def list(self, conn: sqlite3.Connection, batch_id: str = None,
-             keyword: str = None, limit: int = 500, offset: int = 0) -> List[dict]:
+             keyword: str = None, limit: int = 500, offset: int = 0,
+             since: str = None) -> List[dict]:
+        """报销单列表。since: 冷热分离下界（按报销日期，无日期行保留）。"""
         sql, params = "SELECT * FROM reimburse WHERE 1=1", []
         if batch_id:
             sql += " AND batch_id = ?"
@@ -299,6 +314,10 @@ class ReimburseRepo:
             sql += " AND (reimburse_no LIKE ? OR submitter LIKE ? OR expense_type LIKE ? OR remark LIKE ?)"
             kw = f"%{keyword}%"
             params += [kw, kw, kw, kw]
+        if since:
+            sql += (" AND (reimburse_date IS NULL OR reimburse_date = ''"
+                    " OR reimburse_date >= ?)")
+            params.append(since)
         sql += " ORDER BY id DESC LIMIT ? OFFSET ?"
         params += [limit, offset]
         return [self._to_dict(r) for r in conn.execute(sql, params)]
@@ -390,14 +409,16 @@ class MatchRepo:
         cur = conn.execute(
             """INSERT INTO match_result
                (invoice_id, reimburse_id, match_type, match_score, status,
-                diff_fields, match_points, message, detail, confirmed_by, confirmed_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                diff_fields, match_points, message, warning_msg, detail,
+                confirmed_by, confirmed_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 data["invoice_id"], data.get("reimburse_id"), data["match_type"],
                 data.get("match_score", 0.0), data["status"],
                 json.dumps(data.get("diff_fields", []), ensure_ascii=False),
                 json.dumps(data.get("match_points", []), ensure_ascii=False),
                 data.get("message", ""),
+                data.get("warning_msg", ""),
                 json.dumps(data.get("detail") or {}, ensure_ascii=False),
                 data.get("confirmed_by"),
                 data.get("confirmed_at"),
@@ -660,51 +681,72 @@ class LogRepo:
 # 规则 / 公司抬头
 # =====================================================================
 class RuleRepo:
+    def _decode(self, r: sqlite3.Row) -> dict:
+        d = _row_to_dict(r)
+        d["config"] = json.loads(d.get("config") or "{}")
+        d["tags"] = json.loads(d.get("tags") or "[]")
+        d["stop_on_fail"] = bool(d.get("stop_on_fail"))
+        d["enabled"] = bool(d.get("enabled"))
+        d["is_core"] = bool(d.get("is_core"))
+        return d
+
     def list_enabled(self, conn: sqlite3.Connection) -> List[dict]:
         rows = conn.execute(
-            "SELECT * FROM rule WHERE enabled = 1 ORDER BY priority ASC"
+            "SELECT * FROM rule WHERE enabled = 1 ORDER BY priority ASC, id ASC"
         )
-        out = []
-        for r in rows:
-            d = _row_to_dict(r)
-            d["config"] = json.loads(d.get("config") or "{}")
-            out.append(d)
-        return out
+        return [self._decode(r) for r in rows]
 
     def list_all(self, conn: sqlite3.Connection) -> List[dict]:
         rows = conn.execute("SELECT * FROM rule ORDER BY priority ASC, id ASC")
-        out = []
-        for r in rows:
-            d = _row_to_dict(r)
-            d["config"] = json.loads(d.get("config") or "{}")
-            out.append(d)
-        return out
+        return [self._decode(r) for r in rows]
 
     def get(self, conn: sqlite3.Connection, rid: int) -> Optional[dict]:
         row = conn.execute("SELECT * FROM rule WHERE id = ?", (rid,)).fetchone()
-        d = _row_to_dict(row)
-        if d:
-            d["config"] = json.loads(d.get("config") or "{}")
-        return d
+        return self._decode(row) if row else None
 
     def insert(self, conn: sqlite3.Connection, data: dict) -> int:
         cur = conn.execute(
-            "INSERT INTO rule (name, rule_type, priority, stop_on_fail, config, enabled) VALUES (?, ?, ?, ?, ?, ?)",
-            (data["name"], data["rule_type"], data.get("priority", 100),
+            """INSERT INTO rule
+               (name, rule_type, scope, action, priority, stop_on_fail,
+                config, tags, is_core, enabled)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (data["name"], data["rule_type"],
+             data.get("scope") or "invoice", data.get("action") or "block",
+             data.get("priority", 100),
              1 if data.get("stop_on_fail") else 0,
              json.dumps(data.get("config") or {}, ensure_ascii=False),
+             json.dumps(data.get("tags") or [], ensure_ascii=False),
+             1 if data.get("is_core") else 0,
              1 if data.get("enabled", True) else 0),
         )
         return cur.lastrowid
 
     def update(self, conn: sqlite3.Connection, rid: int, data: dict) -> None:
         conn.execute(
-            "UPDATE rule SET name = ?, rule_type = ?, priority = ?, stop_on_fail = ?, config = ?, enabled = ? WHERE id = ?",
-            (data["name"], data["rule_type"], data.get("priority", 100),
+            """UPDATE rule SET name = ?, rule_type = ?, scope = ?, action = ?,
+               priority = ?, stop_on_fail = ?, config = ?, tags = ?, is_core = ?,
+               enabled = ? WHERE id = ?""",
+            (data["name"], data["rule_type"],
+             data.get("scope") or "invoice", data.get("action") or "block",
+             data.get("priority", 100),
              1 if data.get("stop_on_fail") else 0,
              json.dumps(data.get("config") or {}, ensure_ascii=False),
+             json.dumps(data.get("tags") or [], ensure_ascii=False),
+             1 if data.get("is_core") else 0,
              1 if data.get("enabled", True) else 0, rid),
         )
+
+    def next_priority(self, conn: sqlite3.Connection) -> int:
+        """自定义规则的下一个优先级：按 10/20/30… 递增（核心规则 1~4 不参与）。"""
+        row = conn.execute(
+            "SELECT MAX(priority) AS p FROM rule WHERE is_core = 0").fetchone()
+        return int((row["p"] or 0) + 10)
+
+    def reorder(self, conn: sqlite3.Connection, ids: List[int]) -> None:
+        """按传入顺序重排自定义规则优先级（10/20/30…）。"""
+        for idx, rid in enumerate(ids):
+            conn.execute("UPDATE rule SET priority = ? WHERE id = ? AND is_core = 0",
+                         ((idx + 1) * 10, rid))
 
     def delete(self, conn: sqlite3.Connection, rid: int) -> None:
         conn.execute("DELETE FROM rule WHERE id = ?", (rid,))

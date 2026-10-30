@@ -1,5 +1,10 @@
 {% extends "base.html" %}
 {% block content %}
+<style>
+/* 警告放行（规则 action=warn）：黄色提示条，不阻断匹配 */
+.sg-warn{background:#fffbeb;border:1px solid #fcd34d;color:#92400e;border-radius:6px;
+  padding:4px 8px;margin-bottom:4px;white-space:normal;line-height:1.5;}
+</style>
 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
   <h1 style="font-size:20px;">匹配中心</h1>
   <form class="inline" onsubmit="submitForm(event,'/api/match/run')">
@@ -30,21 +35,28 @@
       <tr><th>状态</th><th>类型</th><th>分数</th><th>发票号</th><th>价税合计</th>
           <th>报销单号</th><th>报销金额</th><th>智能提醒</th><th>操作</th></tr>
       {% for m in pending %}
-      <tr id="row-{{ m.id }}"{% if m.soft_locked %} style="background:#fffbeb;"{% endif %}>
+      <tr id="row-{{ m.id }}"{% if m.soft_locked or m.warning_msg %} style="background:#fffbeb;"{% endif %}>
         <td><span class="badge {{ m.status|badge }}">{{ m.status|dstatus|status_cn }}</span>
-            {% if m.soft_locked %}<span class="badge badge-yellow" title="⚠️ 该发票同时被多张报销单作为候选，请核实">⚠️ 多单候选</span>{% endif %}</td>
+            {% if m.soft_locked %}<span class="badge badge-yellow" title="⚠️ 该发票同时被多张报销单作为候选，请核实">⚠️ 多单候选</span>{% endif %}
+            {% if m.warning_msg %}<span class="badge badge-yellow" title="{{ m.warning_msg }}">⚠️ 警告放行</span>{% endif %}</td>
         <td class="muted">{{ m.match_type|match_type_cn }}</td>
         <td><b>{{ '%.2f'|format(m.match_score) }}</b></td>
         <td>{{ m.invoice_no or '—' }}</td><td>{{ m.total_amount or '—' }}</td>
         <td>{% if m.reimburse_no %}{{ m.reimburse_no }}{% elif m.pair_reimburses %}汇总: {% for r in m.pair_reimburses %}{{ r.reimburse_no }} {% endfor %}{% else %}—{% endif %}</td>
         <td>{{ m.reimburse_amount or '—' }}</td>
-        <td class="wrap muted">{{ m.message }}</td>
+        <td class="wrap muted">
+          {% if m.warning_msg %}<div class="sg-warn" title="{{ m.warning_msg }}">⚠️ {{ m.warning_msg }}</div>{% endif %}
+          {{ m.message }}
+        </td>
         <td>
           <div class="dropdown">
             <button class="btn btn-sm btn-outline action-btn" onclick="toggleDropdown(this)">操作 ▾</button>
             <div class="dropdown-menu">
               <button onclick="window.open('/matches/{{ m.id }}/compare','_blank')">并排比对</button>
               <button onclick="autoCorrect({{ m.id }})">一键更正</button>
+              {% if m.status in ('UNMATCHED','SUSPICIOUS') %}
+              <button class="danger" onclick="exemptFn({{ m.id }})">临时豁免</button>
+              {% endif %}
               <button class="danger" onclick="act('reject',{{ m.id }})">拒绝</button>
             </div>
           </div>
@@ -63,8 +75,9 @@
       <tr><th>状态</th><th>类型</th><th>分数</th><th>发票号</th><th>价税合计</th>
           <th>报销单号</th><th>确认人</th><th>时间</th><th>操作</th></tr>
       {% for m in active %}
-      <tr id="row-{{ m.id }}">
-        <td><span class="badge {{ m.status|badge }}">{{ m.status|dstatus|status_cn }}</span></td>
+      <tr id="row-{{ m.id }}"{% if m.warning_msg %} style="background:#fffbeb;"{% endif %}>
+        <td><span class="badge {{ m.status|badge }}">{{ m.status|dstatus|status_cn }}</span>
+            {% if m.warning_msg %}<span class="badge badge-yellow" title="{{ m.warning_msg }}">⚠️ 警告放行</span>{% endif %}</td>
         <td class="muted">{{ m.match_type|match_type_cn }}</td>
         <td>{{ '%.2f'|format(m.match_score) }}</td>
         <td>{{ m.invoice_no }}</td><td>{{ m.total_amount }}</td>
@@ -198,6 +211,21 @@ async function unmatchFn(id){
   fd.set('reason_option', r.reason_option);
   fd.set('operator','admin');
   post(`/api/match/${id}/unmatch`,fd).then(()=>location.reload());
+}
+// 临时豁免：强制绑定被业务规则阻断的匹配，理由必填（后端强制写审计日志）
+async function exemptFn(id){
+  closeAllDropdowns();
+  const ok = await confirmDlg('临时豁免将跳过业务规则阻断、强制绑定该发票，并记入审计日志。是否继续？');
+  if(!ok) return;
+  const reason = await promptDlg('请填写临时豁免理由（必填，将写入审计日志）：', '');
+  if(!reason || !reason.trim()){ toast('临时豁免必须填写理由', false); return; }
+  const fd = new FormData();
+  fd.set('operator','admin');
+  fd.set('reason', reason.trim());
+  post(`/api/matches/${id}/exempt`, fd).then(j=>{
+    const d = (j && j.data) ? j.data : j;
+    if(d && d.ok !== false) setTimeout(()=>location.reload(), 400);
+  });
 }
 // 人工指定匹配：必须选择绑定依据（模块二）
 async function manualMatch(ev){

@@ -9,18 +9,23 @@ from decimal import Decimal
 from typing import Dict, List, Optional
 
 from app.config import settings
-from app.domain.dto import InvoiceDTO, ReimburseDTO
+from app.domain.dto import InvoiceDTO, ReimburseDTO, RuleDTO
 from app.domain.features import with_reimburse_features
 from app.domain.matcher import MatchEngine, PairScore
 from app.domain.normalize import to_decimal
+from app.domain.rules_engine import RuleEngine
 from app.infra.logger import get_logger
 from app.repository import db
 from app.repository.repos import (category_repo, company_repo, invoice_repo,
-                                  match_repo, reimburse_repo)
+                                  match_repo, reimburse_repo, rule_repo)
 from app.service.status_flow import change_invoice_status
 
 logger = get_logger(__name__)
 _engine = MatchEngine()
+_rule_engine = RuleEngine()
+
+# 规则阻断的统一前缀（前端弹窗原样展示）
+RULE_BLOCK_PREFIX = "× 匹配失败："
 
 # 匹配类型常量（与 match_result.CHECK 约束一致）
 T_EXACT, T_COMPOSITE, T_FUZZY = "exact", "composite", "fuzzy"
@@ -106,6 +111,49 @@ def _strip_note(text: Optional[str]) -> str:
     return text[:idx].rstrip() if idx >= 0 else text
 
 
+# ---------------------------------------------------------------- 业务规则安检
+def _load_rules(conn) -> List[RuleDTO]:
+    return [RuleDTO(id=r["id"], name=r["name"], rule_type=r["rule_type"],
+                    scope=r.get("scope") or "invoice",
+                    action=r.get("action") or "block",
+                    priority=r["priority"], stop_on_fail=bool(r["stop_on_fail"]),
+                    config=r["config"], tags=r.get("tags") or [],
+                    is_core=bool(r.get("is_core")), enabled=bool(r["enabled"]))
+            for r in rule_repo.list_enabled(conn)]
+
+
+def _pair_rules(inv_dto: InvoiceDTO, reb_dto: Optional[ReimburseDTO],
+                rules: List[RuleDTO]) -> tuple:
+    """返回 (阻断文案, 警告文案)；空串表示无该项。"""
+    issues = _rule_engine.validate_pair(inv_dto, reb_dto, rules)
+    blocks = "；".join(i.message for i in issues if i.severity == "ERROR")
+    warns = "；".join(i.message for i in issues if i.severity == "WARN")
+    return blocks, warns
+
+
+def _rule_guard(conn, inv_row: dict, reb_row: Optional[dict], exempt: bool,
+                operator: str, reason: str, target_label: str) -> str:
+    """人工绑定/确认前的规则安检。
+
+    返回 "" 表示放行；否则返回阻断文案。exempt=True 时允许管理员强制绑定，
+    必须填写理由并写入审计日志。
+    """
+    blocks, _ = _pair_rules(_inv_dto(inv_row),
+                            _reb_dto(reb_row) if reb_row else None,
+                            _load_rules(conn))
+    if not blocks:
+        return ""
+    if not exempt:
+        return blocks
+    if not (reason or "").strip():
+        return "临时豁免必须填写理由"
+    from app.service import audit_service
+    audit_service.log(conn, "rule_exempt", "invoice", inv_row["id"], target_label,
+                      "规则阻断", "临时豁免",
+                      operator, f"临时豁免理由：{reason.strip()}；阻断原因：{blocks}")
+    return ""
+
+
 def _write_note(conn, reb_row: dict, notes: Optional[List[str]]) -> None:
     """把"双方同类型字段的不一致项"写入报销单备注。
 
@@ -164,6 +212,8 @@ def run_matching(operator: str = None) -> dict:
     with db.tx() as conn:
         summary["cleared"] = match_repo.delete_non_active(conn)
         company_tax_nos = company_repo.tax_nos(conn)
+        rules = _load_rules(conn)
+        block_notes: Dict[int, str] = {}   # 发票 id -> 规则阻断文案（落 UNMATCHED 时使用）
 
         # 候选集：NORMAL 且无生效匹配的发票（一次查询取已占用 id，避免逐票 N+1 查询）
         occupied_invoices = match_repo.active_invoice_ids(conn)
@@ -204,8 +254,19 @@ def run_matching(operator: str = None) -> dict:
                 ps = _engine.score_pair(inv, reb, company_tax_nos)
 
                 if ps.auto_matchable:
-                    # ----- 情况 A / B：唯一键自动匹配 -----
-                    mid = _persist_pair(conn, inv_id, reb_row["id"], ps, "MATCHED", ps.match_type)
+                    # ----- 情况 A / B：唯一键自动匹配（落库前规则安检） -----
+                    blocks, warns = _pair_rules(inv_dtos[inv_id], reb, rules)
+                    if blocks:
+                        # 规则阻断：不改发票状态，留痕待人工处理或临时豁免
+                        block_notes[inv_id] = blocks
+                        _persist_pair(conn, inv_id, reb_row["id"], ps, "UNMATCHED",
+                                      ps.match_type,
+                                      message=f"{RULE_BLOCK_PREFIX}{blocks}")
+                        has_candidate.add(inv_id)
+                        _write_note(conn, reb_row, [f"规则阻断：{blocks}"])
+                        break
+                    mid = _persist_pair(conn, inv_id, reb_row["id"], ps, "MATCHED",
+                                        ps.match_type, warning_msg=warns)
                     change_invoice_status(conn, inv_id, "MATCHED",
                                           f"第一轮唯一键直配（{ps.auto_match_reason}, match#{mid}）",
                                           operator)
@@ -247,13 +308,37 @@ def run_matching(operator: str = None) -> dict:
             ids = [i for i in sorted(available) if any(inv_dtos[i] is d for d in combo)]
             if not ids:
                 continue
-            msg = (f"汇总匹配：{len(combo)} 张发票合计等于报销单金额 {reb.amount}，"
-                   f"请人工确认归属")
+
+            # 规则安检 + 单点剔除：仅剔除违规发票，不做整单打回；
+            # 剩余发票仍满足报销金额时正常组合，否则交给第三轮人工匹配。
+            ok_ids: List[int] = []
+            warn_by_id: Dict[int, str] = {}
             for inv_id in ids:
+                blocks, warns = _pair_rules(inv_dtos[inv_id], reb, rules)
+                if blocks:
+                    block_notes[inv_id] = blocks
+                    continue
+                ok_ids.append(inv_id)
+                warn_by_id[inv_id] = warns
+            dropped = len(ids) - len(ok_ids)
+            if dropped:
+                ok_total = sum((inv_dtos[i].total_amount or Decimal("0")) for i in ok_ids)
+                if not ok_ids or ok_total != to_decimal(reb.amount):
+                    continue        # 剔除后无法凑齐 -> 不生成组合，交第三轮/无候选
+                items = ok_ids
+            else:
+                items = ids
+
+            msg = (f"汇总匹配：{len(items)} 张发票合计等于报销单金额 {reb.amount}，"
+                   f"请人工确认归属")
+            if dropped:
+                msg += f"（已剔除 {dropped} 张触发规则阻断的发票）"
+            for inv_id in items:
                 ps = PairScore(score=0.90, match_type=T_MANY_TO_ONE,
-                               diff_fields=[f"汇总匹配: {len(combo)} 张发票合计 = 报销单金额"],
+                               diff_fields=[f"汇总匹配: {len(items)} 张发票合计 = 报销单金额"],
                                field_notes=[msg], capped=True, cap_reason="组合匹配需人工确认")
-                mid = _persist_pair(conn, inv_id, None, ps, "SUSPICIOUS", T_MANY_TO_ONE)
+                mid = _persist_pair(conn, inv_id, None, ps, "SUSPICIOUS", T_MANY_TO_ONE,
+                                    warning_msg=warn_by_id.get(inv_id, ""))
                 match_repo.insert_pair(conn, mid, inv_id, reb_row["id"])
                 available.discard(inv_id)
                 has_candidate.add(inv_id)
@@ -283,7 +368,11 @@ def run_matching(operator: str = None) -> dict:
                         and not ps.suspected_no_error
                         and not ps.is_low_confidence):
                     continue                  # 低于门槛且无兜底通道 -> 不推前端
-                candidates.append((inv_id, ps))
+                blocks, warns = _pair_rules(inv_dtos[inv_id], reb, rules)
+                if blocks:
+                    block_notes[inv_id] = blocks   # 命中阻断规则：不作为候选，落无候选时展示原因
+                    continue
+                candidates.append((inv_id, ps, warns))
 
             if not candidates:
                 if reb.invoice_no:
@@ -302,7 +391,7 @@ def run_matching(operator: str = None) -> dict:
             tie_note = (_ambiguity_note([t[0] for t in tied], inv_rows, reb_row)
                         if len(tied) > 1 else "")
 
-            for inv_id, ps in candidates:
+            for inv_id, ps, warns in candidates:
                 notes = list(ps.field_notes)
                 # 「疑似发票号填错」的详细说明已由 score_pair 写入 field_notes，此处不再重复追加
                 if ps.is_low_confidence:
@@ -318,7 +407,8 @@ def run_matching(operator: str = None) -> dict:
                 if ps.capped and not ps.suspected_no_error:
                     notes.append(f"[ - ] {ps.cap_reason}（安全锁：不可自动通过，请人工确认）")
                 ps.field_notes = notes
-                _persist_pair(conn, inv_id, reb_row["id"], ps, "SUSPICIOUS", ps.match_type)
+                _persist_pair(conn, inv_id, reb_row["id"], ps, "SUSPICIOUS", ps.match_type,
+                              warning_msg=warns)
                 has_candidate.add(inv_id)
             summary["pending"] += 1
             _write_note(conn, reb_row, list(top_ps.field_notes) if not tie_note else [tie_note])
@@ -346,11 +436,11 @@ def run_matching(operator: str = None) -> dict:
                 f"UPDATE match_result SET message = message || '；' || ? "
                 f"WHERE id IN ({marks})", [warn] + ids)
 
-        # ---- 无任何候选的发票 -> UNMATCHED ----
+        # ---- 无任何候选的发票 -> UNMATCHED（命中阻断规则时写明原因）----
         for inv_id in sorted(available):
             if inv_id in has_candidate:
                 continue
-            _persist_unmatched(conn, inv_id, inv_rows[inv_id])
+            _persist_unmatched(conn, inv_id, inv_rows[inv_id], block_notes.get(inv_id, ""))
             summary["unmatched"] += 1
 
     logger.info("匹配完成: %s (by %s)", summary, operator)
@@ -370,7 +460,8 @@ def _message_of(ps: PairScore) -> str:
 
 
 def _persist_pair(conn, invoice_id: int, reimburse_id: Optional[int],
-                  ps: PairScore, status: str, match_type: str) -> int:
+                  ps: PairScore, status: str, match_type: str,
+                  warning_msg: str = "", message: Optional[str] = None) -> int:
     return match_repo.insert(conn, {
         "invoice_id": invoice_id,
         "reimburse_id": reimburse_id,
@@ -378,12 +469,16 @@ def _persist_pair(conn, invoice_id: int, reimburse_id: Optional[int],
         "match_score": ps.score,
         "status": status,
         "diff_fields": ps.diff_fields,
-        "message": _message_of(ps),
+        "message": message if message is not None else _message_of(ps),
         "match_points": ps.match_points,
+        "warning_msg": warning_msg,
     })
 
 
-def _persist_unmatched(conn, invoice_id: int, inv_row: dict) -> None:
+def _persist_unmatched(conn, invoice_id: int, inv_row: dict,
+                       block_text: str = "") -> None:
+    message = (f"{RULE_BLOCK_PREFIX}{block_text}" if block_text
+               else "无候选报销单（未找到满足条件的配对）")
     match_repo.insert(conn, {
         "invoice_id": invoice_id,
         "reimburse_id": None,
@@ -391,13 +486,14 @@ def _persist_unmatched(conn, invoice_id: int, inv_row: dict) -> None:
         "match_score": 0.0,
         "status": "UNMATCHED",
         "diff_fields": [],
-        "message": "无候选报销单（未找到满足条件的配对）",
+        "message": message,
     })
 
 
 # ---------------------------------------------------------------- 人工确认/拒绝
 def confirm(match_id: int, operator: str = None, note: str = "",
-            expect_status: str = "", reason_option: str = "") -> dict:
+            expect_status: str = "", reason_option: str = "",
+            exempt: bool = False) -> dict:
     """人工确认 SUSPICIOUS/CONFLICT 匹配 -> CONFIRMED，发票 -> MATCHED。"""
     err = _validate_reason_option(reason_option, note)
     if err:
@@ -421,6 +517,15 @@ def confirm(match_id: int, operator: str = None, note: str = "",
             return {"ok": False, "message": "该发票已存在生效匹配"}
         if reb_id and match_repo.active_for_reimburse(conn, reb_id):
             return {"ok": False, "message": "该报销单已存在生效匹配"}
+
+        # 业务规则安检（阻断优先；豁免必须填理由并写审计）
+        inv_row = invoice_repo.get(conn, m["invoice_id"])
+        reb_row = reimburse_repo.get(conn, reb_id) if reb_id else None
+        if inv_row:
+            blocked = _rule_guard(conn, inv_row, reb_row, exempt, operator, note,
+                                  f"确认匹配 match#{match_id}")
+            if blocked:
+                return {"ok": False, "message": f"{RULE_BLOCK_PREFIX}{blocked}"}
 
         match_repo.update_status(conn, match_id, "CONFIRMED", operator)
         if note:
@@ -574,11 +679,33 @@ def auto_correct(match_id: int, operator: str = None) -> dict:
             "changes": [{"field": "更正内容", "old": "-", "new": trail}],
         }
         if _engine.decide_status(ps) == "MATCHED":
+            # 落库前规则安检：一键更正不得绕过业务规则阻断
+            blocks, warns = _pair_rules(_inv_dto(inv_row), _reb_dto(reb_row),
+                                        _load_rules(conn))
+            if blocks:
+                reason = blocks
+                conn.execute(
+                    "UPDATE match_result SET status = 'UNMATCHED', match_score = ?, message = ?, "
+                    "warning_msg = ?, updated_at = datetime('now','localtime') WHERE id = ?",
+                    (ps.score, f"{RULE_BLOCK_PREFIX}{blocks}", warns, match_id))
+                _write_note(conn, reb_row, [f"{RULE_BLOCK_PREFIX}{blocks}"])
+                from app.service import audit_service
+                fix2_detail["changes"].append(
+                    {"field": "匹配状态", "old": m["status"], "new": "UNMATCHED"})
+                fix2_detail["changes"].append(
+                    {"field": "规则阻断", "old": "-", "new": blocks})
+                match_repo.update_detail(conn, match_id, fix2_detail)
+                audit_service.log(conn, "match_auto_correct", "match", match_id,
+                                  mil, m["status"], "UNMATCHED",
+                                  operator, f"一键更正后被规则阻断：{trail}；{blocks}",
+                                  detail_json=fix2_detail)
+                return {"ok": False, "message": f"{RULE_BLOCK_PREFIX}{blocks}"}
+
             match_repo.update_status(conn, match_id, "MATCHED", operator)
             conn.execute(
-                "UPDATE match_result SET match_type = 'exact', match_score = ?, message = ? "
-                "WHERE id = ?",
-                (ps.score, f"一键更正：{trail}，重新精确匹配成功", match_id))
+                "UPDATE match_result SET match_type = 'exact', match_score = ?, message = ?, "
+                "warning_msg = ? WHERE id = ?",
+                (ps.score, f"一键更正：{trail}，重新精确匹配成功", warns, match_id))
             change_invoice_status(conn, m["invoice_id"], "MATCHED",
                                   f"一键更正后精确匹配 (match#{match_id})", operator)
             _detect_conflict(conn, m["reimburse_id"])
@@ -624,7 +751,8 @@ def _amount_gap(inv_rows: List[dict], reb_amount) -> Optional[Decimal]:
 
 
 def manual_match(invoice_id: int, reimburse_id: int, operator: str = None,
-                 reason_option: str = "", reason: str = "") -> dict:
+                 reason_option: str = "", reason: str = "",
+                 exempt: bool = False) -> dict:
     """人工指定匹配（manual 类型，直接生效；金额有差异时允许强绑并打标）。"""
     err = _validate_reason_option(reason_option, reason)
     if err:
@@ -641,6 +769,13 @@ def manual_match(invoice_id: int, reimburse_id: int, operator: str = None,
             return {"ok": False, "message": "该发票已存在生效匹配"}
         if match_repo.active_for_reimburse(conn, reimburse_id):
             return {"ok": False, "message": "该报销单已存在生效匹配"}
+
+        # 业务规则安检（阻断优先；临时豁免须填理由并写审计）
+        blocked = _rule_guard(conn, inv, reb, exempt, operator, reason,
+                              f"人工绑定 发票:{inv.get('invoice_no') or invoice_id}")
+        if blocked:
+            return {"ok": False, "message": f"{RULE_BLOCK_PREFIX}{blocked}"}
+        _, warns = _pair_rules(_inv_dto(inv), _reb_dto(reb), _load_rules(conn))
 
         gap = _amount_gap([inv], reb.get("amount"))
         inv_no = inv.get("invoice_no") or ""
@@ -669,6 +804,7 @@ def manual_match(invoice_id: int, reimburse_id: int, operator: str = None,
             "invoice_id": invoice_id, "reimburse_id": reimburse_id,
             "match_type": T_MANUAL, "match_score": 1.0, "status": "CONFIRMED",
             "diff_fields": ["amount"] if gap else [], "message": message,
+            "warning_msg": warns,
             "detail": manual_detail,
             "confirmed_by": operator, "confirmed_at": None,
         })
@@ -696,7 +832,8 @@ def manual_match(invoice_id: int, reimburse_id: int, operator: str = None,
 
 def manual_batch_bind(invoice_ids: List[int], reimburse_id: int,
                       operator: str = None,
-                      reason_option: str = "", reason: str = "") -> dict:
+                      reason_option: str = "", reason: str = "",
+                      exempt: bool = False) -> dict:
     """把多张未报销发票批量绑定到同一张报销单（人工汇总绑定）。
 
     复用与 many_to_one 相同的存法：每张发票一条 MATCHED 记录（match_type=manual，
@@ -729,6 +866,11 @@ def manual_batch_bind(invoice_ids: List[int], reimburse_id: int,
                         "message": f"发票 #{iid} 当前状态为 {inv['status']}，仅 NORMAL 可绑定"}
             if match_repo.active_for_invoice(conn, iid) is not None:
                 return {"ok": False, "message": f"发票 #{iid} 已被占用，请先解绑"}
+            # 业务规则安检：任一张被阻断则整批不写入（临时豁免须填理由）
+            blocked = _rule_guard(conn, inv, reb, exempt, operator, reason,
+                                  f"批量绑定 发票:{inv.get('invoice_no') or iid}")
+            if blocked:
+                return {"ok": False, "message": f"{RULE_BLOCK_PREFIX}{blocked}"}
             invs.append(inv)
 
         gap = _amount_gap(invs, reb.get("amount"))
@@ -808,12 +950,76 @@ def manual_batch_bind(invoice_ids: List[int], reimburse_id: int,
         }
 
 
+def exempt_match(match_id: int, operator: str = None, reason: str = "") -> dict:
+    """临时豁免：管理员强制绑定被规则阻断的匹配。
+
+    必须填写理由，且强制写入审计日志（含原阻断原因），便于事后追溯。
+    """
+    operator = operator or settings.default_operator
+    if not (reason or "").strip():
+        return {"ok": False, "message": "临时豁免必须填写理由"}
+    with db.tx() as conn:
+        m = match_repo.get(conn, match_id)
+        if m is None:
+            return {"ok": False, "message": f"匹配记录 #{match_id} 不存在"}
+        if m["status"] not in ("UNMATCHED", "SUSPICIOUS", "CONFLICT"):
+            return {"ok": False, "message": f"仅待处理记录可豁免（当前: {m['status']}）"}
+        inv = invoice_repo.get(conn, m["invoice_id"])
+        reb_id = m["reimburse_id"]
+        if reb_id is None:
+            pairs = match_repo.pairs_of(conn, [match_id]).get(match_id, [])
+            reb_id = pairs[0]["reimburse_id"] if pairs else None
+        reb = reimburse_repo.get(conn, reb_id) if reb_id else None
+        if inv is None or reb is None:
+            return {"ok": False, "message": "发票或报销单不存在，无法豁免"}
+        if inv["status"] != "NORMAL":
+            return {"ok": False, "message": f"仅 NORMAL 发票可豁免绑定（当前: {inv['status']}）"}
+        if match_repo.active_for_invoice(conn, m["invoice_id"]):
+            return {"ok": False, "message": "该发票已存在生效匹配"}
+        if match_repo.active_for_reimburse(conn, reb_id):
+            return {"ok": False, "message": "该报销单已存在生效匹配"}
+
+        blocks, _ = _pair_rules(_inv_dto(inv), _reb_dto(reb), _load_rules(conn))
+        if not blocks:
+            return {"ok": False, "message": "该记录未触发规则阻断，请直接确认匹配"}
+
+        inv_no = inv.get("invoice_no") or ""
+        reb_no = reb.get("reimburse_no") or ""
+        match_repo.update_status(conn, match_id, "CONFIRMED", operator)
+        _append_message(conn, match_id, f"临时豁免：{reason.strip()}")
+        conn.execute("UPDATE match_result SET warning_msg = ? WHERE id = ?",
+                     (f"临时豁免：{reason.strip()}；原阻断原因：{blocks}", match_id))
+        change_invoice_status(conn, m["invoice_id"], "MATCHED",
+                              f"临时豁免强制绑定 (match#{match_id})", operator)
+        _detect_conflict(conn, reb_id)
+        _write_note(conn, reb, [])
+        _finalize_binding(conn, match_id, m["invoice_id"], reb_id, operator)
+        from app.service import audit_service
+        detail = {
+            "why": reason.strip(), "match_id": match_id,
+            "invoice_id": m["invoice_id"], "invoice_no": inv_no,
+            "reimburse_id": reb_id, "reimburse_no": reb_no,
+            "changes": [
+                {"field": "匹配状态", "old": m["status"], "new": "CONFIRMED"},
+                {"field": "临时豁免理由", "old": "-", "new": reason.strip()},
+                {"field": "被阻断规则", "old": "-", "new": blocks},
+            ],
+        }
+        match_repo.update_detail(conn, match_id, detail)
+        audit_service.log(conn, "rule_exempt", "match", match_id,
+                          f"发票:{inv_no or '（无号）'} / 报销单:{reb_no}",
+                          m["status"], "CONFIRMED", operator,
+                          f"临时豁免理由：{reason.strip()}；阻断原因：{blocks}",
+                          detail_json=detail)
+        return {"ok": True, "message": "已临时豁免并强制绑定，操作已记入审计日志"}
+
+
 def quick_fix(match_id: int = None, invoice_id: int = None,
               reimburse_id: int = None, inv_fields: dict = None,
               reb_fields: dict = None, category: str = "",
               force_bind: bool = False, operator: str = None,
               reason: str = "", expect_status: str = "",
-              reason_option: str = "") -> dict:
+              reason_option: str = "", exempt: bool = False) -> dict:
     """快捷修复：人工干预后的单点重算（不触发全量匹配）。
 
     事务内四步（核心闭环）：
@@ -934,6 +1140,10 @@ def quick_fix(match_id: int = None, invoice_id: int = None,
 
         # ---------- 第三步：局部重匹配（仅当前这一条报销单） ----------
         if force_bind:
+            blocked = _rule_guard(conn, inv, reb, exempt, operator, reason,
+                                  f"强制绑定 发票:{inv.get('invoice_no') or invoice_id}")
+            if blocked:
+                return {"ok": False, "message": f"{RULE_BLOCK_PREFIX}{blocked}"}
             new_status = "MATCHED"
             ps = PairScore(score=1.0, match_type=T_MANUAL,
                            field_notes=[f"人工强制绑定：{reason or '财务快捷修复'}"],
@@ -948,6 +1158,12 @@ def quick_fix(match_id: int = None, invoice_id: int = None,
                 new_status = "SUSPICIOUS" if ps.field_notes else "UNMATCHED"
             match_type = ps.match_type
 
+        # 规则安检：非强制绑定路径若被判为 MATCHED，仍需过阻断检查（不得绕过业务规则）
+        blocks, warns = _pair_rules(_inv_dto(inv), _reb_dto(reb), _load_rules(conn))
+        if blocks and not force_bind:
+            new_status = "UNMATCHED"
+            ps.field_notes = list(ps.field_notes) + [f"{RULE_BLOCK_PREFIX}{blocks}"]
+
         # 规范化差异说明文本：按任务要求展示业务单号 + 变更前后
         inv_no = inv.get("invoice_no") or ""
         reb_no = reb.get("reimburse_no") or ""
@@ -957,8 +1173,8 @@ def quick_fix(match_id: int = None, invoice_id: int = None,
             + (f"({trail[0]}) " if trail else "(无字段变更) ")
             + f"匹配 [发票:{inv_no}] "
             + (f"（强制绑定，依据: {basis}）" if force_bind else "")
+            + (f" {RULE_BLOCK_PREFIX}{blocks}" if blocks and not force_bind else "")
         )
-        # 只取第一项 trail 作为 message 里的括号摘要，完整 trail 存 audit detail
 
         # ---------- 第四步：状态跃迁 + 关联更新 ----------
         if m is None:
@@ -967,17 +1183,18 @@ def quick_fix(match_id: int = None, invoice_id: int = None,
                 "match_type": match_type, "match_score": ps.score,
                 "status": new_status, "diff_fields": ps.diff_fields,
                 "message": message, "match_points": ps.match_points,
+                "warning_msg": warns,
                 "confirmed_by": operator if new_status == "MATCHED" else None,
             })
         else:
             mid = match_id
             conn.execute(
                 "UPDATE match_result SET status = ?, match_type = ?, match_score = ?, "
-                "diff_fields = ?, message = ?, match_points = ?, "
+                "diff_fields = ?, message = ?, match_points = ?, warning_msg = ?, "
                 "updated_at = datetime('now','localtime') WHERE id = ?",
                 (new_status, match_type, ps.score,
                  json.dumps(ps.diff_fields, ensure_ascii=False), message,
-                 json.dumps(ps.match_points, ensure_ascii=False), mid))
+                 json.dumps(ps.match_points, ensure_ascii=False), warns, mid))
 
         if new_status == "MATCHED":
             change_invoice_status(conn, invoice_id, "MATCHED",
@@ -1013,9 +1230,11 @@ def quick_fix(match_id: int = None, invoice_id: int = None,
             "；".join(trail) if trail else "无字段变更",
             detail_json=fix_detail)
 
+        rule_blocked = bool(blocks) and not force_bind
         return {"ok": True,
-                "message": ("快捷修复成功，已匹配" if new_status == "MATCHED"
-                            else f"已保存修改，仍需人工处理（{new_status}）"),
+                "message": (f"{RULE_BLOCK_PREFIX}{blocks}" if rule_blocked
+                            else ("快捷修复成功，已匹配" if new_status == "MATCHED"
+                                  else f"已保存修改，仍需人工处理（{new_status}）")),
                 "status": new_status, "match_id": mid,
                 "invoice_id": invoice_id, "reimburse_id": reimburse_id,
                 "changes": trail}

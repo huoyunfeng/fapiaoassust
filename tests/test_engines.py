@@ -240,29 +240,106 @@ class TestRules:
     def test_buyer_tax_no(self):
         rule = RuleDTO(name="白名单", rule_type="buyer_tax_no",
                        config={"tax_nos": ["91110000AAAA"]})
-        issues = RuleEngine().evaluate(InvoiceDTO(buyer_tax_no="OTHER"), [rule])
+        issues = RuleEngine().validate(InvoiceDTO(buyer_tax_no="OTHER"), [rule])
         assert any(i.code == "BUYER_TAX_NO_NOT_ALLOWED" for i in issues)
-        assert RuleEngine().evaluate(InvoiceDTO(buyer_tax_no="91110000AAAA"), [rule]) == []
+        assert RuleEngine().validate(InvoiceDTO(buyer_tax_no="91110000AAAA"), [rule]) == []
 
     def test_period(self):
         rule = RuleDTO(name="期间", rule_type="period",
                        config={"start": "2026-01-01", "end": "2026-12-31"})
-        issues = RuleEngine().evaluate(InvoiceDTO(invoice_date="2025-06-01"), [rule])
+        issues = RuleEngine().validate(InvoiceDTO(invoice_date="2025-06-01"), [rule])
         assert any(i.code == "PERIOD_BEFORE" for i in issues)
 
     def test_amount_bounds(self):
         rule = RuleDTO(name="上限", rule_type="amount", config={"max": 1000})
-        issues = RuleEngine().evaluate(InvoiceDTO(total_amount=Decimal("2000")), [rule])
+        issues = RuleEngine().validate(InvoiceDTO(total_amount=Decimal("2000")), [rule])
         assert any(i.code == "AMOUNT_ABOVE_MAX" for i in issues)
 
     def test_priority_and_stop(self):
         r1 = RuleDTO(name="r1", rule_type="buyer_tax_no", priority=1,
                      stop_on_fail=True, config={"tax_nos": ["X"]})
         r2 = RuleDTO(name="r2", rule_type="amount", priority=2, config={"max": 10})
-        issues = RuleEngine().evaluate(
+        issues = RuleEngine().validate(
             InvoiceDTO(buyer_tax_no="Y", total_amount=Decimal("999")), [r1, r2])
         # r1 失败且短路 -> r2 不执行
         assert len(issues) == 1
+
+    # ---- 6.2 后端执行逻辑 ----
+    def test_seller_blacklist_beats_tax_whitelist(self):
+        """黑白名单冲突：命中销方黑名单时即便税号白名单通过也强制阻断。"""
+        white = RuleDTO(name="白名单", rule_type="buyer_tax_no", priority=1,
+                        config={"tax_nos": ["91110000AAAA"]})
+        black = RuleDTO(name="黑名单", rule_type="seller_blacklist", priority=2,
+                        config={"sellers": ["某某贸易"]})
+        dto = InvoiceDTO(buyer_tax_no="91110000AAAA", seller_name="某某贸易有限公司")
+        issues = RuleEngine().validate(dto, [white, black])
+        hits = [i for i in issues if i.code == "SELLER_BLACKLISTED"]
+        assert hits and hits[0].severity == "ERROR"
+
+    def test_sensitive_word_hit(self):
+        rule = RuleDTO(name="敏感词", rule_type="sensitive_words",
+                       config={"words": ["礼品"]})
+        issues = RuleEngine().validate(InvoiceDTO(item_summary="办公用品礼品"), [rule])
+        assert any(i.code == "SENSITIVE_WORD_HIT" for i in issues)
+        assert issues[0].severity == "ERROR"
+
+    def test_sensitive_word_missing_summary_only_warns(self):
+        """缺失数据防误杀：摘要为空时只告警，不阻断。"""
+        rule = RuleDTO(name="敏感词", rule_type="sensitive_words",
+                       config={"words": ["礼品"]})
+        issues = RuleEngine().validate(InvoiceDTO(item_summary=""), [rule])
+        assert any(i.code == "SENSITIVE_TEXT_MISSING" and i.severity == "WARN"
+                   for i in issues)
+        assert not any(i.severity == "ERROR" for i in issues)
+
+    def test_warn_action_returns_warning(self):
+        rule = RuleDTO(name="金额上限", rule_type="amount", action="warn",
+                       config={"max": 5000})
+        issues = RuleEngine().validate(InvoiceDTO(total_amount=Decimal("6500")), [rule])
+        assert issues and issues[0].severity == "WARN"
+        assert "价税合计（6500）超过规则限制（5000）" in issues[0].message
+
+    def test_amount_block_message_format(self):
+        """6.3 阻断反馈文案：该【单张发票】价税合计（6500）超过规则限制（5000）。"""
+        rule = RuleDTO(name="金额上限", rule_type="amount", config={"max": 5000})
+        issues = RuleEngine().validate(InvoiceDTO(total_amount=Decimal("6500")), [rule])
+        assert issues[0].severity == "ERROR"
+        assert issues[0].message.startswith("该【单张发票】价税合计（6500）超过规则限制（5000）")
+
+    def test_cross_period(self):
+        rule = RuleDTO(name="跨期", rule_type="cross_period")
+        inv = InvoiceDTO(invoice_date="2026-03-01", total_amount=Decimal("100"))
+        reb = ReimburseDTO(period_start="2026-01-01", period_end="2026-01-31")
+        issues = RuleEngine().validate_pair(inv, reb, [rule])
+        assert any(i.code == "CROSS_PERIOD" for i in issues)
+        assert RuleEngine().validate_pair(
+            InvoiceDTO(invoice_date="2026-01-15"), reb, [rule]) == []
+
+    def test_scope_filter(self):
+        """作用域生效：报销单作用域的规则不作用于发票。"""
+        rule = RuleDTO(name="报销金额", rule_type="amount", scope="reimburse",
+                       config={"max": 5000})
+        assert RuleEngine().validate(InvoiceDTO(total_amount=Decimal("9000")), [rule]) == []
+        issues = RuleEngine().validate(ReimburseDTO(amount=Decimal("9000")), [rule])
+        assert any(i.code == "AMOUNT_ABOVE_MAX" for i in issues)
+
+    def test_disabled_rule_skipped(self):
+        rule = RuleDTO(name="停用", rule_type="amount", enabled=False, config={"max": 1})
+        assert RuleEngine().validate(InvoiceDTO(total_amount=Decimal("100")), [rule]) == []
+
+    def test_find_conflicts_on_overlapping_amount(self):
+        """6.2 逻辑死锁防御：同作用域金额区间重叠 -> 判定冲突。"""
+        from app.domain.rules_engine import find_conflicts
+        existing = [RuleDTO(id=1, name="全额5000", rule_type="amount",
+                            scope="invoice", config={"max": 5000})]
+        candidate = RuleDTO(name="金额<10000", rule_type="amount",
+                            scope="invoice", config={"max": 10000})
+        conflicts = find_conflicts(existing, candidate)
+        assert conflicts and "重叠" in conflicts[0]
+        # 不同作用域不算冲突
+        other_scope = RuleDTO(name="报销上限", rule_type="amount",
+                              scope="reimburse", config={"max": 10000})
+        assert find_conflicts(existing, other_scope) == []
 
 
 if __name__ == "__main__":

@@ -311,9 +311,10 @@ async def run_match(operator: str = Form("admin")):
 @api.post("/match/{match_id}/confirm")
 async def confirm_match(match_id: int, operator: str = Form("admin"),
                         note: str = Form(""), expect_status: str = Form(""),
-                        reason_option: str = Form("")):
+                        reason_option: str = Form(""), exempt: str = Form("")):
     try:
-        return _j(match_service.confirm(match_id, operator, note, expect_status, reason_option))
+        return _j(match_service.confirm(match_id, operator, note, expect_status,
+                                        reason_option, exempt == "1"))
     except match_service.StaleError as e:
         return _stale(e)
 
@@ -346,8 +347,17 @@ async def unmatch_match(match_id: int, operator: str = Form("admin"),
 @api.post("/match/manual")
 async def manual_match(invoice_id: int = Form(...), reimburse_id: int = Form(...),
                        operator: str = Form("admin"),
-                       reason_option: str = Form(""), reason: str = Form("")):
-    return _j(match_service.manual_match(invoice_id, reimburse_id, operator, reason_option, reason))
+                       reason_option: str = Form(""), reason: str = Form(""),
+                       exempt: str = Form("")):
+    return _j(match_service.manual_match(invoice_id, reimburse_id, operator,
+                                         reason_option, reason, exempt == "1"))
+
+
+@api.post("/matches/{match_id}/exempt")
+async def exempt_match(match_id: int, operator: str = Form("admin"),
+                       reason: str = Form("")):
+    """临时豁免：管理员强制绑定被规则阻断的匹配（理由必填，强制审计）。"""
+    return _j(match_service.exempt_match(match_id, operator, reason))
 
 
 # ---------------------------------------------------------------- 报告
@@ -610,19 +620,59 @@ async def delete_company(company_id: int):
 
 @api.post("/rules")
 async def add_rule(name: str = Form(...), rule_type: str = Form(...),
-                   priority: int = Form(100), stop_on_fail: str = Form(""),
-                   enabled: str = Form("1"), config: str = Form("{}")):
+                   scope: str = Form("invoice"), action: str = Form("block"),
+                   stop_on_fail: str = Form(""), enabled: str = Form("1"),
+                   tags: str = Form("[]"), config: str = Form("{}")):
+    """新增规则：优先级按 10/20/30… 自动生成，保存前做同作用域逻辑冲突校验。"""
+    from app.domain.dto import RuleDTO
+    from app.domain.rules_engine import (SCOPE_TYPES, TAG_CONFIG_KEYS,
+                                         find_conflicts)
     from app.repository import db
     from app.repository.repos import rule_repo
     try:
         cfg = json.loads(config or "{}")
-    except json.JSONDecodeError:
-        return {"ok": False, "message": "config 必须是合法 JSON"}
+        tag_list = json.loads(tags or "[]")
+        if not isinstance(cfg, dict) or not isinstance(tag_list, list):
+            raise ValueError
+    except (json.JSONDecodeError, ValueError):
+        return {"ok": False, "message": "config / tags 必须是合法 JSON"}
+    if scope not in SCOPE_TYPES or rule_type not in SCOPE_TYPES[scope]:
+        return {"ok": False, "message": "该规则类型不适用于所选校验作用域"}
+    if rule_type in TAG_CONFIG_KEYS:
+        cfg[TAG_CONFIG_KEYS[rule_type]] = [str(t).strip() for t in tag_list if str(t).strip()]
+
+    candidate = RuleDTO(name=name.strip(), rule_type=rule_type, scope=scope,
+                        action=action, config=cfg, tags=tag_list)
     with db.tx() as conn:
-        rid = rule_repo.insert(conn, {"name": name.strip(), "rule_type": rule_type,
-                                      "priority": priority, "stop_on_fail": stop_on_fail == "1",
-                                      "config": cfg, "enabled": enabled == "1"})
+        existing = [RuleDTO(id=r["id"], name=r["name"], rule_type=r["rule_type"],
+                            scope=r.get("scope") or "invoice",
+                            action=r.get("action") or "block",
+                            priority=r["priority"], config=r["config"],
+                            enabled=bool(r["enabled"]))
+                    for r in rule_repo.list_all(conn)]
+        conflicts = find_conflicts(existing, candidate)
+        if conflicts:
+            return {"ok": False, "message": "规则逻辑冲突：" + "；".join(conflicts)}
+        rid = rule_repo.insert(conn, {
+            "name": name.strip(), "rule_type": rule_type, "scope": scope,
+            "action": action, "priority": rule_repo.next_priority(conn),
+            "stop_on_fail": stop_on_fail == "1", "config": cfg,
+            "tags": tag_list, "enabled": enabled == "1",
+        })
     return _j({"id": rid})
+
+
+@api.post("/rules/reorder")
+async def reorder_rules(ids: str = Form("")):
+    """按前端上移/下移后的顺序重排：自动生成 10/20/30… 优先级。"""
+    from app.repository import db
+    from app.repository.repos import rule_repo
+    order = [int(x) for x in ids.split(",") if x.strip().isdigit()]
+    if not order:
+        return {"ok": False, "message": "未提供规则顺序"}
+    with db.tx() as conn:
+        rule_repo.reorder(conn, order)
+    return _j({"ids": order})
 
 
 @api.post("/rules/{rule_id}/toggle")

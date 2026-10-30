@@ -112,8 +112,11 @@ def _row_fields_from_dto(dto: InvoiceDTO) -> dict:
 
 def _rules(conn) -> List[RuleDTO]:
     return [RuleDTO(id=r["id"], name=r["name"], rule_type=r["rule_type"],
+                    scope=r.get("scope") or "invoice",
+                    action=r.get("action") or "block",
                     priority=r["priority"], stop_on_fail=bool(r["stop_on_fail"]),
-                    config=r["config"], enabled=bool(r["enabled"]))
+                    config=r["config"], tags=r.get("tags") or [],
+                    is_core=bool(r.get("is_core")), enabled=bool(r["enabled"]))
             for r in rule_repo.list_enabled(conn)]
 
 
@@ -264,7 +267,7 @@ def _validate_and_dedup(conn, invoice_id: int, operator: str) -> tuple[str, str]
     row = invoice_repo.get(conn, invoice_id)
     dto = _dto_from_row(row)
 
-    issues = _validator.validate(dto) + _rule_engine.evaluate(dto, _rules(conn))
+    issues = _validator.validate(dto) + _rule_engine.validate(dto, _rules(conn))
     errors = [i for i in issues if i.severity == "ERROR"]
 
     raw = _raw_json(row)
@@ -382,7 +385,7 @@ def fix_abnormal(invoice_id: int, fields: dict, operator: str = None,
                 dto.invoice_date = _normalize.parse_date(val)
         dto = _normalize.normalize(dto)
 
-        issues = _validator.validate(dto) + _rule_engine.evaluate(dto, _rules(conn))
+        issues = _validator.validate(dto) + _rule_engine.validate(dto, _rules(conn))
         errors = [i for i in issues if i.severity == "ERROR"]
 
         # 修正后的语义判重（防止修正成一张已存在的发票）
@@ -724,17 +727,20 @@ def _attach_categories(conn, rows: List[dict]) -> None:
 
 def list_invoices(status: str = None, keyword: str = None,
                   category: str = None, date_from: str = None, date_to: str = None,
-                  limit: int = 500, offset: int = 0) -> List[dict]:
+                  limit: int = 500, offset: int = 0,
+                  since: str = None) -> List[dict]:
+    """since: 冷热分离下界（按开票日期，None = 取全部历史）。"""
     with db.read() as conn:
         if category:
-            ids = _category_ids(conn, category, status, keyword, date_from, date_to)
+            ids = _category_ids(conn, category, status, keyword, date_from, date_to,
+                                since=since)
             page_ids = ids[offset:offset + limit]
             rows = (invoice_repo.list(conn, ids=page_ids, limit=len(page_ids))
                     if page_ids else [])
         else:
             rows = invoice_repo.list(conn, status=status, keyword=keyword,
                                      date_from=date_from, date_to=date_to,
-                                     limit=limit, offset=offset)
+                                     limit=limit, offset=offset, since=since)
         _attach_categories(conn, rows)
     # 给每条补上 item_summary_raw（优先用户编辑值，其次解析原始值，最后清洗后值兜底）
     for r in rows:
@@ -756,38 +762,44 @@ def _drill_exclude(status: str, category: str) -> Optional[tuple]:
 
 
 def _category_ids(conn, category: str, status: str = None, keyword: str = None,
-                  date_from: str = None, date_to: str = None) -> List[int]:
+                  date_from: str = None, date_to: str = None,
+                  since: str = None) -> List[int]:
     """分类过滤后的发票 id 列表（id 升序）。分类是派生值，只能取摘要列内存过滤。"""
     rows = invoice_repo.expense_rows(
         conn, status=status, keyword=keyword, date_from=date_from, date_to=date_to,
-        exclude_status=_drill_exclude(status, category), light=True)
+        exclude_status=_drill_exclude(status, category), light=True, since=since)
     decisions = _resolve_rows(rows, category_repo.memory_all(conn), alias_repo.all(conn))
     return sorted(i for i, d in decisions.items() if d["category"] == category)
 
 
 def count_invoices(status: str = None, keyword: str = None, category: str = None,
-                   date_from: str = None, date_to: str = None) -> int:
+                   date_from: str = None, date_to: str = None,
+                   since: str = None) -> int:
     """发票总数（与 list_invoices 同筛选口径，分页用）。"""
     with db.read() as conn:
         if category:
-            return len(_category_ids(conn, category, status, keyword, date_from, date_to))
+            return len(_category_ids(conn, category, status, keyword, date_from, date_to,
+                                     since=since))
         return invoice_repo.count(conn, status=status, keyword=keyword,
-                                  date_from=date_from, date_to=date_to)
+                                  date_from=date_from, date_to=date_to, since=since)
 
 
 def page_of_invoice(invoice_id: int, status: str = None, keyword: str = None,
                     page_size: int = 20, category: str = None,
-                    date_from: str = None, date_to: str = None) -> Optional[int]:
+                    date_from: str = None, date_to: str = None,
+                    since: str = None) -> Optional[int]:
     """focus 定位：发票在筛选结果（id 升序）中所在的页码（1 起），不存在返回 None。"""
     with db.read() as conn:
         if invoice_repo.get(conn, invoice_id) is None:
             return None
         if category:
-            ids = _category_ids(conn, category, status, keyword, date_from, date_to)
+            ids = _category_ids(conn, category, status, keyword, date_from, date_to,
+                                since=since)
             pos = ids.index(invoice_id) if invoice_id in ids else None
             return (pos // page_size + 1) if pos is not None else None
         pos = invoice_repo.position_of(conn, invoice_id, status=status, keyword=keyword,
-                                       date_from=date_from, date_to=date_to)
+                                       date_from=date_from, date_to=date_to,
+                                       since=since)
     return pos // page_size + 1
 
 

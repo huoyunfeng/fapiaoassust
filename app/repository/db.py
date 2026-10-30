@@ -25,6 +25,25 @@ logger = get_logger(__name__)
 _open_conns: "set[sqlite3.Connection]" = set()
 _open_conns_lock = threading.Lock()
 
+# 规则表 DDL（独立常量：旧库迁移重建时复用，避免两处定义漂移）
+RULE_DDL = """CREATE TABLE IF NOT EXISTS rule (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    name         TEXT NOT NULL,
+    rule_type    TEXT NOT NULL CHECK(rule_type IN (
+                     'buyer_tax_no','seller_blacklist','sensitive_words',
+                     'period','amount','cross_period','red_flush','dedup','custom')),
+    scope        TEXT NOT NULL DEFAULT 'invoice' CHECK(scope IN ('invoice','reimburse')),
+    action       TEXT NOT NULL DEFAULT 'block' CHECK(action IN ('block','warn')),
+    priority     INTEGER NOT NULL DEFAULT 100,
+    stop_on_fail INTEGER NOT NULL DEFAULT 0,
+    config       TEXT NOT NULL DEFAULT '{}',
+    tags         TEXT NOT NULL DEFAULT '[]',
+    is_core      INTEGER NOT NULL DEFAULT 0,
+    enabled      INTEGER NOT NULL DEFAULT 1,
+    created_at   TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
+"""
+
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS invoice (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -180,6 +199,7 @@ CREATE TABLE IF NOT EXISTS match_result (
     diff_fields  TEXT NOT NULL DEFAULT '[]',
     match_points TEXT NOT NULL DEFAULT '[]',
     message      TEXT NOT NULL DEFAULT '',
+    warning_msg  TEXT NOT NULL DEFAULT '',
     detail       TEXT NOT NULL DEFAULT '{}',
     confirmed_by TEXT,
     confirmed_at TEXT,
@@ -223,16 +243,7 @@ CREATE TABLE IF NOT EXISTS invoice_status_log (
     FOREIGN KEY(invoice_id) REFERENCES invoice(id) ON DELETE CASCADE
 );
 
-CREATE TABLE IF NOT EXISTS rule (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    name         TEXT NOT NULL,
-    rule_type    TEXT NOT NULL CHECK(rule_type IN ('buyer_tax_no','period','amount','dedup','custom')),
-    priority     INTEGER NOT NULL DEFAULT 100,
-    stop_on_fail INTEGER NOT NULL DEFAULT 0,
-    config       TEXT NOT NULL DEFAULT '{}',
-    enabled      INTEGER NOT NULL DEFAULT 1,
-    created_at   TEXT NOT NULL DEFAULT (datetime('now','localtime'))
-);
+""" + RULE_DDL + """
 
 CREATE INDEX IF NOT EXISTS idx_rule_priority ON rule(enabled, priority);
 
@@ -406,6 +417,13 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if "detail" not in mcols:
         conn.execute("ALTER TABLE match_result ADD COLUMN detail TEXT NOT NULL DEFAULT '{}'")
         logger.info("迁移: match_result 表新增列 detail")
+    # 1a3. match_result 表新增 warning_msg（规则仅警告时放行匹配，列表据此标黄）
+    if "warning_msg" not in mcols:
+        conn.execute("ALTER TABLE match_result ADD COLUMN warning_msg TEXT NOT NULL DEFAULT ''")
+        logger.info("迁移: match_result 表新增列 warning_msg")
+
+    # 1a4. rule 表升级：新增作用域/动作/标签/核心标记，并扩展规则类型
+    _migrate_rule(conn)
 
     # 1b. invoice 表移除冗余列（items_detail 已合并为 item_summary）
     inv_cols = {r[1] for r in conn.execute("PRAGMA table_info(invoice)").fetchall()}
@@ -441,3 +459,59 @@ def _migrate(conn: sqlite3.Connection) -> None:
                 (name, i),
             )
         logger.info("迁移: 初始化费用分类字典 %s 项", len(STANDARD_CATEGORIES))
+
+
+# 核心高频规则（设置页顶部 4 个开关，固定占据最高优先级 1~4）
+CORE_RULES = [
+    ("税号白名单", "buyer_tax_no", {"tax_nos": []}, 1),
+    ("拦截红冲", "red_flush", {}, 2),
+    ("拦截敏感词", "sensitive_words", {"words": []}, 3),
+    ("限制跨期", "cross_period", {}, 4),
+]
+
+
+def _migrate_rule(conn: sqlite3.Connection) -> None:
+    """rule 表升级（幂等）：
+    1. 旧库 CHECK 约束不含新类型 -> 重建表并补齐 scope/action/tags/is_core；
+    2. 写入 4 条核心规则（默认关闭，由设置页开关控制，优先级 1~4）。
+    """
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'rule'").fetchone()
+    sql = (row["sql"] or "") if row else ""
+    if "seller_blacklist" not in sql:
+        old_cols = {r[1] for r in conn.execute("PRAGMA table_info(rule)").fetchall()}
+
+        def pick(name: str, default: str) -> str:
+            return name if name in old_cols else default
+
+        conn.execute("ALTER TABLE rule RENAME TO rule_old")
+        conn.execute(RULE_DDL.replace("IF NOT EXISTS ", ""))
+        conn.execute(
+            f"""INSERT INTO rule
+                (id, name, rule_type, scope, action, priority, stop_on_fail,
+                 config, tags, is_core, enabled, created_at)
+                SELECT id, name, rule_type,
+                       {pick('scope', "'invoice'")},
+                       {pick('action', "'block'")},
+                       priority, stop_on_fail, config,
+                       {pick('tags', "'[]'")},
+                       {pick('is_core', "0")},
+                       enabled, created_at
+                FROM rule_old"""
+        )
+        conn.execute("DROP TABLE rule_old")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_rule_priority ON rule(enabled, priority)")
+        logger.info("迁移: rule 表升级（新增作用域/动作/标签/核心标记）")
+
+    for name, rule_type, cfg, priority in CORE_RULES:
+        if conn.execute("SELECT id FROM rule WHERE is_core = 1 AND rule_type = ? LIMIT 1",
+                        (rule_type,)).fetchone():
+            continue
+        conn.execute(
+            """INSERT INTO rule
+               (name, rule_type, scope, action, priority, stop_on_fail,
+                config, tags, is_core, enabled)
+               VALUES (?, ?, 'invoice', 'block', ?, 0, ?, '[]', 1, 0)""",
+            (name, rule_type, priority, json.dumps(cfg, ensure_ascii=False)),
+        )
+        logger.info("迁移: 插入核心规则 %s", name)

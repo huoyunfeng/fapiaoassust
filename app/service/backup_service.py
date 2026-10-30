@@ -24,6 +24,42 @@ logger = get_logger(__name__)
 
 _UPLOADS_ARC_PREFIX = "uploads/"
 
+# 附件容量预警阈值：超过 5GB 时提示用户备份并清理历史附件
+STORAGE_LIMIT_BYTES = 5 * 1024 ** 3
+
+
+def _human_size(n: int) -> str:
+    """字节数转人类可读体积（如 3.4 GB）。"""
+    val = float(n)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if val < 1024 or unit == "TB":
+            return f"{int(val)} {unit}" if unit == "B" else f"{val:.1f} {unit}"
+        val /= 1024
+    return f"{val:.1f} TB"
+
+
+def storage_usage() -> dict:
+    """统计 uploads/ 附件目录的物理体积与文件数（设置页容量监控）。"""
+    total, n_files = 0, 0
+    if settings.upload_dir.exists():
+        for p in settings.upload_dir.rglob("*"):
+            try:
+                if p.is_file():
+                    total += p.stat().st_size
+                    n_files += 1
+            except OSError:
+                continue   # 文件被占用/删除中的瞬时异常不影响整体统计
+    limit = STORAGE_LIMIT_BYTES
+    return {
+        "bytes": total,
+        "files": n_files,
+        "limit_bytes": limit,
+        "human": _human_size(total),
+        "limit_human": _human_size(limit),
+        "percent": round(total / limit * 100, 1) if limit else 0,
+        "warn": total >= limit,
+    }
+
 
 def create_backup() -> Path:
     """打包数据库与全部发票附件为 zip，返回 zip 文件路径。

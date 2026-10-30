@@ -2273,4 +2273,210 @@ class TestManualReasonAuditStruct:
         assert [c["label"] for c in cols[:2]] == ["序号", "报销单号"]
 
 
+class TestStorageUsage:
+    """设置页附件容量监控：统计 uploads/ 物理体积，超 5GB 给出警告。"""
+
+    def test_storage_usage_counts_files_and_warn(self, env, monkeypatch):
+        from app.service import backup_service
+        up = settings.upload_dir
+        (up / "202601").mkdir(parents=True, exist_ok=True)
+        (up / "a.pdf").write_bytes(b"x" * 100)
+        (up / "202601" / "b.ofd").write_bytes(b"y" * 200)
+        u = backup_service.storage_usage()
+        assert u["files"] == 2 and u["bytes"] == 300 and not u["warn"]
+
+        monkeypatch.setattr(backup_service, "STORAGE_LIMIT_BYTES", 250)
+        u2 = backup_service.storage_usage()
+        assert u2["warn"] is True and u2["percent"] == 120.0
+
+    def test_storage_usage_empty_dir(self, env):
+        from app.service import backup_service
+        u = backup_service.storage_usage()
+        assert u["files"] == 0 and u["bytes"] == 0 and u["human"] == "0 B"
+
+
+class TestColdHotSplit:
+    """冷热分离：列表默认按业务发生时间取近 1 年，绝不按系统导入时间。"""
+
+    def test_invoice_since_uses_invoice_date(self, env):
+        old = env["inv"].import_files(
+            [("old.xml", "", xml_invoice("I9000000001", "50.00", date="2020-01-01"))])[0]
+        new = env["inv"].import_files(
+            [("new.xml", "", xml_invoice("I9000000002", "60.00", date="2026-05-01"))])[0]
+        rows = [r["id"] for r in env["inv"].list_invoices(since="2025-10-30")]
+        assert rows == [new["invoice_id"]]
+        assert env["inv"].count_invoices(since="2025-10-30") == 1
+        # since=None 表示全部历史，旧发票可见（补录数据不丢）
+        assert len(row_ids(env)) == 2
+        assert old["invoice_id"] in row_ids(env)
+
+    def test_invoice_without_date_not_dropped(self, env):
+        """解析缺失日期（NULL/空串）的行必须保留，避免"数据消失"。"""
+        r = env["inv"].import_files(
+            [("nodate.xml", "", xml_invoice("I9000000003", "70.00"))])[0]
+        with env["db"].tx() as conn:
+            conn.execute("UPDATE invoice SET invoice_date = NULL WHERE id = ?",
+                         (r["invoice_id"],))
+        ids = [x["id"] for x in env["inv"].list_invoices(since="2025-10-30")]
+        assert r["invoice_id"] in ids
+
+    def test_reimburse_since_uses_reimburse_date(self, env):
+        env["reb"].import_excel("r.xlsx", make_excel([
+            ["R9101", "张三", "2020-01-01", "2020-01-01", "2020-01-31",
+             "费用", "10.00", "", "", ""],
+            ["R9102", "李四", "2026-05-01", "2026-05-01", "2026-05-31",
+             "费用", "20.00", "", "", ""],
+        ]))
+        rows = env["reb"].list_reimburses(since="2025-10-30")
+        assert [r["reimburse_no"] for r in rows] == ["R9102"]
+        assert len(env["reb"].list_reimburses()) == 2
+
+
+class TestBusinessRules:
+    """模块六：业务规则配置引擎重构（作用域 / 自动优先级 / 阻断优先 / 警告放行 / 豁免）。"""
+
+    @staticmethod
+    def _rule(env, name, rule_type, config=None, scope="invoice",
+              action="block", enabled=True):
+        from app.repository.repos import rule_repo
+        with env["db"].tx() as conn:
+            return rule_repo.insert(conn, {
+                "name": name, "rule_type": rule_type, "scope": scope,
+                "action": action, "priority": rule_repo.next_priority(conn),
+                "stop_on_fail": False, "config": config or {},
+                "tags": [], "enabled": enabled})
+
+    def test_priority_auto_increment_and_reorder(self, env):
+        """废除数字优先级：新增按 10/20/30… 自动生成，上移/下移后重排。"""
+        from app.repository.repos import rule_repo
+        a = self._rule(env, "规则A", "amount", {"max": 1000})
+        b = self._rule(env, "规则B", "amount", {"min": 3000})
+        with env["db"].read() as conn:
+            custom = [r for r in rule_repo.list_all(conn) if not r["is_core"]]
+        assert [r["id"] for r in custom] == [a, b]
+        assert [r["priority"] for r in custom] == [10, 20]
+        with env["db"].tx() as conn:
+            rule_repo.reorder(conn, [b, a])
+        with env["db"].read() as conn:
+            custom = [r for r in rule_repo.list_all(conn) if not r["is_core"]]
+        assert [r["id"] for r in custom] == [b, a]
+        assert [r["priority"] for r in custom] == [10, 20]
+
+    def test_block_rule_stops_unique_key_match(self, env):
+        """阻断规则拦截唯一键直配：落 UNMATCHED 并写明「× 匹配失败：」。"""
+        env["reb"].import_excel("r.xlsx", make_excel([
+            ["R12001", "张三", "2026-09-10", "2026-09-01", "2026-09-30",
+             "费用", "6500.00", "I1200000001", "", ""]]))
+        env["inv"].import_files([("a.xml", "", xml_invoice("I1200000001", "6500.00"))],
+                                skip_match=True)
+        self._rule(env, "金额上限5000", "amount", {"max": 5000})
+        env["match"].run_matching()
+        with env["db"].read() as conn:
+            rows = env["match_repo"].list(conn, statuses=["UNMATCHED"])
+            invs = env["invoice_repo"].list(conn)
+        assert len(rows) == 1 and rows[0]["reimburse_id"] is not None
+        assert rows[0]["message"].startswith("× 匹配失败：")
+        assert "价税合计（6500）超过规则限制（5000）" in rows[0]["message"]
+        assert invs[0]["status"] == "NORMAL"     # 不改发票状态，待人工处理 / 豁免
+
+    def test_warn_rule_allows_match_with_warning(self, env):
+        """警告放行：允许匹配，规则文案落 warning_msg。"""
+        env["reb"].import_excel("r.xlsx", make_excel([
+            ["R12002", "张三", "2026-09-10", "2026-09-01", "2026-09-30",
+             "费用", "6500.00", "I1200000002", "", ""]]))
+        env["inv"].import_files([("a.xml", "", xml_invoice("I1200000002", "6500.00"))],
+                                skip_match=True)
+        self._rule(env, "金额上限5000", "amount", {"max": 5000}, action="warn")
+        summary = env["match"].run_matching()
+        assert summary["auto_matched"] == 1
+        with env["db"].read() as conn:
+            rows = env["match_repo"].list(conn, statuses=["MATCHED"])
+        assert rows and "超过规则限制（5000）" in rows[0]["warning_msg"]
+
+    def test_many_to_one_removes_only_blocked_invoice(self, env):
+        """一对多单点剔除：只剔除违规发票，不整单打回（余下无法凑齐则不生成组合）。"""
+        env["reb"].import_excel("r.xlsx", make_excel([
+            ["R13001", "张三", "2026-09-10", "2026-09-01", "2026-09-30",
+             "费用", "600.00", "", "", ""]]))
+        env["inv"].import_files([
+            ("a.xml", "", xml_invoice("I1300000001", "100.00")),
+            ("b.xml", "", xml_invoice("I1300000002", "200.00")),
+            ("c.xml", "", xml_invoice("I1300000003", "300.00", seller="黑名单供应商")),
+        ], skip_match=True)
+        self._rule(env, "销方黑名单", "seller_blacklist", {"sellers": ["黑名单供应商"]})
+        summary = env["match"].run_matching()
+        assert summary["many_to_one"] == 0          # 剔除后凑不齐，不生成组合
+        with env["db"].read() as conn:
+            rows = env["match_repo"].list(conn)
+            invs = env["invoice_repo"].list(conn)
+        blocked = [r for r in rows if "黑名单" in (r["message"] or "")]
+        assert blocked and blocked[0]["message"].startswith("× 匹配失败：")
+        assert all(i["status"] == "NORMAL" for i in invs)   # 未整单打回
+
+    def test_exempt_requires_reason_and_writes_audit(self, env):
+        """临时豁免：理由必填，强制绑定并写审计日志。"""
+        env["reb"].import_excel("r.xlsx", make_excel([
+            ["R14001", "张三", "2026-09-10", "2026-09-01", "2026-09-30",
+             "费用", "6500.00", "I1400000001", "", ""]]))
+        env["inv"].import_files([("a.xml", "", xml_invoice("I1400000001", "6500.00"))],
+                                skip_match=True)
+        self._rule(env, "金额上限5000", "amount", {"max": 5000})
+        env["match"].run_matching()
+        with env["db"].read() as conn:
+            mid = env["match_repo"].list(conn, statuses=["UNMATCHED"])[0]["id"]
+        r1 = env["match"].exempt_match(mid, "admin", "")
+        assert not r1["ok"] and "理由" in r1["message"]
+        r2 = env["match"].exempt_match(mid, "admin", "领导特批，已核实业务真实")
+        assert r2["ok"]
+        with env["db"].read() as conn:
+            m = env["match_repo"].get(conn, mid)
+            inv = env["invoice_repo"].list(conn)[0]
+            logs = conn.execute(
+                "SELECT * FROM audit_log WHERE action = 'rule_exempt'").fetchall()
+        assert m["status"] == "CONFIRMED" and "临时豁免" in m["warning_msg"]
+        assert inv["status"] == "MATCHED"
+        assert len(logs) == 1 and "领导特批" in logs[0]["detail"]
+
+    def test_auto_correct_cannot_bypass_block(self, env):
+        """一键更正不得绕过规则阻断：更正结果保留，但仍为 UNMATCHED。"""
+        env["reb"].import_excel("r.xlsx", make_excel([
+            ["R16001", "张三", "2026-09-10", "2026-09-01", "2026-09-30",
+             "费用", "6000.00", "I1600000001", "", ""]]))
+        env["inv"].import_files([("a.xml", "", xml_invoice("I1600000001", "6500.00"))],
+                                skip_match=True)
+        env["match"].run_matching()          # 金额差 >1 元 -> UNMATCHED（情况 C）
+        self._rule(env, "金额上限5000", "amount", {"max": 5000})
+        with env["db"].read() as conn:
+            mid = env["match_repo"].list(conn, statuses=["UNMATCHED"])[0]["id"]
+        r = env["match"].auto_correct(mid, "admin")
+        assert not r["ok"] and r["message"].startswith("× 匹配失败：")
+        with env["db"].read() as conn:
+            m = env["match_repo"].get(conn, mid)
+        assert m["status"] == "UNMATCHED"
+
+    def test_quick_fix_cannot_bypass_block(self, env):
+        """快捷修复（非强制绑定）不得把被阻断的一对直接置为已匹配。"""
+        env["reb"].import_excel("r.xlsx", make_excel([
+            ["R17001", "张三", "2026-09-10", "2026-09-01", "2026-09-30",
+             "费用", "6000.00", "I1700000001", "", ""]]))
+        env["inv"].import_files([("a.xml", "", xml_invoice("I1700000001", "6500.00"))],
+                                skip_match=True)
+        self._rule(env, "金额上限5000", "amount", {"max": 5000})
+        with env["db"].read() as conn:
+            inv_id = env["invoice_repo"].list(conn)[0]["id"]
+            reb_id = env["reimburse_repo"].list(conn)[0]["id"]
+        r = env["match"].quick_fix(invoice_id=inv_id, reimburse_id=reb_id,
+                                   reb_fields={"amount": "6500"})
+        assert r["ok"] and r["status"] == "UNMATCHED"
+        assert r["message"].startswith("× 匹配失败：")
+        with env["db"].read() as conn:
+            inv = env["invoice_repo"].get(conn, inv_id)
+        assert inv["status"] == "NORMAL"
+
+
+def row_ids(env):
+    with env["db"].read() as conn:
+        return [r["id"] for r in env["invoice_repo"].list(conn)]
+
+
 

@@ -577,8 +577,10 @@ def delete_batch(batch_id: str, operator: str = None) -> dict:
 
 
 def list_reimburses(batch_id: str = None, keyword: str = None,
-                    template_id: int = None) -> List[dict]:
+                    template_id: int = None, since: str = None) -> List[dict]:
     """报销单列表：分类 = 报销单自身分类（与发票侧隔离），已匹配时附发票侧分类与冲突。
+
+    since: 冷热分离下界（按报销日期，None = 取全部历史；无日期行保留）。
 
     未匹配：只展示报销单自身分类（reimburse_category 人工值 > 导入的费用类型），可点击修改，
             绝不会影响任何发票（模块二「两座孤岛」）。
@@ -587,7 +589,8 @@ def list_reimburses(batch_id: str = None, keyword: str = None,
     from app.service import invoice_service   # 惰性导入，避免服务层循环依赖
 
     with db.read() as conn:
-        rows = reimburse_repo.list(conn, batch_id=batch_id, keyword=keyword)
+        rows = reimburse_repo.list(conn, batch_id=batch_id, keyword=keyword,
+                                   since=since)
         active_ids = match_repo.active_reimburse_ids(conn)
         invoices = match_repo.matched_invoice_ids(conn, [r["id"] for r in rows])
         all_ids = sorted({iid for ids in invoices.values() for iid in ids})
