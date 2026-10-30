@@ -362,9 +362,10 @@ def _release_active_matches(conn, reimburse_ids: List[int], operator: str) -> Li
         active = match_repo.active_for_reimburse(conn, rid)
         if active:
             from app.service.status_flow import change_invoice_status
+            reb_no = (reimburse_repo.get(conn, rid) or {}).get("reimburse_no") or "—"
             try:
                 change_invoice_status(conn, active["invoice_id"], "NORMAL",
-                                      f"报销单 #{rid} 删除，解除匹配", operator)
+                                      f"报销单 {reb_no} 删除，解除匹配", operator)
                 released.append(active["invoice_id"])
             except Exception as e:
                 logger.warning("释放发票 #%s 匹配失败: %s", active["invoice_id"], e)

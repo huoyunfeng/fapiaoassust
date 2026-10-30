@@ -442,23 +442,25 @@ def _issue_rows(report: dict) -> List[list]:
     for i in report["abnormal"]:
         issues = _raw_json(i).get("issues", [])
         msg = "; ".join(x.get("message", "") for x in issues) or _raw_json(i).get("error", "")
-        rows.append(["异常发票(ABNORMAL)", f"#{i['id']} {i.get('invoice_no', '')}", msg, ""])
+        rows.append(["异常发票(ABNORMAL)", i.get("invoice_no") or "（无号）", msg, ""])
     for i in report["duplicates"]:
         raw = _raw_json(i)
-        rows.append(["重复发票(DUPLICATE)", f"#{i['id']} {i.get('invoice_no', '')}",
-                     raw.get("dup_reason", ""), f"重复于发票 #{raw.get('dup_of', '')}"])
+        rows.append(["重复发票(DUPLICATE)", i.get("invoice_no") or "（无号）",
+                     raw.get("dup_reason", ""), "重复于已存在的同内容发票"])
     for m in report["details"]:
         ms = m["match"]["status"]
         if ms in ("SUSPICIOUS", "CONFLICT") or (ms == "UNMATCHED" and m["match"]["reimburse_id"]):
+            reb_no = (m["match"].get("reimburse_no")
+                      or ((m.get("reimburse") or {}).get("reimburse_no")) or "—")
             rows.append([f"待处理({ms})",
-                         f"match#{m['match']['id']} 发票 {m['match'].get('invoice_no', '')}",
+                         f"发票 {m['match'].get('invoice_no', '') or '（无号）'} / 报销单 {reb_no}",
                          m["match"].get("message", ""),
                          f"score={m['match']['match_score']}"])
     for r in report["unmatched_reimburses"]:
-        rows.append(["未匹配报销单", f"#{r['id']} {r['reimburse_no']}",
+        rows.append(["未匹配报销单", r["reimburse_no"] or "—",
                      f"金额 {r['amount']}", r.get("remark", "")])
     for i in report["unmatched_invoices"]:
-        rows.append(["未匹配发票", f"#{i['id']} {i.get('invoice_no', '')}",
+        rows.append(["未匹配发票", i.get("invoice_no") or "（无号）",
                      f"价税合计 {i.get('total_amount', '')}", i.get("item_summary", "")])
     return rows
 

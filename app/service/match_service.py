@@ -337,7 +337,7 @@ def run_matching(operator: str = None) -> dict:
                 continue
             inv_no = (inv_rows.get(inv_id) or {}).get("invoice_no") or f"#{inv_id}"
             reb_nos = "、".join(
-                (reb_map.get(rid) or {}).get("reimburse_no") or f"#{rid}"
+                (reb_map.get(rid) or {}).get("reimburse_no") or "（未知报销单）"
                 for rid in sorted(rids))
             warn = (f"⚠️ 该发票（{inv_no}）同时被多张报销单作为候选：{reb_nos}，请核实")
             ids = row_ids_by_inv[inv_id]

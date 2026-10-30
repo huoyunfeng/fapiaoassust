@@ -700,7 +700,7 @@ function openInvDrawer(id){
     // ---- 右侧下半：关联匹配记录 ----
     if(d.match){
       matchBox.innerHTML = '<div class="field-grid">' +
-        _frow('报销单号', _esc(d.match.reimburse_no)) +
+        _frow('报销单号', _esc(d.match.reimburse_no || '—')) +
         _frow('提交人', _esc(d.match.submitter)) +
         _frow('报销金额', _amt(d.match.amount)) +
         _frow('匹配方式', _esc(MATCH_TYPE_CN[d.match.match_type] || d.match.match_type)) +
