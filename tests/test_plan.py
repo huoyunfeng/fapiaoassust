@@ -1279,7 +1279,7 @@ class TestQuickFix:
         assert match_row["status"] == "MATCHED"
         assert audit is not None
         assert audit["old_value"] == "UNMATCHED" and audit["new_value"] == "MATCHED"
-        assert "报销金额" in (audit["detail"] or "")
+        assert "金额: 120.00 -> 100.00" in (audit["detail"] or "")
 
     def test_quick_fix_blocks_when_invoice_occupied(self, env):
         """防抢占：发票已生效匹配到其他报销单时立即阻断，且不产生任何写入。"""
@@ -1450,6 +1450,21 @@ class TestBatchCards:
         tid = env["reb"].batch_template_id("batch_T")
         assert isinstance(tid, int)
         assert env["reb"].batch_template_id("batch_不存在") is None
+
+    def test_global_reimburse_no_across_batches(self, env):
+        """模块一.1：跨批次/跨模板导入的缺号报销单全局连续递增，不按模板重置。"""
+        env["reb"].import_excel("r1.xlsx", make_excel([
+            ["", "张三", "2026-09-10", "2026-09-01", "2026-09-30", "费用", "99.00", "", "", ""],
+            ["", "李四", "2026-09-10", "2026-09-01", "2026-09-30", "费用", "100.00", "", "", ""],
+        ]), batch_id="batch_G1")
+        env["reb"].import_excel("r2.xlsx", make_excel([
+            ["", "王五", "2026-09-10", "2026-09-01", "2026-09-30", "费用", "300.00", "", "", ""],
+        ]), batch_id="batch_G2")
+        with env["db"].read() as conn:
+            nos = [r["reimburse_no"] for r in env["reimburse_repo"].list(conn)]
+        assert all(n and n.startswith("BX-") for n in nos)
+        seqs = sorted(int(n.rsplit("-", 1)[1]) for n in nos)
+        assert seqs == list(range(seqs[0], seqs[0] + len(seqs)))   # 全局连续，无撞号
 
     def test_display_columns_all_batches(self):
         """全部批次模式：核心公共列，隐藏模板专属列。"""
@@ -2083,15 +2098,22 @@ class TestManualReasonAuditStruct:
         assert res["ok"] is True
         with env["db"].read() as conn:
             msg = env["match_repo"].get(conn, m["id"])["message"]
+            raw_detail = env["match_repo"].get(conn, m["id"])["detail"]
             aud = conn.execute(
                 "SELECT detail FROM audit_log WHERE action = 'match_quick_fix' "
                 "ORDER BY id DESC LIMIT 1").fetchone()
         assert msg.startswith(f"快捷修复 [报销单:{reb['reimburse_no']}] ")
-        assert "(报销金额: 29.30 -> 29.50)" in msg
+        assert "(金额: 29.30 -> 29.50)" in msg
         assert f"匹配 [发票:{inv['invoice_no']}]" in msg
         detail = audit_service.parse_detail(aud["detail"])
         assert {"field": "报销金额", "old": "29.30", "new": "29.50"} in detail["changes"]
         assert detail["reason_option"] == "员工补了凭证"
+        # 模块三.2：match_result.detail 与 audit_log.detail 同源（结构化 JSON）
+        import json
+        md = json.loads(raw_detail or "{}")
+        assert md["reimburse_no"] == reb["reimburse_no"]
+        assert md["invoice_no"] == inv["invoice_no"]
+        assert {"field": "报销金额", "old": "29.30", "new": "29.50"} in md["changes"]
 
     def test_parse_detail_legacy_text(self):
         """历史纯文本 detail 仍可解析（降级为 legacy 字段）。"""

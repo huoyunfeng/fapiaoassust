@@ -27,11 +27,10 @@
   <div class="card">
     {% if pending %}
     <table>
-      <tr><th>匹配</th><th>状态</th><th>类型</th><th>分数</th><th>发票号</th><th>价税合计</th>
+      <tr><th>状态</th><th>类型</th><th>分数</th><th>发票号</th><th>价税合计</th>
           <th>报销单号</th><th>报销金额</th><th>智能提醒</th><th>操作</th></tr>
       {% for m in pending %}
       <tr id="row-{{ m.id }}"{% if m.soft_locked %} style="background:#fffbeb;"{% endif %}>
-        <td>#{{ m.id }}</td>
         <td><span class="badge {{ m.status|badge }}">{{ m.status|dstatus|status_cn }}</span>
             {% if m.soft_locked %}<span class="badge badge-yellow" title="⚠️ 该发票同时被多张报销单作为候选，请核实">⚠️ 多单候选</span>{% endif %}</td>
         <td class="muted">{{ m.match_type|match_type_cn }}</td>
@@ -61,11 +60,10 @@
   <div class="card">
     {% if active %}
     <table>
-      <tr><th>匹配</th><th>状态</th><th>类型</th><th>分数</th><th>发票号</th><th>价税合计</th>
+      <tr><th>状态</th><th>类型</th><th>分数</th><th>发票号</th><th>价税合计</th>
           <th>报销单号</th><th>确认人</th><th>时间</th><th>操作</th></tr>
       {% for m in active %}
       <tr id="row-{{ m.id }}">
-        <td>#{{ m.id }}</td>
         <td><span class="badge {{ m.status|badge }}">{{ m.status|dstatus|status_cn }}</span></td>
         <td class="muted">{{ m.match_type|match_type_cn }}</td>
         <td>{{ '%.2f'|format(m.match_score) }}</td>
@@ -120,9 +118,9 @@
   <div class="card">
     {% if unmatched %}
     <table>
-      <tr><th>匹配</th><th>发票号</th><th>价税合计</th><th>开票日期</th><th>购买方</th><th>说明</th></tr>
+      <tr><th>发票号</th><th>价税合计</th><th>开票日期</th><th>购买方</th><th>说明</th></tr>
       {% for m in unmatched %}
-      <tr id="row-{{ m.id }}"><td>#{{ m.id }}</td><td>{{ m.invoice_no or '—' }}</td><td>{{ m.total_amount or '—' }}</td>
+      <tr id="row-{{ m.id }}"><td>{{ m.invoice_no or '—' }}</td><td>{{ m.total_amount or '—' }}</td>
           <td>{{ m.invoice_date or '—' }}</td><td class="wrap">{{ m.buyer_name }}</td>
           <td class="wrap muted">{{ m.message }}</td></tr>
       {% endfor %}

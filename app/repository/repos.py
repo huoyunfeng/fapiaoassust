@@ -388,18 +388,44 @@ class MatchRepo:
         cur = conn.execute(
             """INSERT INTO match_result
                (invoice_id, reimburse_id, match_type, match_score, status,
-                diff_fields, match_points, message, confirmed_by, confirmed_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                diff_fields, match_points, message, detail, confirmed_by, confirmed_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 data["invoice_id"], data.get("reimburse_id"), data["match_type"],
                 data.get("match_score", 0.0), data["status"],
                 json.dumps(data.get("diff_fields", []), ensure_ascii=False),
                 json.dumps(data.get("match_points", []), ensure_ascii=False),
-                data.get("message", ""), data.get("confirmed_by"),
+                data.get("message", ""),
+                json.dumps(data.get("detail") or {}, ensure_ascii=False),
+                data.get("confirmed_by"),
                 data.get("confirmed_at"),
             ),
         )
         return cur.lastrowid
+
+    def update_detail(self, conn: sqlite3.Connection, mid: int,
+                      detail: dict, message: str = None) -> None:
+        """写入人工干预/快捷修复的详细依据（detail JSON，与 audit_log.detail 同源）。"""
+        if message is None:
+            conn.execute(
+                "UPDATE match_result SET detail = ?, updated_at = datetime('now','localtime') WHERE id = ?",
+                (json.dumps(detail or {}, ensure_ascii=False), mid),
+            )
+        else:
+            conn.execute(
+                """UPDATE match_result SET detail = ?, message = ?,
+                   updated_at = datetime('now','localtime') WHERE id = ?""",
+                (json.dumps(detail or {}, ensure_ascii=False), message, mid),
+            )
+
+    def update_detail_by_invoice(self, conn: sqlite3.Connection, invoice_id: int,
+                                 detail: dict, message: str = None) -> None:
+        """按发票定位最新一条匹配记录并写入 detail。"""
+        row = conn.execute(
+            "SELECT id FROM match_result WHERE invoice_id = ? ORDER BY id DESC LIMIT 1",
+            (invoice_id,)).fetchone()
+        if row:
+            self.update_detail(conn, row["id"], detail, message)
 
     def insert_pair(self, conn: sqlite3.Connection, match_id: int,
                     invoice_id: int, reimburse_id: int) -> None:

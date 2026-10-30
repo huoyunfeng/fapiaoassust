@@ -224,11 +224,10 @@
       <div class="db-sub-pane on" id="tab-pending">
         {% if suspicious %}
         <table class="db-mini-table">
-          <thead><tr><th>匹配</th><th>发票号</th><th>报销单</th><th>分数</th><th>说明</th><th>操作</th></tr></thead>
+          <thead><tr><th>发票号</th><th>报销单</th><th>分数</th><th>说明</th><th>操作</th></tr></thead>
           <tbody>
           {% for d in suspicious[:8] %}
             <tr class="clickable" title="点击定位" onclick="location.href='/matches?tab=pending&focus_id={{ d.match.id }}'">
-              <td>#{{ d.match.id }}</td>
               <td>{{ d.match.invoice_no or '—' }}</td>
               <td>{{ d.reimburse.reimburse_no if d.reimburse else (d.match.reimburse_no or '汇总') }}</td>
               <td style="font-weight:600;">{{ '%.2f'|format(d.match.match_score) }}</td>
@@ -252,11 +251,10 @@
       <div class="db-sub-pane" id="tab-abnormal">
         {% if abnormal %}
         <table class="db-mini-table">
-          <thead><tr><th>ID</th><th>发票号</th><th>异常原因</th><th>操作</th></tr></thead>
+          <thead><tr><th>发票号</th><th>异常原因</th><th>操作</th></tr></thead>
           <tbody>
           {% for i in abnormal[:8] %}
             <tr>
-              <td>#{{ i.id }}</td>
               <td>{{ i.invoice_no or '—' }}</td>
               <td class="wrap muted">{{ ((i.raw|fromjson).error or ((i.raw|fromjson).issues|map(attribute='message')|join('; ')) or '—')[:40] }}</td>
               <td><a class="btn btn-sm btn-outline go" href="/invoices/{{ i.id }}">去处理</a></td>

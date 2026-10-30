@@ -46,7 +46,7 @@ def _next_reimburse_no(conn) -> str:
     # 尝试用 kv 表（有则原子自增，无则初始化）
     try:
         row = conn.execute(
-            "INSERT INTO kv (k, v) VALUES (?, 0) "
+            "INSERT INTO kv (k, v) VALUES (?, 1) "
             "ON CONFLICT(k) DO UPDATE SET v = CAST(CAST(v AS INTEGER) + 1 AS TEXT) "
             "WHERE k = ? RETURNING v",
             (_BX_NEXT, _BX_NEXT)).fetchone()

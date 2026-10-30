@@ -568,24 +568,27 @@ function sgOpenDrawer(a){
     : (a.action || '').includes('reject') ? 'badge-gray'
     : 'badge-blue';
   
-  // 中部：关联对象（有业务单号就展示 + 跳转）
+  // 中部：关联对象（只展示业务单号，不显示底层主键 ID）
   const invNo = detailObj.invoice_no || '';
   const rebNo = detailObj.reimburse_no || '';
   const mid = detailObj.match_id || '';
   let objLinks = '';
   if(rebNo) {
-    const rebId = detailObj.reimburse_id || '';
     objLinks += `<div style="margin:4px 0;"><span class="sg-dk" style="display:inline-block;width:72px;color:var(--muted);">报销单号</span>
-      <a href="${rebId ? '/reimburses?focus_id=' + rebId : '#'}" style="color:#2563eb;">${_escHtml(rebNo)}</a></div>`;
+      <a href="/reimburses?q=${encodeURIComponent(rebNo)}" style="color:#2563eb;"
+         title="报销单 ${_escHtml(rebNo)}">${_escHtml(rebNo)}</a></div>`;
   }
   if(invNo) {
     const invId = detailObj.invoice_id || '';
+    const invTip = `发票 ${invNo}` + (detailObj.why ? '｜' + detailObj.why : '');
     objLinks += `<div style="margin:4px 0;"><span class="sg-dk" style="display:inline-block;width:72px;color:var(--muted);">发票号</span>
-      <a href="${invId ? '/invoices/' + invId : '#'}" style="color:#2563eb;">${_escHtml(invNo)}</a></div>`;
+      ${invId
+        ? `<a href="/invoices/${invId}" style="color:#2563eb;" title="${_escHtml(invTip)}">${_escHtml(invNo)}</a>`
+        : `<span title="${_escHtml(invTip)}">${_escHtml(invNo)}</span>`}</div>`;
   }
   if(mid) {
-    objLinks += `<div style="margin:4px 0;"><span class="sg-dk" style="display:inline-block;width:72px;color:var(--muted);">匹配ID</span>
-      <span class="muted">#${mid}</span></div>`;
+    objLinks += `<div style="margin:4px 0;"><span class="sg-dk" style="display:inline-block;width:72px;color:var(--muted);">匹配详情</span>
+      <a href="/matches/${mid}/compare" target="_blank" style="color:#2563eb;">并排比对</a></div>`;
   }
   if(!objLinks) {
     objLinks = `<div class="muted">（无关联单号）</div>`;

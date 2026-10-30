@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block content %}
 <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
-  <h1 style="font-size:20px;">发票 #{{ inv.id }}
+  <h1 style="font-size:20px;">发票 {{ inv.invoice_no or '（无号）' }}
     <span class="badge {{ inv.status|badge }}" style="vertical-align:middle;">{{ inv.status|status_cn }}</span>
     {% if inv.is_red_flush %}<span class="badge badge-red">红冲</span>{% endif %}
   </h1>

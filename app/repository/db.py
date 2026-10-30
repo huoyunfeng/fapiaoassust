@@ -178,6 +178,7 @@ CREATE TABLE IF NOT EXISTS match_result (
     diff_fields  TEXT NOT NULL DEFAULT '[]',
     match_points TEXT NOT NULL DEFAULT '[]',
     message      TEXT NOT NULL DEFAULT '',
+    detail       TEXT NOT NULL DEFAULT '{}',
     confirmed_by TEXT,
     confirmed_at TEXT,
     created_at   TEXT NOT NULL DEFAULT (datetime('now','localtime')),
@@ -397,6 +398,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if "match_points" not in mcols:
         conn.execute("ALTER TABLE match_result ADD COLUMN match_points TEXT NOT NULL DEFAULT '[]'")
         logger.info("迁移: match_result 表新增列 match_points")
+    # 1a2. match_result 表新增 detail（人工干预依据 + 变更前后值，JSON；与 audit_log.detail 同源）
+    if "detail" not in mcols:
+        conn.execute("ALTER TABLE match_result ADD COLUMN detail TEXT NOT NULL DEFAULT '{}'")
+        logger.info("迁移: match_result 表新增列 detail")
 
     # 1b. invoice 表移除冗余列（items_detail 已合并为 item_summary）
     inv_cols = {r[1] for r in conn.execute("PRAGMA table_info(invoice)").fetchall()}

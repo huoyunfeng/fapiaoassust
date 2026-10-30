@@ -250,16 +250,16 @@ tr.row-out{opacity:0;transform:translateX(24px);transition:opacity .3s,transform
     <label>报销费用类型<input id="fixRebExpenseType" placeholder="留空表示不修改"></label>
     <label>发票分类<select id="fixCategory"></select></label>
     <label class="rp-check">
-      <input type="checkbox" id="fixForce"> 强制绑定（跳过评分，直接生效）
+      <input type="checkbox" id="fixForce" onchange="syncFixReason()"> 强制绑定（跳过评分，直接生效）
     </label>
-    <label>操作原因（分类）<select id="fixReasonOption">
+    <label>操作原因（分类）<select id="fixReasonOption" onchange="syncFixReason()">
       <option value="">— 请选择 —</option>
       <option>业务人员已确认</option>
       <option>员工补了凭证</option>
       <option>票号填错已核实</option>
       <option>特殊情况</option>
     </select></label>
-    <label>操作原因（详细说明）<input id="fixReason" placeholder="可留空"></label>
+    <label>操作原因（详细说明）<input id="fixReason" placeholder="选择「特殊情况」时必填" oninput="syncFixReason()"></label>
     <p class="muted">保存后只对当前这一条报销单重新匹配：成功则状态翻转为已匹配，仍存在差异则更新差异原因；全部操作写入审计日志。</p>
   </div>
   <div class="rp-drawer-foot">
@@ -483,17 +483,40 @@ function detailActions(d){
   return '<span class="muted">—</span>';
 }
 
+// 业务单号单元格：蓝色链接 + 悬浮快照（不展示主键 ID）
+function noLink(href, text, tip){
+  const t = tip ? ` title="${esc(tip)}"` : '';
+  return href ? `<a class="link" href="${href}"${t}>${esc(text)}</a>`
+              : `<span${t}>${esc(text)}</span>`;
+}
+function rebNoCell(d){
+  if(!d.reimburse_no) return '<span class="muted">—</span>';
+  const tip = [`报销单 ${d.reimburse_no}`,
+    d.submitter ? `提交人: ${d.submitter}` : '',
+    d.reimburse_amount != null ? `报销金额: ${money(d.reimburse_amount)}` : '',
+    d.expense_type ? `费用类型: ${d.expense_type}` : ''].filter(Boolean).join(' | ');
+  return noLink(`/reimburses?q=${encodeURIComponent(d.reimburse_no)}`, d.reimburse_no, tip);
+}
+function invNoCell(d){
+  if(!d.invoice_no) return '<span class="muted">—</span>';
+  const tip = [`发票 ${d.invoice_no}`,
+    d.invoice_total != null ? `价税合计: ${money(d.invoice_total)}` : '',
+    d.invoice_seller ? `销方: ${d.invoice_seller}` : '',
+    d.invoice_date ? `开票日期: ${d.invoice_date}` : ''].filter(Boolean).join(' | ');
+  return noLink(d.invoice_id ? `/invoices/${d.invoice_id}` : '', d.invoice_no, tip);
+}
+
 function cellHtml(d, c){
   switch(c.k){
     case 'status':
       return `<span class="badge ${STATUS_BADGE[d.status] || 'badge-gray'}">${esc(STATUS_CN[d.status] || d.status)}</span>`;
-    case 'reimburse_no': return esc(d.reimburse_no || '—');
+    case 'reimburse_no': return rebNoCell(d);
     case 'amount_cmp': return amountCell(d);
     case 'type': return `<span class="muted">${esc(TYPE_CN[d.match_type] || d.match_type || '—')}</span>`;
     case 'score': return Number(d.score || 0).toFixed(2);
     case 'submitter': return esc(d.submitter || '—');
     case 'expense_type': return esc(d.expense_type || '—');
-    case 'invoice_no': return esc(d.invoice_no || '—');
+    case 'invoice_no': return invNoCell(d);
     case 'invoice_date': return esc(d.invoice_date || '—');
     case 'amount_diff':
       return `<span class="${Number(d.amount_diff) > 0 ? 'diff-danger' : ''}">${money(d.amount_diff)}</span>`;
@@ -565,9 +588,11 @@ function renderUnmatchedReb(){
   document.getElementById('tblUnmatchedReb').innerHTML = rows.length ? `<table>
     <thead><tr><th>单号</th><th class="num-cell">金额</th><th>提交人</th><th>费用类型</th><th>登记发票号</th><th>操作</th></tr></thead>
     <tbody>${rows.map(r => `
-      <tr><td><b>${esc(r.reimburse_no || ('#' + r.id))}</b></td><td class="num-cell">${money(r.amount)}</td>
+      <tr><td><a class="link" href="/reimburses?q=${encodeURIComponent(r.reimburse_no || '')}"
+            title="报销单 ${esc(r.reimburse_no || '')}｜金额: ${money(r.amount)}｜提交人: ${esc(r.submitter || '—')}"><b>${esc(r.reimburse_no || '—')}</b></a></td>
+        <td class="num-cell">${money(r.amount)}</td>
         <td>${esc(r.submitter || '—')}</td><td>${esc(r.expense_type || '—')}</td><td>${esc(r.invoice_no || '—')}</td>
-        <td><a class="link" href="/reimburses?status=unmatched&focus_id=${r.id}">去处理</a></td></tr>`).join('')}
+        <td><a class="link" href="/reimburses?status=unmatched&q=${encodeURIComponent(r.reimburse_no || '')}">去处理</a></td></tr>`).join('')}
     </tbody></table>` : '<p class="empty-state">暂无未匹配报销单</p>';
   document.getElementById('pagerReb').innerHTML = pagerHtml('rpage', S.data.pagers && S.data.pagers.rpage);
 }
@@ -588,7 +613,8 @@ function renderUnmatchedInv(){
         <tr id="irow-${r.id}">
           <td><input type="checkbox" class="inv-chk" value="${r.id}"
                ${S.selInv.has(r.id) ? 'checked' : ''} onchange="toggleInv(${r.id}, this.checked)"></td>
-          <td><b>${esc(r.invoice_no || ('#' + r.id))}</b></td>
+          <td><a class="link" href="/invoices/${r.id}"
+                title="发票 ${esc(r.invoice_no || '（无号）')}｜价税合计: ${money(r.total_amount)}｜销方: ${esc(r.seller_name || '—')}"><b>${esc(r.invoice_no || '（无号）')}</b></a></td>
           <td class="wrap">${esc(r.item_summary || '—')}</td>
           <td class="wrap">${esc(r.seller_name || '—')}</td>
           <td class="num-cell">${money(r.total_amount)}</td>
@@ -615,7 +641,7 @@ function renderSimple(key, tableId, pagerId, param, emptyText){
   document.getElementById(tableId).innerHTML = rows.length ? `<table>
     <thead><tr><th>发票号</th><th>状态</th></tr></thead>
     <tbody>${rows.map(r => `
-      <tr><td><a class="link" href="/invoices/${r.id}"><b>${esc(r.invoice_no || ('#' + r.id))}</b></a></td>
+      <tr><td><a class="link" href="/invoices/${r.id}"><b>${esc(r.invoice_no || '（无号）')}</b></a></td>
         <td><span class="badge ${STATUS_BADGE[r.status] || 'badge-gray'}">${esc(STATUS_CN[r.status] || r.status)}</span></td></tr>`).join('')}
     </tbody></table>` : `<p class="empty-state">暂无${emptyText}</p>`;
   document.getElementById(pagerId).innerHTML = pagerHtml(param, S.data.pagers && S.data.pagers[param]);
@@ -854,6 +880,24 @@ function openFix(matchId){
   document.getElementById('fixBg').classList.add('on');
   document.getElementById('fixDrawer').classList.add('on');
   document.getElementById('fixDrawer').setAttribute('aria-hidden', 'false');
+  syncFixReason();
+}
+
+// 人工干预强校验：强制绑定必须选原因；选「特殊情况」必须填详细说明，否则按钮置灰
+function fixReasonIssue(){
+  const opt = document.getElementById('fixReasonOption').value;
+  const txt = document.getElementById('fixReason').value.trim();
+  const force = document.getElementById('fixForce').checked;
+  if(force && !opt) return '强制绑定必须选择操作原因';
+  if(opt === '特殊情况' && !txt) return '选择「特殊情况」时必须填写详细说明';
+  return '';
+}
+function syncFixReason(){
+  const btn = document.getElementById('fixSubmit');
+  if(!btn) return;
+  const issue = fixReasonIssue();
+  btn.disabled = !!issue;
+  btn.title = issue || '';
 }
 function closeFix(){
   document.getElementById('fixBg').classList.remove('on');
@@ -895,6 +939,8 @@ function quickCategory(from){
 async function submitFix(){
   const f = S.fix;
   if(!f) return;
+  const issue = fixReasonIssue();
+  if(issue){ notice('请先补充操作原因', issue); syncFixReason(); return; }
   const btn = document.getElementById('fixSubmit');
   const val = id => document.getElementById(id).value.trim();
   const invNo = val('fixInvoiceNo');
@@ -996,7 +1042,7 @@ function renderBindList(){
     return `<label class="bind-row${S.bindSel === r.id ? ' on' : ''}">
       <input type="radio" name="bindReb" value="${r.id}" ${S.bindSel === r.id ? 'checked' : ''}
              onchange="pickBind(${r.id})">
-      <span class="bind-no">${esc(r.reimburse_no || ('#' + r.id))}</span>
+      <span class="bind-no">${esc(r.reimburse_no || '—')}</span>
       <span class="bind-amt">¥${money(r.amount)}</span>
       <span class="muted">${esc(r.submitter || '—')}</span>
       ${perfect ? '<span class="bind-tag">🎯 金额完美匹配</span>' : ''}

@@ -57,7 +57,7 @@
   </section>
 
   <section class="cmp-card">
-    <h2>系统推荐发票 <span class="tag">匹配 #{{ data.invoice.match_id }}</span></h2>
+    <h2>系统推荐发票</h2>
     <div class="kv"><span class="k">金额</span>
       <span class="v mono">¥{{ '%.2f'|format(data.invoice.total_amount) if data.invoice.total_amount is not none else '—' }}</span></div>
     <div class="kv"><span class="k">日期</span>

@@ -439,20 +439,27 @@ def confirm(match_id: int, operator: str = None, note: str = "",
         from app.service import audit_service
         inv = invoice_repo.get(conn, m["invoice_id"]) or {}
         reb = reimburse_repo.get(conn, reb_id) if reb_id else {}
+        conf_detail = {
+            "why": note or "人工确认匹配",
+            "reason_option": reason_option or "",
+            "invoice_id": m["invoice_id"],
+            "invoice_no": inv.get("invoice_no") or "",
+            "reimburse_id": reb_id,
+            "reimburse_no": (reb or {}).get("reimburse_no") or "",
+            "match_id": match_id,
+            "changes": [{"field": "匹配状态",
+                         "old": m["status"], "new": "CONFIRMED"}],
+        }
+        if reason_option:
+            conf_detail["changes"].append(
+                {"field": "确认依据", "old": "-", "new": reason_option})
+        match_repo.update_detail(conn, match_id, conf_detail)
         audit_service.log(conn, "match_confirm", "match", match_id,
-                          f"匹配 #{match_id}", m["status"], "CONFIRMED",
+                          (f"发票:{inv.get('invoice_no') or '（无号）'} / "
+                           f"报销单:{(reb or {}).get('reimburse_no') or '—'}"),
+                          m["status"], "CONFIRMED",
                           operator, note or "人工确认匹配",
-                          detail_json={
-                              "why": note or "人工确认匹配",
-                              "reason_option": reason_option or "",
-                              "invoice_id": m["invoice_id"],
-                              "invoice_no": inv.get("invoice_no") or "",
-                              "reimburse_id": reb_id,
-                              "reimburse_no": (reb or {}).get("reimburse_no") or "",
-                              "match_id": match_id,
-                              "changes": [{"field": "匹配状态",
-                                           "old": m["status"], "new": "CONFIRMED"}],
-                          })
+                          detail_json=conf_detail)
         return {"ok": True, "message": "已确认匹配"}
 
 
@@ -477,20 +484,27 @@ def reject(match_id: int, operator: str = None, note: str = "",
         inv = invoice_repo.get(conn, m["invoice_id"]) or {}
         reb_id = m.get("reimburse_id")
         reb = reimburse_repo.get(conn, reb_id) if reb_id else {}
+        rej_detail = {
+            "why": note or "人工拒绝匹配",
+            "reason_option": reason_option or "",
+            "invoice_id": m["invoice_id"],
+            "invoice_no": inv.get("invoice_no") or "",
+            "reimburse_id": reb_id,
+            "reimburse_no": (reb or {}).get("reimburse_no") or "",
+            "match_id": match_id,
+            "changes": [{"field": "匹配状态",
+                         "old": m["status"], "new": "REJECTED"}],
+        }
+        if reason_option:
+            rej_detail["changes"].append(
+                {"field": "拒绝依据", "old": "-", "new": reason_option})
+        match_repo.update_detail(conn, match_id, rej_detail)
         audit_service.log(conn, "match_reject", "match", match_id,
-                          f"匹配 #{match_id}", m["status"], "REJECTED",
+                          (f"发票:{inv.get('invoice_no') or '（无号）'} / "
+                           f"报销单:{(reb or {}).get('reimburse_no') or '—'}"),
+                          m["status"], "REJECTED",
                           operator, note or "人工拒绝匹配",
-                          detail_json={
-                              "why": note or "人工拒绝匹配",
-                              "reason_option": reason_option or "",
-                              "invoice_id": m["invoice_id"],
-                              "invoice_no": inv.get("invoice_no") or "",
-                              "reimburse_id": reb_id,
-                              "reimburse_no": (reb or {}).get("reimburse_no") or "",
-                              "match_id": match_id,
-                              "changes": [{"field": "匹配状态",
-                                           "old": m["status"], "new": "REJECTED"}],
-                          })
+                          detail_json=rej_detail)
         return {"ok": True, "message": "已拒绝匹配"}
 
 
@@ -548,6 +562,17 @@ def auto_correct(match_id: int, operator: str = None) -> dict:
         # 2) 立即重新评分（更正后应为精确命中）
         ps = _engine.score_pair(_inv_dto(inv_row), _reb_dto(reb_row),
                                 company_repo.tax_nos(conn))
+        mil = (f"发票:{inv_row.get('invoice_no') or '（无号）'} / "
+               f"报销单:{reb_row.get('reimburse_no') or '—'}")
+        inv_no_a = inv_row.get("invoice_no") or ""
+        reb_no_a = reb_row.get("reimburse_no") or ""
+        fix2_detail = {
+            "why": trail, "reason_option": "",
+            "invoice_id": m["invoice_id"], "invoice_no": inv_no_a,
+            "reimburse_id": m["reimburse_id"], "reimburse_no": reb_no_a,
+            "match_id": match_id,
+            "changes": [{"field": "更正内容", "old": "-", "new": trail}],
+        }
         if _engine.decide_status(ps) == "MATCHED":
             match_repo.update_status(conn, match_id, "MATCHED", operator)
             conn.execute(
@@ -559,9 +584,13 @@ def auto_correct(match_id: int, operator: str = None) -> dict:
             _detect_conflict(conn, m["reimburse_id"])
             _write_note(conn, reb_row, [])
             from app.service import audit_service
+            fix2_detail["changes"].append(
+                {"field": "匹配状态", "old": m["status"], "new": "MATCHED"})
+            match_repo.update_detail(conn, match_id, fix2_detail)
             audit_service.log(conn, "match_auto_correct", "match", match_id,
-                              f"发票 #{m['invoice_id']}", m["status"], "MATCHED",
-                              operator, f"一键更正并重新精确匹配：{trail}")
+                              mil, m["status"], "MATCHED",
+                              operator, f"一键更正并重新精确匹配：{trail}",
+                              detail_json=fix2_detail)
             return {"ok": True, "message": f"一键更正成功：{trail}，重新精确匹配通过"}
 
         # 3) 仍不匹配（如日期超期间等）：更正结果保留，保持 UNMATCHED 并写明原因
@@ -573,9 +602,15 @@ def auto_correct(match_id: int, operator: str = None) -> dict:
             (ps.score, f"一键更正：{trail}；更正后仍不匹配：{reason}", match_id))
         _write_note(conn, reb_row, [f"更正后仍不匹配：{reason}"])
         from app.service import audit_service
+        fix2_detail["changes"].append(
+            {"field": "匹配状态", "old": m["status"], "new": "UNMATCHED"})
+        fix2_detail["changes"].append(
+            {"field": "仍不匹配原因", "old": "-", "new": reason})
+        match_repo.update_detail(conn, match_id, fix2_detail)
         audit_service.log(conn, "match_auto_correct", "match", match_id,
-                          f"发票 #{m['invoice_id']}", m["status"], "UNMATCHED",
-                          operator, f"一键更正后仍不匹配：{trail}；{reason}")
+                          mil, m["status"], "UNMATCHED",
+                          operator, f"一键更正后仍不匹配：{trail}；{reason}",
+                          detail_json=fix2_detail)
         return {"ok": False, "message": f"已更正：{trail}；但仍不匹配：{reason}，请人工重新检查"}
 
 
@@ -615,12 +650,30 @@ def manual_match(invoice_id: int, reimburse_id: int, operator: str = None,
         if gap:
             reason_text += f"（金额差异 ¥{gap:.2f}，已强制绑定）"
         message = f"人工绑定 [发票:{inv_no or '（无号）'}] 至 [报销单:{reb_no}]（依据: {basis}）"
+        manual_detail = {
+            "why": reason_text,
+            "reason_option": reason_option or "",
+            "invoice_id": invoice_id,
+            "invoice_no": inv_no,
+            "reimburse_id": reimburse_id,
+            "reimburse_no": reb_no,
+            "match_id": None,
+            "changes": [
+                {"field": "绑定依据", "old": "-", "new": basis},
+                {"field": "汇总金额差异",
+                 "old": "-",
+                 "new": f"¥{gap:.2f}" if gap else "无"},
+            ],
+        }
         mid = match_repo.insert(conn, {
             "invoice_id": invoice_id, "reimburse_id": reimburse_id,
             "match_type": T_MANUAL, "match_score": 1.0, "status": "CONFIRMED",
             "diff_fields": ["amount"] if gap else [], "message": message,
+            "detail": manual_detail,
             "confirmed_by": operator, "confirmed_at": None,
         })
+        manual_detail["match_id"] = mid
+        match_repo.update_detail(conn, mid, manual_detail)
         change_invoice_status(conn, invoice_id, "MATCHED",
                               f"人工指定匹配 (match#{mid})", operator)
         # 匹配生效瞬间校验双方分类（模块四）
@@ -633,23 +686,9 @@ def manual_match(invoice_id: int, reimburse_id: int, operator: str = None,
         kicked = _finalize_binding(conn, mid, invoice_id, reimburse_id, operator)
         from app.service import audit_service
         audit_service.log(conn, "match_manual", "match", mid,
-                          f"人工绑定 #{mid}",
+                          f"发票:{inv_no or '（无号）'} / 报销单:{reb_no or '—'}",
                           "UNMATCHED", "CONFIRMED", operator, reason_text,
-                          detail_json={
-                              "why": reason_text,
-                              "reason_option": reason_option or "",
-                              "invoice_id": invoice_id,
-                              "invoice_no": inv_no,
-                              "reimburse_id": reimburse_id,
-                              "reimburse_no": reb_no,
-                              "match_id": mid,
-                              "changes": [
-                                  {"field": "绑定依据", "old": "-", "new": basis},
-                                  {"field": "汇总金额差异",
-                                   "old": "-",
-                                   "new": f"¥{gap:.2f}" if gap else "无"},
-                              ],
-                          })
+                          detail_json=manual_detail)
         return {"ok": True,
                 "message": "人工匹配成功" + (f"（已踢出 {kicked} 条其他候选）" if kicked else ""),
                 "amount_diff": float(gap) if gap is not None else None}
@@ -705,13 +744,30 @@ def manual_batch_bind(invoice_ids: List[int], reimburse_id: int,
             msg_tail = f"（汇总金额差异 ¥{gap:.2f}）" if gap else ""
             note = (f"人工绑定 [发票:{inv_no or '（无号）'}] "
                     f"至 [报销单:{reb_no}]（依据: {basis}）{msg_tail}")
+            batch_detail = {
+                "why": reason_text,
+                "reason_option": reason_option or "",
+                "invoice_id": inv["id"],
+                "invoice_no": inv_no,
+                "reimburse_id": reimburse_id,
+                "reimburse_no": reb_no,
+                "match_id": None,
+                "batch": True,
+                "changes": [
+                    {"field": "绑定依据", "old": "-", "new": basis},
+                    {"field": "汇总金额差异", "old": "-",
+                     "new": f"¥{gap:.2f}" if gap else "无"},
+                ],
+            }
             match_repo.delete_for_invoice(conn, inv["id"])
             mid = match_repo.insert(conn, {
                 "invoice_id": inv["id"], "reimburse_id": None,
                 "match_type": T_MANUAL, "match_score": 1.0, "status": "MATCHED",
                 "diff_fields": ["amount"] if gap else [], "message": note,
-                "confirmed_by": operator,
+                "detail": batch_detail, "confirmed_by": operator,
             })
+            batch_detail["match_id"] = mid
+            match_repo.update_detail(conn, mid, batch_detail)
             match_repo.insert_pair(conn, mid, inv["id"], reimburse_id)
             change_invoice_status(conn, inv["id"], "MATCHED",
                                   f"人工批量绑定 (match#{mid})", operator)
@@ -832,6 +888,10 @@ def quick_fix(match_id: int = None, invoice_id: int = None,
             else:
                 parsed_reb[key] = str(raw).strip()
 
+        # message 摘要用短标签（金额/票号），变更对比表用完整字段名（报销金额/发票号）
+        msg_labels = {"invoice_no": "票号", "invoice_code": "发票代码",
+                      "invoice_date": "日期", "total_amount": "价税合计",
+                      "amount": "金额", "expense_type": "费用类型"}
         labels = {"invoice_no": "发票号", "invoice_code": "发票代码",
                   "invoice_date": "日期", "total_amount": "价税合计",
                   "amount": "报销金额", "expense_type": "费用类型"}
@@ -845,7 +905,7 @@ def quick_fix(match_id: int = None, invoice_id: int = None,
             for k, v in parsed_inv.items():
                 old_v = str(old_inv.get(k) or "")
                 if old_v != v:
-                    trail.append(f"{labels.get(k, k)}: {old_v or '空'} -> {v}")
+                    trail.append(f"{msg_labels.get(k, k)}: {old_v or '空'} -> {v}")
                     changes.append({"field": labels.get(k, k),
                                     "old": old_v or "空", "new": v})
         if parsed_reb:
@@ -855,7 +915,7 @@ def quick_fix(match_id: int = None, invoice_id: int = None,
             for k, v in parsed_reb.items():
                 old_v = str(reb.get(k) or "")
                 if old_v != v:
-                    trail.append(f"{labels.get(k, k)}: {old_v or '空'} -> {v}")
+                    trail.append(f"{msg_labels.get(k, k)}: {old_v or '空'} -> {v}")
                     changes.append({"field": labels.get(k, k),
                                     "old": old_v or "空", "new": v})
 
@@ -933,21 +993,25 @@ def quick_fix(match_id: int = None, invoice_id: int = None,
             _write_note(conn, reb, list(ps.field_notes))
 
         from app.service import audit_service
+        fix_detail = {
+            "why": reason or basis,
+            "reason_option": reason_option or "",
+            "invoice_id": invoice_id,
+            "invoice_no": inv_no,
+            "reimburse_id": reimburse_id,
+            "reimburse_no": reb_no,
+            "match_id": mid,
+            "changes": changes,
+            "force_bind": bool(force_bind),
+        }
+        # 匹配记录同步留存结构化依据（模块三.2：match_result.detail 与 audit_log.detail 同源）
+        match_repo.update_detail(conn, mid, fix_detail)
         audit_service.log(
             conn, "match_quick_fix", "match", mid,
-            f"快捷修复 #{mid}", old_status, new_status, operator,
+            f"发票:{inv_no or '（无号）'} / 报销单:{reb_no or '—'}",
+            old_status, new_status, operator,
             "；".join(trail) if trail else "无字段变更",
-            detail_json={
-                "why": reason or basis,
-                "reason_option": reason_option or "",
-                "invoice_id": invoice_id,
-                "invoice_no": inv_no,
-                "reimburse_id": reimburse_id,
-                "reimburse_no": reb_no,
-                "match_id": mid,
-                "changes": changes,
-                "force_bind": bool(force_bind),
-            })
+            detail_json=fix_detail)
 
         return {"ok": True,
                 "message": ("快捷修复成功，已匹配" if new_status == "MATCHED"
@@ -1006,23 +1070,28 @@ def unmatch(match_id: int, operator: str = None, reason: str = "",
                                   f"解除匹配 (match#{match_id}): {reason or '无备注'}", operator)
         except Exception as e:
             logger.warning("解除匹配时发票状态回转失败: %s", e)
+        unm_detail = {
+            "why": reason or "无备注",
+            "reason_option": reason_option or "",
+            "invoice_id": m["invoice_id"],
+            "invoice_no": inv_no,
+            "reimburse_id": reb_id,
+            "reimburse_no": reb_no,
+            "match_id": match_id,
+            "changes": [
+                {"field": "匹配状态", "old": "已匹配", "new": "已解除"},
+                {"field": "解除后处理", "old": "-", "new": detail},
+            ],
+        }
+        if reason_option:
+            unm_detail["changes"].append(
+                {"field": "解除依据", "old": "-", "new": reason_option})
+        match_repo.update_detail(conn, match_id, unm_detail)
         audit_service.log(conn, "unmatch", "match", match_id,
-                          f"解除匹配 #{match_id}",
+                          f"发票:{inv_no or '（无号）'} / 报销单:{reb_no or '—'}",
                           "已匹配", "已解除", operator,
                           (reason or "无备注") + "；" + detail,
-                          detail_json={
-                              "why": reason or "无备注",
-                              "reason_option": reason_option or "",
-                              "invoice_id": m["invoice_id"],
-                              "invoice_no": inv_no,
-                              "reimburse_id": reb_id,
-                              "reimburse_no": reb_no,
-                              "match_id": match_id,
-                              "changes": [
-                                  {"field": "匹配状态", "old": "已匹配", "new": "已解除"},
-                                  {"field": "解除后处理", "old": "-", "new": detail},
-                              ],
-                          })
+                          detail_json=unm_detail)
         return {"ok": True, "message": "匹配已解除，发票回到 NORMAL；双方分类各自保留"}
 
 
@@ -1054,10 +1123,12 @@ def _finalize_binding(conn, match_id: int, invoice_id: int,
             kicked.append(other["id"])
     if kicked:
         from app.service import audit_service
+        inv_no = (invoice_repo.get(conn, invoice_id) or {}).get("invoice_no") or "（无号）"
+        reb_no = (reimburse_repo.get(conn, reb_id) or {}).get("reimburse_no") or "—" if reb_id else "—"
         audit_service.log(conn, "match_arbitrate", "match", match_id,
-                          "发票 #%s" % invoice_id, "候选池 %d 条" % len(kicked),
+                          f"发票:{inv_no} / 报销单:{reb_no}", "候选池 %d 条" % len(kicked),
                           "正式绑定", operator,
-                          "人工终裁踢出候选记录：%s" % kicked)
+                          f"人工终裁踢出 {len(kicked)} 条候选记录")
     return len(kicked)
 
 
