@@ -1463,8 +1463,24 @@ class TestBatchCards:
         with env["db"].read() as conn:
             nos = [r["reimburse_no"] for r in env["reimburse_repo"].list(conn)]
         assert all(n and n.startswith("BX-") for n in nos)
+        assert all(len(n.rsplit("-", 1)[1]) >= 4 for n in nos)   # 序号补零到 4 位
         seqs = sorted(int(n.rsplit("-", 1)[1]) for n in nos)
         assert seqs == list(range(seqs[0], seqs[0] + len(seqs)))   # 全局连续，无撞号
+
+    def test_renumber_legacy_auto_nos(self, env):
+        """旧版「自动-…」单号迁移为 BX-YYYYMMDD-全局序号（幂等）。"""
+        env["reb"].import_excel("r1.xlsx", make_excel([
+            ["", "张三", "2026-09-10", "2026-09-01", "2026-09-30", "费用", "99.00", "", "", ""],
+        ]), batch_id="batch_OLD")
+        with env["db"].tx() as conn:
+            conn.execute(
+                "UPDATE reimburse SET reimburse_no = '自动-7_df57-0001' "
+                "WHERE id = (SELECT MIN(id) FROM reimburse)")
+        assert env["reb"].renumber_legacy_auto_nos() == 1
+        with env["db"].read() as conn:
+            nos = [r["reimburse_no"] for r in env["reimburse_repo"].list(conn)]
+        assert all(n.startswith("BX-") and n.count("-") == 2 for n in nos)
+        assert env["reb"].renumber_legacy_auto_nos() == 0   # 幂等，不重复迁移
 
     def test_display_columns_all_batches(self):
         """全部批次模式：核心公共列，隐藏模板专属列。"""

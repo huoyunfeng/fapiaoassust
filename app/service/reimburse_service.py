@@ -36,13 +36,13 @@ _BX_RE = re.compile(r"^BX-(\d{8})-(\d+)$")
 _BX_NEXT = "seq_bx_reimburse"  # 存储键（SQLite 临时表或 kv 表；无则用 MAX + 1）
 
 
-def _next_reimburse_no(conn) -> str:
-    """在当前事务内原子生成下一个全局递增的报销单号（日期取今天）。
+def _next_reimburse_no(conn, day: Optional[str] = None) -> str:
+    """在当前事务内原子生成下一个全局递增的报销单号（日期默认取今天）。
 
     优先用 kv 表 seq_bx_reimburse；没有 kv 表则退化为 MAX + 1，
     并在首次生成时初始化 kv 表以避免并发竞态。
     """
-    today = datetime.now().strftime("%Y%m%d")
+    today = day or datetime.now().strftime("%Y%m%d")
     # 尝试用 kv 表（有则原子自增，无则初始化）
     try:
         row = conn.execute(
@@ -62,12 +62,94 @@ def _next_reimburse_no(conn) -> str:
             if m:
                 seq = int(m.group(2))
         seq += 1
-    return f"BX-{today}-{seq}"
+    return f"BX-{today}-{seq:04d}"
 
 
 def _is_auto_no(no: str) -> bool:
     """判断是否为系统自动生成的 BX-* 单号（用于审计留痕）。"""
     return bool(_BX_RE.match(no or ""))
+
+
+_RENUMBER_FLAG = "renumber_legacy_done"
+
+
+def _replace_refs(conn, old: str, new: str) -> None:
+    """把文本字段中的旧单号替换为新单号（带右边界，避免 0004 误伤 00045）。"""
+    pat = re.compile(re.escape(old) + r"(?!\d)")
+    rows = conn.execute(
+        "SELECT id, message, detail FROM match_result "
+        "WHERE instr(message, ?) > 0 OR instr(detail, ?) > 0",
+        (old, old)).fetchall()
+    for r in rows:
+        conn.execute("UPDATE match_result SET message = ?, detail = ? WHERE id = ?",
+                     (pat.sub(new, r["message"] or ""),
+                      pat.sub(new, r["detail"] or ""), r["id"]))
+    rows = conn.execute(
+        "SELECT id, target_label, old_value, new_value, detail FROM audit_log "
+        "WHERE instr(target_label, ?) > 0 OR instr(old_value, ?) > 0 "
+        "OR instr(new_value, ?) > 0 OR instr(detail, ?) > 0",
+        (old, old, old, old)).fetchall()
+    for r in rows:
+        conn.execute(
+            "UPDATE audit_log SET target_label = ?, old_value = ?, "
+            "new_value = ?, detail = ? WHERE id = ?",
+            tuple(pat.sub(new, r[c] or "")
+                  for c in ("target_label", "old_value", "new_value", "detail"))
+            + (r["id"],))
+
+
+def normalize_bx_padding() -> int:
+    """统一单号序号为 4 位（BX-YYYYMMDD-0001），并同步替换引用中的旧写法。"""
+    with db.tx() as conn:
+        rows = conn.execute(
+            "SELECT id, reimburse_no FROM reimburse "
+            "WHERE reimburse_no LIKE 'BX-%'").fetchall()
+        changed = 0
+        for r in rows:
+            m = _BX_RE.match(r["reimburse_no"] or "")
+            if not m:
+                continue
+            new = f"BX-{m.group(1)}-{int(m.group(2)):04d}"
+            old = r["reimburse_no"]
+            if new == old:
+                continue
+            conn.execute("UPDATE reimburse SET reimburse_no = ? WHERE id = ?",
+                         (new, r["id"]))
+            _replace_refs(conn, old, new)
+            changed += 1
+        return changed
+
+
+def renumber_legacy_auto_nos() -> int:
+    """一次性迁移：把旧版本生成的「自动-…」单号改为 BX-YYYYMMDD-全局序号。
+
+    - 日期段取该行导入日（created_at），序号继续沿用全局自增序列；
+    - 同步替换匹配记录 / 审计日志中残留的旧单号，保证全站单号一致；
+    - 幂等：完成后写 kv 标记，重启不会重复迁移。
+    """
+    with db.tx() as conn:
+        if conn.execute("SELECT 1 FROM kv WHERE k = ?", (_RENUMBER_FLAG,)).fetchone():
+            return 0
+        rows = conn.execute(
+            "SELECT id, reimburse_no, created_at FROM reimburse "
+            "WHERE reimburse_no LIKE '自动-%' ORDER BY id ASC").fetchall()
+        changed = 0
+        for row in rows:
+            old = row["reimburse_no"] or ""
+            day = (row["created_at"] or "")[:10].replace("-", "")
+            if not (len(day) == 8 and day.isdigit()):
+                day = datetime.now().strftime("%Y%m%d")
+            new = _next_reimburse_no(conn, day)
+            conn.execute("UPDATE reimburse SET reimburse_no = ? WHERE id = ?",
+                         (new, row["id"]))
+            _replace_refs(conn, old, new)
+            changed += 1
+        conn.execute(
+            "INSERT INTO kv (k, v) VALUES (?, '1') "
+            "ON CONFLICT(k) DO UPDATE SET v = '1'", (_RENUMBER_FLAG,))
+        if changed:
+            logger.info("旧版自动单号迁移完成: %s 条 -> BX-YYYYMMDD-全局序号", changed)
+        return changed
 
 
 def _to_dto(record: dict, batch_id: str, template_id: Optional[int] = None) -> ReimburseDTO:
