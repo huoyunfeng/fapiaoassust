@@ -11,9 +11,10 @@
 - 全局自增不受批次 / 模板影响，跨模板连续递增
 - Excel 缺号 / 手动录入未填号时自动生成；用户显式填写的号保留（做唯一性校验）
 """
+import json
 import re
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Optional
 
 from app.config import settings
@@ -175,16 +176,150 @@ def _to_dto(record: dict, batch_id: str, template_id: Optional[int] = None) -> R
     )
 
 
+# ---------------------------------------------------------------- 查重
+# 核心字段：日期 + 金额 + 起止地点/项目名称（extra_data 中命中关键词的键值）
+_LOC_KEYWORDS = ("起始", "起点", "出发", "到达", "终点", "地点", "项目",
+                 "事由", "行程", "路线")
+
+
+def _norm_amount(v) -> str:
+    try:
+        return f"{float(str(v).replace(',', '')):.2f}"
+    except (TypeError, ValueError):
+        return str(v or "").strip()
+
+
+def _extra_dict(v) -> dict:
+    if isinstance(v, dict):
+        return v
+    if isinstance(v, str) and v:
+        try:
+            d = json.loads(v)
+            return d if isinstance(d, dict) else {}
+        except (json.JSONDecodeError, TypeError):
+            return {}
+    return {}
+
+
+def _dup_key(row: dict) -> tuple:
+    """查重指纹：日期 + 金额 + 期间 + 发票号 + 提交人 + 起止地点/项目等核心附加字段。"""
+    extra = _extra_dict(row.get("extra_data"))
+    core = []
+    for k, v in sorted(extra.items()):
+        if any(kw in str(k) for kw in _LOC_KEYWORDS):
+            sv = str(v).strip()
+            if sv:
+                core.append(f"{k}={sv}")
+    return (str(row.get("reimburse_date") or "").strip(),
+            _norm_amount(row.get("amount")),
+            str(row.get("period_start") or "").strip(),
+            str(row.get("period_end") or "").strip(),
+            str(row.get("invoice_no") or "").strip().upper(),
+            str(row.get("submitter") or "").strip(),
+            tuple(core))
+
+
+def _dup_summary(row: dict) -> str:
+    """重复明细的摘要列：项目/事由 + 金额 + 提交人。"""
+    extra = _extra_dict(row.get("extra_data"))
+    title = ""
+    for k, v in extra.items():
+        if any(kw in str(k) for kw in ("项目", "事由", "行程", "路线")):
+            title = str(v).strip()
+            if title:
+                break
+    parts = [p for p in (title, row.get("submitter"), str(row.get("expense_type") or "")) if p]
+    return " · ".join(parts) or "—"
+
+
+def detect_duplicates(rows: List[dict], template_id: Optional[int],
+                      months: int = 3) -> List[dict]:
+    """双层查重：Excel 内部重复 + 同模板历史记录（默认近 3 个月）。
+
+    命中的行会被就地标记 `_dup` / `_dup_refs`，供导入阶段跳过或打标入库。
+    返回重复明细列表：[{type, row, summary, no, ref_row, import_date}]。
+    """
+    dups: List[dict] = []
+    seen: dict = {}
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    # ---- 1. 内部查重：本次导入 Excel 内完全相同的两行（保留先出现的一行）----
+    for i, row in enumerate(rows, start=1):
+        key = _dup_key(row)
+        if key in seen:
+            ref_ord, ref_row = seen[key]
+            refs = row.setdefault("_dup_refs", [])
+            refs.append({"type": "import", "row": row.get("row_index") or 0,
+                         "ref_row": ref_row, "ref_seq": ref_ord,
+                         "date": today})
+            row["_dup"] = True
+            dups.append({"type": "import", "row": row.get("row_index") or 0,
+                         "seq": i, "summary": _dup_summary(row),
+                         "no": "", "ref_row": ref_row,
+                         "date": today})
+        else:
+            seen[key] = (i, row.get("row_index") or 0)
+
+    # ---- 2. 历史查重：同模板下近 N 个月的已有记录（无模板时不比对，避免误判）----
+    hist: List[dict] = []
+    if template_id is not None:
+        since = (datetime.now() - timedelta(days=months * 30)).strftime("%Y-%m-%d")
+        with db.read() as conn:
+            hist = [dict(r) for r in conn.execute(
+                "SELECT id, reimburse_no, reimburse_date, period_start, period_end, "
+                "amount, invoice_no, submitter, extra_data, created_at "
+                "FROM reimburse WHERE created_at >= ? AND template_id = ?",
+                (since, template_id)).fetchall()]
+    hist_map: dict = {}
+    for h in hist:
+        hist_map.setdefault(_dup_key(h), h)
+
+    for i, row in enumerate(rows, start=1):
+        h = hist_map.get(_dup_key(row))
+        if not h:
+            continue
+        refs = row.setdefault("_dup_refs", [])
+        refs.append({"type": "history", "row": row.get("row_index") or 0,
+                     "no": h.get("reimburse_no") or "",
+                     "date": (h.get("created_at") or "")[:10] or today})
+        row["_dup"] = True
+        dups.append({"type": "history", "row": row.get("row_index") or 0,
+                     "seq": i, "summary": _dup_summary(row),
+                     "no": h.get("reimburse_no") or "", "ref_row": 0,
+                     "date": (h.get("created_at") or "")[:10] or today})
+
+    dups.sort(key=lambda d: (d.get("row") or 0, d.get("type")))
+    return dups
+
+
+def _attach_dup(row: dict) -> None:
+    """解析入库行的查重标记，供列表页渲染「疑似重复」标签与气泡。"""
+    refs: List[dict] = []
+    raw = row.get("dup_source") or ""
+    if raw:
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, list):
+                refs = parsed
+        except (json.JSONDecodeError, TypeError):
+            refs = []
+    row["is_dup"] = bool(row.get("dup_flag")) or bool(refs)
+    row["dup_items"] = refs
+
+
 def import_excel(file_name: str, content: bytes, batch_id: str = None,
                  operator: str = None, template_id: int = None,
                  fields_config: dict = None, remember_mapping: bool = True,
-                 enterprise_id: int = None, user_id: int = None) -> dict:
+                 enterprise_id: int = None, user_id: int = None,
+                 on_duplicate: str = None) -> dict:
     """导入报销单 Excel。
 
     Args:
         template_id:  指定模板 id（优先）。为 None 时取默认模板。
         fields_config: 临时字段映射（映射向导传入）。优先级高于 template_id。
         remember_mapping: 导入成功后是否回写映射缓存。
+        on_duplicate:  查重处置：None=先返回确认；"skip"=只导入不重复行；
+                       "force"=全部导入并打「疑似重复」标记。
     """
     operator = operator or settings.default_operator
     batch_id = batch_id or f"batch_{datetime.now().strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:4]}"
@@ -250,12 +385,35 @@ def import_excel(file_name: str, content: bytes, batch_id: str = None,
             "row_index": dto.row_index,
         })
 
+    # ---- 模块三/四：落库前双层查重（内部 + 历史），重复需用户确认处置 ----
+    duplicates = detect_duplicates(rows, template_id) if rows else []
+    if duplicates and on_duplicate not in ("skip", "force"):
+        # 阻断式提示：先不入库，返回重复明细供前端弹窗确认
+        return {
+            "ok": True,
+            "need_confirm": True,
+            "message": f"检测到 {len(duplicates)} 条重复数据，请确认处置方式",
+            "duplicates": duplicates,
+            "batch_id": batch_id,
+            "imported": 0,
+            "errors": errors,
+            "template_id": template_id,
+        }
+    dup_skipped = 0
+    if duplicates and on_duplicate == "skip":
+        kept = [r for r in rows if not r.get("_dup")]
+        dup_skipped = len(rows) - len(kept)
+        rows = kept
+
     with db.tx() as conn:
         imported = 0
         for r in rows:
             # 空号 -> 原子生成；用户填了号 -> 保留
             if not r["reimburse_no"]:
                 r["reimburse_no"] = _next_reimburse_no(conn)
+            refs = r.get("_dup_refs") or []
+            r["dup_flag"] = 1 if refs else 0
+            r["dup_source"] = json.dumps(refs, ensure_ascii=False) if refs else ""
             try:
                 reimburse_repo.insert(conn, r)
                 imported += 1
@@ -290,6 +448,12 @@ def import_excel(file_name: str, content: bytes, batch_id: str = None,
 
     # ---- 结果判定：无成功行时返回失败，前端需给出降级选项（设计 §12.4）----
     if imported == 0:
+        if dup_skipped:
+            # 全部行都是重复且用户选择跳过：不算失败，明确告知未导入新数据
+            return {"ok": True, "message": f"已跳过 {dup_skipped} 条重复数据，未导入新数据",
+                    "batch_id": batch_id, "imported": 0, "errors": errors,
+                    "template_id": template_id, "duplicates_skipped": dup_skipped,
+                    "duplicates_forced": 0, "match": None}
         detail = errors[0]["message"] if errors else "未解析到任何数据行"
         return {
             "ok": False,
@@ -309,12 +473,16 @@ def import_excel(file_name: str, content: bytes, batch_id: str = None,
     except Exception as e:
         logger.warning("报销单导入后自动匹配失败: %s", e)
     message = f"导入成功：{imported} 行"
+    if dup_skipped:
+        message += f"；已跳过重复 {dup_skipped} 行"
     if match_summary is not None:
         message += (f"；自动匹配 {match_summary['auto_matched']} 对"
                     f"，待人工确认 {match_summary['pending'] + match_summary['conflict']} 对")
     return {"ok": True, "message": message,
             "batch_id": batch_id, "imported": imported, "errors": errors,
-            "template_id": template_id, "match": match_summary}
+            "template_id": template_id, "match": match_summary,
+            "duplicates_skipped": dup_skipped,
+            "duplicates_forced": sum(1 for r in rows if r.get("dup_flag"))}
 
 
 def manual_create(fields: dict, operator: str = None) -> dict:
@@ -433,6 +601,7 @@ def list_reimburses(batch_id: str = None, keyword: str = None,
             r, invoices.get(r["id"]) or [], decisions,
             (own_map.get(r["id"]) or {}).get("category") or "",
             conflicts.get(r["id"]), dict_names, r["matched"])
+        _attach_dup(r)
     return rows
 
 

@@ -1483,11 +1483,11 @@ class TestBatchCards:
         assert env["reb"].renumber_legacy_auto_nos() == 0   # 幂等，不重复迁移
 
     def test_display_columns_all_batches(self):
-        """全部批次模式：核心公共列，隐藏模板专属列。"""
+        """全部批次模式：核心公共列，隐藏模板专属列；唯一「序号」列由视觉索引生成。"""
         from app.web.pages import _display_columns
         cols = _display_columns([], all_batches=True)
         keys = [c["key"] for c in cols]
-        assert keys == ["id", "reimburse_no", "_template", "submitter",
+        assert keys == ["_seq", "reimburse_no", "_template", "submitter",
                         "reimburse_date", "expense_type", "amount", "invoice_no"]
 
     def test_display_columns_batch_template(self, env):
@@ -1499,8 +1499,95 @@ class TestBatchCards:
         tid = env["reb"].batch_template_id("batch_C")
         cols = _display_columns([], all_batches=False, batch_tpl_id=tid)
         labels = [c["label"] for c in cols]
-        # 经典模板表头：含报销单号/金额；备注列被剔除
+        # 经典模板表头：含报销单号/金额；备注列被剔除；序号列由视觉索引生成
         assert "报销单号" in labels and "金额" in labels and "备注" not in labels
+        assert labels[0] == "序号" and cols[0]["key"] == "_seq"
+
+    def test_read_reimburses_ignores_seq_column(self):
+        """Excel / 模板中的「序号」列强制忽略，绝不进入自定义字段。"""
+        import io
+        from openpyxl import Workbook
+        from app.infra.excel import read_reimburses
+        wb = Workbook(); ws = wb.active
+        ws.append(["序号", "金额", "项目名称"])
+        ws.append([1, "100.00", "打车"])
+        ws.append([2, "200.00", "餐费"])
+        buf = io.BytesIO(); wb.save(buf)
+        fc = {"fields": [
+            {"excel_header": "序号", "system_key": "custom_序号",
+             "is_custom": True, "display_name": "序号"},
+            {"excel_header": "金额", "system_key": "amount"},
+            {"excel_header": "项目名称", "system_key": "custom_项目",
+             "is_custom": True, "display_name": "项目名称"},
+        ], "options": {"header_row": 1}}
+        rows, _ = read_reimburses(buf.getvalue(), fields_config=fc)
+        assert len(rows) == 2
+        assert "序号" not in rows[0]["_extra"]
+        assert rows[0]["_extra"]["项目名称"] == "打车"
+
+    def test_import_blocks_internal_duplicate_then_skip(self, env):
+        """模块三/四：Excel 内部重复 -> 阻断确认；跳过只导入不重复行。"""
+        rows = [
+            ["", "张三", "2026-09-10", "2026-09-01", "2026-09-30", "交通费", "100.00", "", "", "打车"],
+            ["", "张三", "2026-09-10", "2026-09-01", "2026-09-30", "交通费", "100.00", "", "", "打车"],
+        ]
+        r = env["reb"].import_excel("d.xlsx", make_excel(rows))
+        assert r["need_confirm"] is True and r["imported"] == 0
+        assert len(r["duplicates"]) == 1
+        dup = r["duplicates"][0]
+        assert dup["type"] == "import" and dup["row"] == 3 and dup["ref_row"] == 2
+        # 跳过重复项：只保留第 2 行
+        r2 = env["reb"].import_excel("d.xlsx", make_excel(rows), on_duplicate="skip")
+        assert r2["ok"] and r2["imported"] == 1
+        assert r2["duplicates_skipped"] == 1
+        with env["db"].read() as conn:
+            assert len(env["reimburse_repo"].list(conn)) == 1
+
+    def test_import_force_marks_dup_flag_and_bubble(self, env):
+        """模块五：强制全部导入 -> 重复行入库并打标，列表暴露溯源信息。"""
+        import json
+        rows = [
+            ["", "张三", "2026-09-10", "2026-09-01", "2026-09-30", "交通费", "100.00", "", "", "打车"],
+            ["", "张三", "2026-09-10", "2026-09-01", "2026-09-30", "交通费", "100.00", "", "", "打车"],
+        ]
+        r = env["reb"].import_excel("d.xlsx", make_excel(rows), on_duplicate="force")
+        assert r["ok"] and r["imported"] == 2 and r["duplicates_forced"] == 1
+        with env["db"].read() as conn:
+            db_rows = env["reimburse_repo"].list(conn)
+        flagged = [x for x in db_rows if x.get("dup_flag")]
+        assert len(flagged) == 1
+        src = json.loads(flagged[0]["dup_source"])
+        assert src and src[0]["type"] == "import" and src[0]["ref_row"] == 2
+        listed = env["reb"].list_reimburses()
+        assert any(x["is_dup"] and x["dup_items"] for x in listed)
+
+    def test_import_blocks_history_duplicate_with_reimburse_no(self, env):
+        """模块三/四：历史近 3 个月同模板重复 -> 返回历史单号供精准提示。"""
+        row = ["", "张三", "2026-09-10", "2026-09-01", "2026-09-30",
+               "交通费", "100.00", "", "", "打车"]
+        r1 = env["reb"].import_excel("a.xlsx", make_excel([row]))
+        assert r1["ok"] and r1["imported"] == 1
+        with env["db"].read() as conn:
+            rev_no = env["reimburse_repo"].list(conn)[0]["reimburse_no"]
+        r2 = env["reb"].import_excel("b.xlsx", make_excel([row]))
+        assert r2["need_confirm"] is True
+        assert r2["duplicates"][0]["type"] == "history"
+        assert r2["duplicates"][0]["no"] == rev_no
+
+    def test_assign_seq_per_batch(self):
+        """模块一/二：全部批次按批次分组，各组序号从 1 开始；单批次连续编号。"""
+        from app.web.pages import _assign_seq
+        rows = [
+            {"batch_id": "bA", "id": 5, "_template_name": "T1"},
+            {"batch_id": "bB", "id": 9, "_template_name": "T2"},
+            {"batch_id": "bA", "id": 2, "_template_name": "T1"},
+        ]
+        _assign_seq(rows, [{"batch_id": "bB"}, {"batch_id": "bA"}])
+        got = [(r["batch_id"], r["_seq"]) for r in rows]
+        assert got == [("bB", 1), ("bA", 1), ("bA", 2)]
+        rows2 = [{"id": 7}, {"id": 3}, {"id": 5}]
+        _assign_seq(rows2, None)
+        assert [r["_seq"] for r in rows2] == [1, 2, 3]
 
 
 # =====================================================================

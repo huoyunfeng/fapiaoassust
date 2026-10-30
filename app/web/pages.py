@@ -155,38 +155,54 @@ def reimburses_page(request: Request, batch_id: Optional[str] = None, q: str = "
         tpl_names = {t["id"]: t["name"] for t in template_service.list()}
         for r in rows:
             r["_template_name"] = tpl_names.get(r.get("template_id")) or "手动录入"
+    _assign_seq(rows, batches if all_batches else None)
     for r in rows:
         r["cells"] = [_cell_value(r, c) for c in columns]
-    _sort_rows(rows, columns)
-    # 分页（排序后切片；focus 定位先算目标行所在页码）
+    # 分页（focus 定位先算目标行所在页码）
     page_size = _norm_page_size(page_size)
     if focus_id:
         idx = next((i for i, r in enumerate(rows) if r.get("id") == focus_id), None)
         if idx is not None:
             page = idx // page_size + 1
     rows, pager = _paginate(rows, page, page_size)
+    # 全部批次模式：当前页内按批次分组，每组首行插入分组标题行
+    prev_batch = None
+    for r in rows:
+        b = r.get("batch_id")
+        r["_group_break"] = bool(all_batches and b != prev_batch)
+        prev_batch = b
     return templates.TemplateResponse(request, "reimburses.html", {
         "request": request, "rows": rows, "batches": batches,
         "batch_id": batch_id, "q": q, "status": status, "columns": columns,
         "pager": pager, "categories": category_service.enabled_names(),
+        "all_batches": all_batches,
     })
 
 
-def _sort_rows(rows: list, columns: list) -> None:
-    """优先按「序号」从小到大排序；无序号时按导入顺序（id 升序）。"""
-    idx = next((i for i, c in enumerate(columns) if c.get("label") == "序号"), None)
-    if idx is None:
+def _assign_seq(rows: list, batches: list = None) -> None:
+    """视觉序号：与 Excel / 数据库主键完全无关，只按当前展示顺序生成。
+
+    - 具体批次：1,2,3… 全量连续（翻页自动衔接，如第二页 21 起）；
+    - 全部批次：先按批次分组排序，每个批次各自从 1 开始。
+    """
+    if batches is None:
         rows.sort(key=lambda r: r.get("id") or 0)
+        for i, r in enumerate(rows, start=1):
+            r["_seq"] = i
         return
-
-    def key(r):
-        s = r["cells"][idx]["text"]
-        try:
-            return (0, float(s))
-        except (ValueError, TypeError):
-            return (1, s)
-
-    rows.sort(key=key)
+    order = {b["batch_id"]: i for i, b in enumerate(batches)}
+    rows.sort(key=lambda r: (order.get(r.get("batch_id"), 999), r.get("id") or 0))
+    counts = {}
+    for r in rows:
+        b = r.get("batch_id") or ""
+        counts[b] = counts.get(b, 0) + 1
+    seq = {}
+    for r in rows:
+        b = r.get("batch_id") or ""
+        seq[b] = seq.get(b, 0) + 1
+        r["_seq"] = seq[b]
+        r["_group_name"] = f"{r.get('_template_name') or '手动录入'} · {b}"
+        r["_group_count"] = counts[b]
 
 
 def _display_columns(rows: list, all_batches: bool = False,
@@ -196,11 +212,13 @@ def _display_columns(rows: list, all_batches: bool = False,
     全部批次模式：只输出核心公共列（序号/单号/来源模板/提交人/日期/费用类型/金额/发票号），
     隐藏各模板的专属列，避免不同模板列混杂错位。
     具体批次模式：严格按该批次绑定的模板字段渲染列头；批次无行时兜底默认模板。
-    两种模式都把「报销单号」列固定在「序号」列右侧。
+    两种模式都只有唯一一列「序号」（前端视觉计数，key=_seq），
+    数据库自增主键与 Excel 原始序号绝不进入表格。
     """
+    from app.infra.excel import is_seq_header
     if all_batches:
         return [
-            {"label": "序号", "key": "id"},
+            {"label": "序号", "key": "_seq"},
             {"label": "报销单号", "key": "reimburse_no"},
             {"label": "来源模板", "key": "_template"},
             {"label": "提交人", "key": "submitter"},
@@ -222,6 +240,8 @@ def _display_columns(rows: list, all_batches: bool = False,
         label = f.get("excel_header") or f.get("display_name") or f.get("system_key") or ""
         if f.get("system_key") == "remark" or label == "备注":
             continue  # 备注不单独成列，不匹配原因统一在「说明」列展示
+        if is_seq_header(label) or f.get("system_key") in ("id", "_seq"):
+            continue  # 模板误映射的「序号/行号」列一律丢弃
         if f.get("is_custom"):
             cols.append({"label": label, "custom": f.get("display_name") or label})
         else:
@@ -230,8 +250,8 @@ def _display_columns(rows: list, all_batches: bool = False,
     if not any(c.get("key") == "expense_type" for c in cols):
         cols.append({"label": "费用类型", "key": "expense_type"})
     # 模块一：报销单号列固定在「序号」列右侧，且始终存在（模板未映射该列时由系统补列）
-    cols = [c for c in cols if c.get("key") != "reimburse_no"]
-    cols.insert(0, {"label": "序号", "key": "id"})
+    cols = [c for c in cols if c.get("key") not in ("reimburse_no", "_seq")]
+    cols.insert(0, {"label": "序号", "key": "_seq"})
     cols.insert(1, {"label": "报销单号", "key": "reimburse_no"})
     return cols
 

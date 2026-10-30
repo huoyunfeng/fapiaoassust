@@ -54,6 +54,26 @@ def read_headers(content: bytes, max_scan: int = 5) -> Tuple[List[str], int]:
     return best_headers, best_row
 
 
+# 视觉序号类列：无论 Excel / 模板是否包含，一律强制忽略（序号由前端按分页生成）
+_SEQ_HEADERS = {"序号", "行号", "行序", "序", "no", "no.", "序号（自动）"}
+
+
+def is_seq_header(name: Any) -> bool:
+    """判断表头是否为「序号 / 行号 / 行序」等纯视觉计数列。"""
+    if name is None:
+        return False
+    s = str(name).strip().lower().replace(" ", "")
+    if not s:
+        return False
+    if s in _SEQ_HEADERS:
+        return True
+    # 形如「序号2」「行号(自动)」的变体
+    for kw in ("序号", "行号", "行序"):
+        if s.startswith(kw) and len(s) <= len(kw) + 6:
+            return True
+    return False
+
+
 def _cell_value(c) -> Any:
     v = c.value
     if v is None:
@@ -145,12 +165,17 @@ def read_reimburses(content: bytes,
             fd = col_map.get(col_idx)
             if fd is None:
                 # 未映射列：表头存在且单元格非空时自动落 extra_data，
-                # 保留「事由 / 起始地点 / 到达地点 / 车牌号」等业务特征
+                # 保留「事由 / 起始地点 / 到达地点 / 车牌号」等业务特征。
+                # 序号类列强制忽略，绝不进入 extra_data（否则会被当作业务字段展示）
                 header_name = headers_by_col.get(col_idx)
                 v = _cell_value(c)
-                if header_name and v is not None and str(v).strip() != "":
+                if (header_name and not is_seq_header(header_name)
+                        and v is not None and str(v).strip() != ""):
                     extra.setdefault(header_name, v)
                 continue
+            if is_seq_header(fd.get("excel_header")) or is_seq_header(
+                    fd.get("display_name")):
+                continue   # 模板误把「序号」列映射成字段：一律忽略
             v = _cell_value(c)
             if v is None or str(v).strip() == "":
                 continue
@@ -178,7 +203,11 @@ def _locate_header(ws, field_defs: List[dict],
     因此按"与模板 excel_header 匹配数最多"的行作为表头行。
     返回 (header_row, {列号: field_def})。
     """
-    wanted = {fd["excel_header"].strip(): fd for fd in field_defs if fd.get("excel_header")}
+    wanted = {fd["excel_header"].strip(): fd for fd in field_defs
+              if fd.get("excel_header")
+              and not is_seq_header(fd.get("excel_header"))
+              and not is_seq_header(fd.get("display_name"))
+              and fd.get("system_key") not in ("id", "_seq")}
     best_row, best_map = fallback_row, {}
     for r_idx, row in enumerate(ws.iter_rows(min_row=1, max_row=max_scan, min_col=1,
                                              max_col=ws.max_column), start=1):

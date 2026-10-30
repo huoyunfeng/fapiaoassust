@@ -120,6 +120,8 @@ CREATE TABLE IF NOT EXISTS reimburse (
     split_type     TEXT NOT NULL DEFAULT 'none',
     raw_row        TEXT NOT NULL DEFAULT '{}',
     row_index      INTEGER NOT NULL,
+    dup_flag       INTEGER NOT NULL DEFAULT 0,
+    dup_source     TEXT NOT NULL DEFAULT '',
     created_at     TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
 
@@ -388,6 +390,8 @@ def _migrate(conn: sqlite3.Connection) -> None:
         ("source_row",  "ALTER TABLE reimburse ADD COLUMN source_row INTEGER"),
         ("parent_id",   "ALTER TABLE reimburse ADD COLUMN parent_id INTEGER"),
         ("split_type",  "ALTER TABLE reimburse ADD COLUMN split_type TEXT NOT NULL DEFAULT 'none'"),
+        ("dup_flag",    "ALTER TABLE reimburse ADD COLUMN dup_flag INTEGER NOT NULL DEFAULT 0"),
+        ("dup_source",  "ALTER TABLE reimburse ADD COLUMN dup_source TEXT NOT NULL DEFAULT ''"),
     ]:
         if col not in cols:
             conn.execute(ddl)

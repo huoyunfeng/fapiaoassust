@@ -37,6 +37,28 @@
 .reb-table .cell-cat{overflow:visible;text-overflow:clip;}
 /* 报销单号：弱化显示 */
 .cell-reimburse-no{color:#6b7280;font-size:12px;}
+/* 视觉序号列：仅计数，弱化显示 */
+.cell-seq{color:#6b7280;font-variant-numeric:tabular-nums;white-space:nowrap;text-align:center;}
+
+/* ===== 全部批次模式：批次分组标题行 ===== */
+.reb-table tbody tr.group-row td{background:#f3f4f6;font-weight:600;font-size:12px;color:#374151;
+  padding:6px 12px;border-top:1px solid var(--border);}
+.reb-table tbody tr.group-row:hover td{background:#f3f4f6;}
+
+/* ===== 疑似重复标签 + 溯源气泡 ===== */
+.dup-tag{display:inline-block;position:relative;z-index:30;margin-top:4px;padding:1px 8px;
+  border-radius:10px;background:#fee2e2;color:#b91c1c;font-size:11px;font-weight:600;
+  cursor:help;border:1px solid #fecaca;}
+.dup-pop{display:none;position:absolute;z-index:40;left:0;top:calc(100% + 6px);min-width:260px;
+  max-width:420px;background:#fff;border:1px solid #fecaca;border-radius:8px;
+  box-shadow:0 6px 24px rgba(0,0,0,.16);padding:10px 12px;font-weight:400;font-size:12px;
+  line-height:1.7;color:#374151;text-align:left;white-space:normal;}
+.dup-tag:hover .dup-pop,.dup-tag:focus .dup-pop,.dup-tag:focus-within .dup-pop{display:block;}
+.dup-pop a{color:#1677ff;text-decoration:underline;}
+.dup-line{display:block;}
+.dup-line + .dup-line{margin-top:6px;padding-top:6px;border-top:1px dashed #fecaca;}
+.dup-msg{font-size:13px;line-height:1.9;background:#fff7f7;border:1px solid #fee2e2;
+  border-radius:8px;padding:10px 12px;margin-bottom:12px;color:#991b1b;}
 
 /* ===== 右侧固定列（状态/操作）：视觉分隔 ===== */
 .reb-table .col-state,
@@ -143,10 +165,13 @@
       </thead>
       <tbody>
         {% for r in rows %}
+        {% if r._group_break %}
+        <tr class="group-row"><td colspan="{{ columns|length + 2 }}">{{ r._group_name }}（本批次 {{ r._group_count }} 条）</td></tr>
+        {% endif %}
         <tr id="row-{{ r.id }}"{% if not r.matched %} class="row-unmatched"{% endif %}>
           {% for c in columns %}
           {% set cell = r.cells[loop.index0] %}
-          <td{% if c.key == 'reimburse_no' %} class="cell-reimburse-no"{% elif cell.amount %} class="cell-amount"{% elif cell.long %} class="cell-long" title="{{ cell.text }}"{% elif cell.cat is defined %} class="cell-cat"{% endif %}>
+          <td{% if c.key == '_seq' %} class="cell-seq"{% elif c.key == 'reimburse_no' %} class="cell-reimburse-no"{% elif cell.amount %} class="cell-amount"{% elif cell.long %} class="cell-long" title="{{ cell.text }}"{% elif cell.cat is defined %} class="cell-cat"{% endif %}>
             {%- if cell.amount -%}<b>{{ cell.text }}</b>
             {%- elif cell.long -%}<span class="text-ellipsis">{{ cell.text }}</span>
             {%- elif cell.cat is defined -%}
@@ -168,6 +193,24 @@
           <td class="col-state">
             {% if r.matched %}<span class="badge badge-purple">已匹配</span>{% else %}<span class="badge badge-red">未匹配</span>{% endif %}
             {% if r.cat_conflict %}<div style="margin-top:4px;"><span class="badge badge-yellow" title="{{ r.cat_conflict_detail }}">⚠️ 分类差异</span></div>{% endif %}
+            {% if r.is_dup %}
+            <div>
+              <span class="dup-tag" tabindex="0">⚠️ 疑似重复
+                <span class="dup-pop">
+                  {% for it in r.dup_items %}
+                  <span class="dup-line">
+                    {%- if it.type == 'history' -%}
+                      与历史报销单 <a href="/reimburses?q={{ it.no|urlencode }}" onclick="event.stopPropagation()">{{ it.no }}</a> 内容完全一致，请注意查重。
+                    {%- else -%}
+                      与本次导入的第 <b>{{ it.ref_row }}</b> 行内容完全一致。
+                    {%- endif -%}
+                  </span>
+                  {% endfor %}
+                  {% if not r.dup_items %}<span class="dup-line">该行被标记为疑似重复，请核对导入记录。</span>{% endif %}
+                </span>
+              </span>
+            </div>
+            {% endif %}
           </td>
           <td class="col-action"><button class="btn btn-sm btn-danger" onclick="delReimburse({{ r.id }})">删除</button></td>
         </tr>
@@ -253,6 +296,25 @@
       <button class="btn btn-outline" onclick="closeWizard()">关闭</button>
       <button class="btn" id="wizDoneBtn" onclick="location.reload()" style="display:none;">查看结果</button>
     </div>
+  </div>
+</div>
+
+<!-- ===================== 重复数据确认弹窗（模块四：阻断式提示） ===================== -->
+<div id="dupConfirm" class="modal" style="width:780px;">
+  <h2 style="margin-bottom:12px;">检测到重复数据</h2>
+  <div class="dup-msg" id="dupMsg"></div>
+  <div style="max-height:44vh;overflow:auto;margin-bottom:14px;">
+    <table>
+      <thead>
+        <tr><th style="width:90px;">当前行号</th><th>摘要</th><th>重复匹配到的单号（或行号）</th><th style="width:110px;">导入日期</th></tr>
+      </thead>
+      <tbody id="dupTbody"></tbody>
+    </table>
+  </div>
+  <div style="display:flex;gap:8px;justify-content:flex-end;">
+    <button class="btn btn-outline" onclick="closeDupConfirm()">取消导入</button>
+    <button class="btn btn-outline" onclick="doDupImport('skip')">跳过重复项继续导入</button>
+    <button class="btn btn-danger" onclick="doDupImport('force')">强制全部导入</button>
   </div>
 </div>
 
@@ -552,7 +614,7 @@ async function buildFieldsConfig(headers, mapping, headerRow){
   return j.data || {};
 }
 
-async function wizConfirm(){
+async function wizConfirm(onDuplicate){
   const btn = document.getElementById('wizConfirmBtn');
   btn.disabled = true; btn.textContent = '导入中…';
   busyIndet('正在导入报销单…', wizState.mode === 'template' ? '使用模板导入' : '使用自定义映射导入');
@@ -565,12 +627,15 @@ async function wizConfirm(){
       const fc = await buildFieldsConfig(wizState.headers, wizState.mapping, wizState.headerRow);
       fd.append('fields_config', JSON.stringify(fc));
     }
+    if(onDuplicate) fd.append('on_duplicate', onDuplicate);
     const r = await fetch('/api/reimburses/import', { method:'POST', body:fd });
     let j;
     try{ j = await r.json(); }
     catch(e){ throw new Error('服务返回非 JSON（HTTP ' + r.status + '），请检查文件格式'); }
 
     const d = j.data || j;
+    // 模块四：命中重复 -> 阻断入库，弹出重复数据确认弹窗
+    if(d.need_confirm){ showDupConfirm(d, onDuplicate); return; }
     if(d.ok){ renderSuccess(d); }
     else{ renderFailure(d.message || '导入失败', d.errors || []); }
   }catch(e){
@@ -581,9 +646,56 @@ async function wizConfirm(){
   }
 }
 
+// ============================================================
+// 重复数据确认（模块四）
+// ============================================================
+function showDupConfirm(d, lastAction){
+  const dups = d.duplicates || [];
+  const parts = dups.map(x => x.type === 'history'
+    ? `第 ${x.row} 行与历史报销单 ${x.no} 重复`
+    : `第 ${x.row} 行与本次导入的第 ${x.ref_row} 行重复`);
+  document.getElementById('dupMsg').innerHTML =
+    `检测到 <b>${dups.length}</b> 条数据重复。` +
+    (parts.length ? `其中，${esc(parts.join('；'))}。` : '');
+  document.getElementById('dupTbody').innerHTML = dups.map(x => {
+    const src = x.type === 'history'
+      ? `<span style="color:#b91c1c;font-weight:600;">${esc(x.no || '—')}</span>`
+      : `<span>本次导入第 ${x.ref_row} 行</span>`;
+    return `<tr>
+      <td>${x.row}</td>
+      <td>${esc(x.summary || '—')}</td>
+      <td>${src}</td>
+      <td>${esc(x.date || '')}</td>
+    </tr>`;
+  }).join('');
+  hideEl('importWizard');
+  showEl('dupConfirm');
+}
+
+function closeDupConfirm(){
+  hideEl('dupConfirm');
+  showEl('importWizard');
+  setStep(2);
+}
+
+function doDupImport(mode){
+  hideEl('dupConfirm');
+  showEl('importWizard');
+  setStep(2);
+  wizConfirm(mode);
+}
+
 function renderSuccess(d){
   clearWizAlert();
   let html = `<div class="alert alert-green"><b>导入成功</b>，共 ${d.imported} 行。</div>`;
+  if(d.duplicates_forced){
+    html += `<div class="alert" style="background:#fff7ed;color:#9a3412;border:1px solid #fed7aa;">
+     已强制导入疑似重复数据 ${d.duplicates_forced} 行，列表已打「⚠️ 疑似重复」标签，可悬浮查看查重来源。</div>`;
+  }
+  if(d.duplicates_skipped){
+    html += `<div class="alert" style="background:#f3f4f6;color:#4b5563;border:1px solid #e5e7eb;">
+     已跳过重复数据 ${d.duplicates_skipped} 行。</div>`;
+  }
   if(d.errors && d.errors.length){
     html += `<p class="muted mb">以下 ${d.errors.length} 行被跳过：</p>
              <div class="err-list">` + d.errors.map(e =>
@@ -636,7 +748,12 @@ async function fallbackClassic(){
     const r = await fetch('/api/reimburses/import', { method:'POST', body:fd });
     const j = await r.json();
     const d = j.data || j;
-    if(d.ok){ wizState.mode = 'template'; renderSuccess(d); }
+    if(d.need_confirm){
+      // 经典模板重试同样可能命中重复：切到模板模式后走统一的确认弹窗
+      wizState.mode = 'template'; wizState.templateId = classic.id;
+      showDupConfirm(d);
+    }
+    else if(d.ok){ wizState.mode = 'template'; renderSuccess(d); }
     else{
       // 经典模板仍无法解析 → 只剩手动录入
       document.getElementById('wizResult').innerHTML =
@@ -826,7 +943,7 @@ async function delBatch(bid){
 
 // 点击遮罩关闭面板（不干扰 base.html 的 closeModal）
 document.getElementById('modalBg').addEventListener('click', () => {
-  ['importWizard','manualEntry','templateManager','templateEditor'].forEach(hideEl);
+  ['importWizard','dupConfirm','manualEntry','templateManager','templateEditor'].forEach(hideEl);
 });
 </script>
 {% endblock %}

@@ -270,7 +270,7 @@ class ReimburseRepo:
         "batch_id", "template_id", "reimburse_no", "submitter", "reimburse_date",
         "period_start", "period_end", "expense_type", "amount", "invoice_no",
         "invoice_date", "remark", "extra_data", "source_row", "parent_id",
-        "split_type", "raw_row", "row_index",
+        "split_type", "raw_row", "row_index", "dup_flag", "dup_source",
     ]
 
     def insert(self, conn: sqlite3.Connection, data: dict) -> int:

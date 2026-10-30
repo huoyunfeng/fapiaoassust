@@ -124,12 +124,14 @@ async def batch_delete_invoices(ids: str = Form(""), operator: str = Form("admin
 async def import_reimburses(file: UploadFile = File(...),
                             template_id: int = Form(None),
                             fields_config: str = Form("{}"),
-                            remember_mapping: str = Form("1")):
+                            remember_mapping: str = Form("1"),
+                            on_duplicate: str = Form("")):
     """导入报销单 Excel。
 
     template_id: 指定模板 id（优先于默认模板）
     fields_config: JSON 字符串，临时字段映射（映射向导传入，优先级最高）
     remember_mapping: 是否回写映射缓存
+    on_duplicate: 查重处置（空=先返回重复确认；skip=只导入不重复行；force=全部导入并打标）
     """
     content = await file.read()
     if not content:
@@ -148,6 +150,7 @@ async def import_reimburses(file: UploadFile = File(...),
             template_id=template_id,
             fields_config=fc,
             remember_mapping=remember_mapping == "1",
+            on_duplicate=on_duplicate or None,
         )
     except Exception as e:
         logger.exception("报销单导入异常")
