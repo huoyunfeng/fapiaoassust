@@ -39,12 +39,22 @@
 .col-panel.on{display:flex;}
 .col-panel label{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:#374151;}
 
-/* ===== 主表：固定布局 + 吸顶表头 ===== */
-.rp-table{table-layout:fixed;width:100%;}
-.rp-table th,.rp-table td{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-.rp-table thead th{position:sticky;top:0;z-index:3;background:#fafbfc;box-shadow:inset 0 -1px 0 var(--border);}
-.rp-table td.num-cell,.rp-table .num-cell{text-align:right;font-variant-numeric:tabular-nums;}
-.rp-table .rp-diff{max-width:300px;}
+/* ===== 主表：固定布局 + 分栏线 + 斑马纹（与发票管理页同一套视觉规范） ===== */
+.rp-table{table-layout:fixed!important;width:100%;}
+.rp-table th,.rp-table td{padding:10px 8px;border-right:1px solid var(--border);
+  text-align:center;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:middle;}
+.rp-table th:last-child,.rp-table td:last-child{border-right:none;}
+.rp-table thead th{position:sticky;top:0;z-index:3;background:#eef2f7;color:#475569;font-weight:600;
+  box-shadow:inset 0 -2px 0 var(--border);}
+.rp-table tbody td{height:46px;background:#fff;}
+.rp-table tbody tr:nth-child(even) td{background:#fafbfc;}
+.rp-table tbody tr:hover td{background:#e8f0fe;}
+.rp-table .num-cell{text-align:center;font-variant-numeric:tabular-nums;}
+/* 操作列不裁切按钮（按钮组可换行） */
+.rp-table .col-actions{overflow:visible;text-overflow:clip;white-space:normal;}
+/* 金额对比允许换行，避免「报销 / 发票 / 差额」被省略号吞掉 */
+.rp-table .col-amount_cmp{white-space:normal;line-height:1.6;}
+.rp-table .rp-diff{overflow:hidden;text-overflow:ellipsis;}
 .rp-diff-txt{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 .diff-danger{color:#dc2626;font-weight:700;}
 .amt-ok{color:#15803d;}
@@ -297,22 +307,23 @@ const VIEWS = {
 };
 
 // 核心列（固定展示，不可隐藏）+ 高级列（默认隐藏，列入列设置）
+// w = 列宽权重：渲染时按可见列的权重换算百分比，所有列按比例均匀撑满表格（同发票页）
 const CORE_COLS = [
-  {k:'status', t:'状态', w:96},
+  {k:'status', t:'状态', w:90},
   {k:'reimburse_no', t:'报销单号', w:150},
-  {k:'amount_cmp', t:'金额对比（报销 / 发票）', w:230, num:1},
-  {k:'type', t:'匹配方式', w:110},
-  {k:'message', t:'差异说明', w:300, diff:1},
-  {k:'actions', t:'操作', w:214, noHide:1}
+  {k:'amount_cmp', t:'金额对比（报销 / 发票）', w:240, num:1},
+  {k:'type', t:'匹配方式', w:120},
+  {k:'message', t:'差异说明', w:360, diff:1},
+  {k:'actions', t:'操作', w:240, noHide:1}
 ];
 const ADV_COLS = [
-  {k:'submitter', t:'提交人', w:90},
-  {k:'expense_type', t:'费用类型', w:100},
-  {k:'invoice_no', t:'发票号', w:150},
-  {k:'invoice_date', t:'开票日期', w:110},
-  {k:'score', t:'分数', w:70, num:1},
-  {k:'amount_diff', t:'金额差异', w:100, num:1},
-  {k:'category', t:'费用分类', w:110}
+  {k:'submitter', t:'提交人', w:100},
+  {k:'expense_type', t:'费用类型', w:110},
+  {k:'invoice_no', t:'发票号', w:160},
+  {k:'invoice_date', t:'开票日期', w:120},
+  {k:'score', t:'分数', w:80, num:1},
+  {k:'amount_diff', t:'金额差异', w:110, num:1},
+  {k:'category', t:'费用分类', w:120}
 ];
 const COLS = CORE_COLS.concat(ADV_COLS);
 
@@ -565,13 +576,16 @@ function renderDetails(){
     }
   }
 
-  const colgroup = '<colgroup>' + cols.map(c => `<col style="width:${c.w}px">`).join('') + '</colgroup>';
+  // 列宽按可见列权重换算百分比（与发票页一致：无固定 px，避免宽窄不均）
+  const totalW = cols.reduce((s, c) => s + (c.w || 100), 0) || 1;
+  const colgroup = '<colgroup>' + cols.map(c =>
+    `<col style="width:${((c.w || 100) / totalW * 100).toFixed(3)}%">`).join('') + '</colgroup>';
   const thead = '<thead><tr>' + cols.map(c =>
-    `<th class="${c.num ? 'num-cell' : ''}">${esc(c.t)}</th>`).join('') + '</tr></thead>';
+    `<th class="col-${c.k} ${c.num ? 'num-cell' : ''}">${esc(c.t)}</th>`).join('') + '</tr></thead>';
   const tbody = '<tbody>' + rows.map((d, idx) => {
     const tds = cols.map(c => {
       if(c.k === 'reimburse_no' && skip.has(idx)) return '';
-      const cls = [c.num ? 'num-cell' : '', c.diff ? 'rp-diff' : '',
+      const cls = [`col-${c.k}`, c.num ? 'num-cell' : '', c.diff ? 'rp-diff' : '',
                    c.k === 'reimburse_no' ? 'rowspan-cell' : ''].filter(Boolean).join(' ');
       const rs = (c.k === 'reimburse_no' && spanOf[idx]) ? ` rowspan="${spanOf[idx]}"` : '';
       return `<td class="${cls}"${rs}>${cellHtml(d, c)}</td>`;
