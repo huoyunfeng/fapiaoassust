@@ -372,7 +372,11 @@ function money(v){
 }
 function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
 function visibleCols(){
-  return CORE_COLS.concat(ADV_COLS.filter(c => S.colVis.has(c.k)));
+  // 操作列恒为最后一列：无论列设置新增/移除哪些高级列，都排在最后
+  const actions = CORE_COLS.filter(c => c.k === 'actions');
+  const rest = CORE_COLS.filter(c => c.k !== 'actions').concat(
+    ADV_COLS.filter(c => S.colVis.has(c.k)));
+  return rest.concat(actions);
 }
 
 // ---------------- 视图切换（分页强制重置为 1） ----------------
