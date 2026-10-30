@@ -50,8 +50,16 @@
 .rp-table tbody tr:nth-child(even) td{background:#fafbfc;}
 .rp-table tbody tr:hover td{background:#e8f0fe;}
 .rp-table .num-cell{text-align:center;font-variant-numeric:tabular-nums;}
-/* 操作列不裁切按钮（按钮组可换行） */
+/* 操作列：固定在最后一列（横向滚动时不移动），宽度较短 */
+.rp-table th.col-actions,.rp-table td.col-actions{position:sticky;right:0;z-index:2;
+  background:#fff;box-shadow:-6px 0 8px -6px rgba(15,23,42,.14);}
+.rp-table thead th.col-actions{z-index:4;background:#eef2f7;}
+.rp-table tbody tr:nth-child(even) td.col-actions{background:#fafbfc;}
+.rp-table tbody tr:hover td.col-actions{background:#e8f0fe;}
 .rp-table .col-actions{overflow:visible;text-overflow:clip;white-space:normal;}
+/* 窄列内按钮紧凑排版，最多两行，避免行高被撑高 */
+.rp-table .col-actions .rp-ops{justify-content:center;gap:4px;}
+.rp-table .col-actions .btn{padding:4px 6px;font-size:11px;white-space:nowrap;}
 /* 金额对比允许换行，避免「报销 / 发票 / 差额」被省略号吞掉 */
 .rp-table .col-amount_cmp{white-space:normal;line-height:1.6;}
 .rp-table .rp-diff{overflow:hidden;text-overflow:ellipsis;}
@@ -309,12 +317,12 @@ const VIEWS = {
 // 核心列（固定展示，不可隐藏）+ 高级列（默认隐藏，列入列设置）
 // w = 列宽权重：渲染时按可见列的权重换算百分比，所有列按比例均匀撑满表格（同发票页）
 const CORE_COLS = [
-  {k:'status', t:'状态', w:90},
+  {k:'status', t:'状态', w:100},
   {k:'reimburse_no', t:'报销单号', w:150},
-  {k:'amount_cmp', t:'金额对比（报销 / 发票）', w:240, num:1},
+  {k:'amount_cmp', t:'金额对比（报销 / 发票）', w:220, num:1},
   {k:'type', t:'匹配方式', w:120},
-  {k:'message', t:'差异说明', w:360, diff:1},
-  {k:'actions', t:'操作', w:240, noHide:1}
+  {k:'message', t:'差异说明', w:440, diff:1},
+  {k:'actions', t:'操作', w:150, noHide:1}
 ];
 const ADV_COLS = [
   {k:'submitter', t:'提交人', w:100},
