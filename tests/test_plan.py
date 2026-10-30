@@ -550,6 +550,42 @@ class TestCategoryEngine:
         assert rb["cat_status"] == "CONFIRMED"
         assert rb["cat_invoice_id"] == row["id"]
 
+    def test_report_detail_syncs_reimburse_category(self, env):
+        """差异报告「费用分类」与发票列表同一口径：报销单填了类型即展示，不再为空。"""
+        env["inv"].import_files([("a.xml", "", xml_invoice(
+            "ENG9000001", "100.00", item_name="*餐饮服务*餐饮服务"))])
+        env["reb"].import_excel("r.xlsx", make_excel([
+            ["RE9", "张三", "2026-09-10", "2026-09-01", "2026-09-30",
+             "办公费", "100.00", "ENG9000001", "", ""]]))
+        _ensure_match(env, "ENG9000001", "RE9")
+
+        data = env["report"].report_payload()
+        row = [d for d in data["details"] if d["invoice_no"] == "ENG9000001"][0]
+        assert row["category"] == "办公费"
+        assert row["expense_type"] == "办公费"
+
+    def test_reimburse_manual_category_syncs_to_invoice_views(self, env):
+        """报销单已人工分类（未回写发票）时，发票列表/差异报告按统一口径同步展示。"""
+        env["inv"].import_files([("a.xml", "", xml_invoice(
+            "ENG9100001", "100.00", item_name="*餐饮服务*餐饮服务"))])
+        env["reb"].import_excel("r.xlsx", make_excel([
+            ["RE91", "周九", "2026-09-10", "2026-09-01", "2026-09-30",
+             "", "100.00", "ENG9100001", "", ""]]))
+        _ensure_match(env, "ENG9100001", "RE91")
+
+        from app.repository.repos import reimburse_category_repo
+        with env["db"].read() as conn:
+            rb_id = [r for r in env["reimburse_repo"].list(conn)
+                     if r["reimburse_no"] == "RE91"][0]["id"]
+        with env["db"].tx() as conn:
+            reimburse_category_repo.upsert(conn, rb_id, "交通费")
+
+        inv = env["inv"].list_invoices()[0]
+        assert inv["category"] == "交通费" and inv["category_status"] == "CONFIRMED"
+        data = env["report"].report_payload()
+        row = [d for d in data["details"] if d["invoice_no"] == "ENG9100001"][0]
+        assert row["category"] == "交通费"
+
     def test_empty_expense_type_inferred_pending(self, env):
         """第二层：报销单类型为空 -> 系统按发票明细预填，标记待确认，金额照常计入统计。"""
         env["inv"].import_files([("a.xml", "", xml_invoice(

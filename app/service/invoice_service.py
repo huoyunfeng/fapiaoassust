@@ -665,14 +665,18 @@ def _resolve_rows(rows: List[dict], memory: Dict[tuple, dict],
         else:
             # light 查询无 reimburse_id 列：未匹配时 LEFT JOIN 出来的 expense_type 为 NULL
             has_reb = r.get("expense_type") is not None
+        # 报销单侧人工分类（reimburse_category）优先于导入的费用类型：
+        # 报销单已明确分类时，关联发票/差异报告等页面必须同步展示同一分类
+        exp = (r.get("expense_type") or "").strip()
         out[r["id"]] = resolve_category(
             alias_map.get(item, item),
-            expense_type=r.get("expense_type") or "",
+            expense_type=exp,
             submitter=sub,
             manual_category=r.get("manual_category") or "",
             item_memory=memory.get(("item", item)),
             submitter_memory=memory.get(("submitter", sub)) if sub else None,
             has_reimburse=has_reb,
+            reimburse_manual_category=r.get("reimburse_manual_category") or "",
         )
     return out
 

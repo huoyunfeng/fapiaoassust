@@ -117,12 +117,13 @@ def similar_categories(name: str, names) -> list:
 def resolve_category(item_summary: str, expense_type: str = "",
                      submitter: str = "", manual_category: str = "",
                      item_memory: dict = None, submitter_memory: dict = None,
-                     has_reimburse: bool = False) -> dict:
+                     has_reimburse: bool = False,
+                     reimburse_manual_category: str = "") -> dict:
     """费用分类决策：报销单（业务实质）> 模板 > 发票（税务凭证）。
 
     优先级：
     1. 人工修正（invoice_category）——最高优先，财务说了算
-    2. 报销单填写的费用类型（非空）
+    2. 报销单分类：人工确认的报销单分类（reimburse_category）> 导入的费用类型
     3. 纠正记忆（该提交人 / 该发票明细 曾被财务改过）
     4. 发票明细智能推测（报销单类型为空或无报销单时兜底）
 
@@ -134,6 +135,7 @@ def resolve_category(item_summary: str, expense_type: str = "",
     """
     item_summary = (item_summary or "").strip()
     exp = (expense_type or "").strip()
+    reb_manual = (reimburse_manual_category or "").strip()
     suggested = categorize_item(item_summary)
 
     def _out(category, status, source, hint="", raw=""):
@@ -145,14 +147,15 @@ def resolve_category(item_summary: str, expense_type: str = "",
         raw = exp if exp and normalize_category(exp) != manual_category else ""
         return _out(manual_category, STATUS_CONFIRMED, "manual", "", raw)
 
-    # 2. 报销单填写了费用类型：按员工填写的统计；只有曾纠正过同一错误值才套记忆
-    if exp:
+    # 2. 报销单侧已有明确分类：人工确认的报销单分类 > 导入的费用类型
+    if reb_manual or exp:
+        chosen = reb_manual or exp
         mem = submitter_memory or {}
-        if mem.get("wrong_value") and mem.get("wrong_value") == exp:
+        if not reb_manual and mem.get("wrong_value") and mem.get("wrong_value") == exp:
             return _out(mem["category"], STATUS_CONFIRMED, "memory")
         # 自由填写的类型（如项目名/「差旅」）收敛到标准大类，避免图表出现细碎名
-        cat = normalize_category(exp)
-        raw = "" if cat == exp else exp
+        cat = normalize_category(chosen)
+        raw = exp if exp and cat != exp else ""
         # 追加校验：明细与填写类型明显不符时给轻量提示（不拦截）
         hint = "" if (suggested == cat or DEFAULT_CATEGORY in (suggested, cat)) else MISMATCH_HINT
         return _out(cat, STATUS_CONFIRMED, "reimburse", hint, raw)

@@ -2,15 +2,16 @@
 import json
 from typing import Any, Dict, List, Optional
 
+from app.domain.categorize import STATUS_CONFIRMED
 from app.domain.dto import ReimburseDTO
 from app.domain.features import reimburse_features
 from app.domain.normalize import to_decimal
 from app.infra.excel import export_report, export_report_stream
 from app.repository import db
-from app.repository.repos import (category_dict_repo, category_repo,
-                                  invoice_repo, match_repo, reimburse_repo)
+from app.repository.repos import (category_dict_repo, invoice_repo,
+                                  match_repo, reimburse_repo)
 
-from app.service.invoice_service import _raw_json  # 复用解析
+from app.service.invoice_service import _raw_json, resolve_categories  # 复用解析与统一分类口径
 
 
 def build_report() -> dict:
@@ -265,8 +266,11 @@ def _sorted_details(report: dict) -> List[dict]:
     """匹配明细全量：异常优先，其次按创建时间倒序（稳定排序）。"""
     with db.read() as conn:
         inv_ids = [d["match"]["invoice_id"] for d in report["details"]]
+        # 与发票列表同一口径：人工修正 > 报销单费用类型 > 纠正记忆 > 明细推测。
+        # 只取已确认（CONFIRMED）的分类，报销单未填类型的发票仍显示为空。
         cat_map = {iid: (r.get("category") or "")
-                   for iid, r in category_repo.decisions(conn, inv_ids).items()}
+                   for iid, r in resolve_categories(conn, inv_ids).items()
+                   if (r.get("status") or "") == STATUS_CONFIRMED}
     rows = [_detail_payload(d, cat_map) for d in report["details"]]
     rows.sort(key=lambda r: (r["created_at"] or "", r["id"]), reverse=True)
     rows.sort(key=lambda r: 0 if r["pending"] else 1)

@@ -137,11 +137,13 @@ class InvoiceRepo:
                    "i.seller_name AS seller_name, "
                    "r.expense_type AS expense_type, r.submitter AS submitter, "
                    "r.id AS reimburse_id, "
-                   "c.category AS manual_category FROM invoice i "
+                   "c.category AS manual_category, "
+                   "rc.category AS reimburse_manual_category FROM invoice i "
                    "LEFT JOIN match_result m ON m.invoice_id = i.id AND m.status IN ('MATCHED','CONFIRMED') "
                    "LEFT JOIN reimburse r ON r.id = COALESCE(m.reimburse_id, "
                    "(SELECT p.reimburse_id FROM match_pair p WHERE p.match_id = m.id LIMIT 1)) "
-                   "LEFT JOIN invoice_category c ON c.invoice_id = i.id WHERE 1=1" + f_sql)
+                   "LEFT JOIN invoice_category c ON c.invoice_id = i.id "
+                   "LEFT JOIN reimburse_category rc ON rc.reimburse_id = r.id WHERE 1=1" + f_sql)
         else:
             sql = self._EXPENSE_SELECT + f_sql
         if ids:
