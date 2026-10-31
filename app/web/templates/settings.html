@@ -613,6 +613,10 @@ const ACTION_CN = {
   reimburse_category:'报销单分类修改',
   conflict_reimburse:'冲突仲裁(以报销单为准)',conflict_invoice:'冲突仲裁(以发票为准)',
   conflict_keep:'冲突保留差异',unmatch:'解除匹配',
+  match_confirm:'人工确认匹配',match_reject:'人工拒绝匹配',
+  match_auto_correct:'一键更正并重新匹配',match_manual:'人工绑定匹配',
+  match_manual_batch:'批量人工绑定匹配',match_quick_fix:'快捷修复',
+  match_arbitrate:'人工终裁归属',rule_exempt:'业务规则豁免',
 };
 let sgAuditPage = 1, sgAuditPageSize = 20;
 const sgAuditState = { loaded:false };
@@ -660,6 +664,52 @@ async function sgAuditLoad(){
     document.getElementById('sgAuditLoading').style.display = 'none';
   }
 }
+/* 把 detail（结构化 JSON 或旧版纯文本）转成一句人类可读的说明，避免暴露原始 JSON。
+   匹配类：发票号 / 报销单号 · 操作（原因）；分类类：前后变化 · 备注。 */
+function sgAuditSummary(a){
+  const raw = (a && a.detail) || '';
+  let obj = null;
+  try{
+    const p = JSON.parse(raw);
+    if(p && typeof p === 'object' && !Array.isArray(p)) obj = p;
+  }catch(e){}
+  if(!obj) obj = { legacy: raw };   // 旧版纯文本
+
+  const actName = ACTION_CN[a.action] || a.action || '';
+  const invNo = obj.invoice_no || '';
+  const rebNo = obj.reimburse_no || '';
+  // 原因：去掉“发票号 → xxx”这类字段更正轨迹，以及与操作名重复的措辞
+  let reason = String(obj.why || obj.legacy || '').replace(/\s+/g,' ').trim();
+  if(/^(发票号|报销金额|金额|发票代码|开票日期)[^→]*→/.test(reason)) reason = '';
+  if(reason === actName) reason = '';
+
+  if(invNo || rebNo){
+    const ids = [invNo ? `发票号 ${invNo}` : '', rebNo ? `报销单号 ${rebNo}` : '']
+      .filter(Boolean).join(' / ');
+    return reason ? `${ids} · ${actName}（${reason}）` : `${ids} · ${actName}`;
+  }
+
+  const oldV = String(a.old_value ?? '').trim();
+  const newV = String(a.new_value ?? '').trim();
+  let text = '';
+  if(oldV && newV && oldV !== newV){
+    text = (a.action === 'invoice_category' || a.action === 'invoice_category_batch'
+            || a.action === 'reimburse_category')
+      ? `分类 ${oldV} → ${newV}` : `${oldV} → ${newV}`;
+  }else if(newV){
+    if(a.action === 'category_dict_add'){
+      text = `新增分类「${newV}」`;
+    }else if(a.action === 'invoice_category' || a.action === 'invoice_category_batch'
+             || a.action === 'reimburse_category'){
+      text = `分类「${newV}」`;
+    }else{
+      text = newV;
+    }
+  }
+  if(!text) text = reason || actName;
+  else if(reason) text += ` · ${reason}`;
+  return text;
+}
 function sgRenderAudit(r){
   const tbody = document.getElementById('sgAuditTbody');
   if(!r.items || !r.items.length){
@@ -672,13 +722,15 @@ function sgRenderAudit(r){
     const actCn = ACTION_CN[a.action] || a.action;
     // target_label 已经是可读文本（业务单号/对象描述），不再附加 target_id
     const obj = _escHtml(a.target_label || a.target_type || '');
-    const detail = (a.detail || '').slice(0,30) + ((a.detail||'').length>30?'…':'');
+    const summary = sgAuditSummary(a);
+    // 交给 CSS 省略号截断，悬停 title 展示完整说明
+    const detail = summary;
     return `<tr>
       <td class="muted" style="font-variant-numeric:tabular-nums;font-size:12px;">${time}</td>
       <td><span class="badge badge-blue">${_escHtml(actCn)}</span></td>
       <td class="sg-cell-ellipsis" title="${obj}">${obj}</td>
       <td>${_escHtml(a.operator||'—')}</td>
-      <td class="sg-cell-ellipsis muted" title="${_escHtml(a.detail||'')}">${_escHtml(detail||'—')}</td>
+      <td class="sg-cell-ellipsis muted" title="${_escHtml(summary||'—')}">${_escHtml(detail||'—')}</td>
       <td><button class="btn btn-sm btn-outline" onclick='sgOpenDrawer(${JSON.stringify(a).replace(/'/g,"&#39;")})'>查看详情</button></td>
     </tr>`;
   }).join('');
@@ -766,7 +818,7 @@ function sgOpenDrawer(a){
     changesHtml += '</tbody></table>';
   }
   
-  const why = detailObj.why || detailObj.legacy || a.detail || '';
+  const why = detailObj.why || detailObj.legacy || sgAuditSummary(a);
   const reasonOpt = detailObj.reason_option || '';
   
   body.innerHTML = `
