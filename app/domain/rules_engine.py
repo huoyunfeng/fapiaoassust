@@ -8,6 +8,7 @@
 支持类型：buyer_tax_no / seller_blacklist / sensitive_words / period /
 amount / cross_period / red_flush；兼容旧数据中的 dedup / custom。
 """
+from datetime import date
 from decimal import Decimal
 from typing import List, Optional
 
@@ -133,21 +134,21 @@ class RuleEngine:
             return False
 
         if rt == "period":
-            date = getattr(dto, "invoice_date" if isinstance(dto, InvoiceDTO) else "reimburse_date", None)
+            d = getattr(dto, "invoice_date" if isinstance(dto, InvoiceDTO) else "reimburse_date", None)
             start = cfg.get("start") or None
             end = cfg.get("end") or None
-            if date and (start or end):
-                if start and date < start:
+            if d and (start or end):
+                if start and d < start:
                     issues.append(Issue(
                         "PERIOD_BEFORE",
-                        f"该【{_target_label(dto)}】日期（{date}）早于允许期间 {start}"
+                        f"该【{_target_label(dto)}】日期（{d}）早于允许期间 {start}"
                         f"（规则：{rule.name}）",
                         sev))
                     return True
-                if end and date > end:
+                if end and d > end:
                     issues.append(Issue(
                         "PERIOD_AFTER",
-                        f"该【{_target_label(dto)}】日期（{date}）晚于允许期间 {end}"
+                        f"该【{_target_label(dto)}】日期（{d}）晚于允许期间 {end}"
                         f"（规则：{rule.name}）",
                         sev))
                     return True
@@ -187,7 +188,32 @@ class RuleEngine:
                 return True
             return False
 
-        # cross_period 需要发票+报销单双方数据，在 validate_pair 中处理
+        if rt == "cross_period" and isinstance(dto, InvoiceDTO):
+            # 默认 period 模式依赖报销单期间，在 validate_pair 中处理；
+            # year / days 为发票单侧判定，导入校验与匹配时都生效。
+            mode = str(cfg.get("mode") or "period")
+            inv_date = _as_date(dto.invoice_date)
+            if mode in ("year", "days") and inv_date is not None:
+                if mode == "year" and inv_date.year != date.today().year:
+                    issues.append(Issue(
+                        "CROSS_PERIOD",
+                        f"该【单张发票】开票日期（{inv_date}）不在本年度内（规则：{rule.name}）",
+                        sev))
+                    return True
+                if mode == "days":
+                    try:
+                        limit = int(cfg.get("days") or 90)
+                    except (TypeError, ValueError):
+                        limit = 90
+                    if (date.today() - inv_date).days > limit:
+                        issues.append(Issue(
+                            "CROSS_PERIOD",
+                            f"该【单张发票】开票日期（{inv_date}）超出最近 {limit} 天"
+                            f"（规则：{rule.name}）",
+                            sev))
+                        return True
+            return False
+
         # custom：预留类型，暂不产生问题
         return False
 
@@ -203,6 +229,9 @@ class RuleEngine:
                             if r.enabled and (r.scope or "invoice") == "invoice"
                             and r.rule_type == "cross_period"),
                            key=lambda r: r.priority):
+            # year / days 模式不依赖报销期间，已在 _apply 中处理
+            if str((rule.config or {}).get("mode") or "period") != "period":
+                continue
             if start and invoice.invoice_date < start:
                 issues.append(Issue(
                     "CROSS_PERIOD",
@@ -252,6 +281,18 @@ def _sensitive_text(dto) -> tuple:
 
 def _target_label(dto) -> str:
     return "单张发票" if isinstance(dto, InvoiceDTO) else "单笔报销单"
+
+
+def _as_date(v) -> Optional[date]:
+    """宽松解析开票日期：支持 date 对象与 'YYYY-MM-DD...' 字符串。"""
+    if isinstance(v, date):
+        return v
+    if not v:
+        return None
+    try:
+        return date.fromisoformat(str(v)[:10])
+    except ValueError:
+        return None
 
 
 def _range_of(rule: RuleDTO) -> tuple:

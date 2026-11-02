@@ -136,7 +136,9 @@
         <div class="sg-core-grid">
           {% for c in core_rules %}
           <label class="sg-switch">
-            <input type="checkbox" {{ 'checked' if c.enabled else '' }} onchange="toggleRule({{ c.id }})">
+            <input type="checkbox" {{ 'checked' if c.enabled else '' }}
+                   data-id="{{ c.id }}" data-type="{{ c.rule_type }}" data-name="{{ c.name }}"
+                   onchange="sgCoreToggle(this)">
             <span>{{ c.name }}</span>
           </label>
           {% endfor %}
@@ -458,18 +460,186 @@
 
 {% block scripts %}
 <script>
+// 公司抬头（税号白名单弹窗可一键带入）
+const SG_COMPANIES = {{ companies|tojson }};
+// 核心规则当前配置：再次打开弹窗时回填
+const SG_CORE_CFG = {
+  {% for c in core_rules %}"{{ c.id }}": {{ c.config|tojson }}{{ "," if not loop.last }}{% endfor %}
+};
 /* ===== 左侧导航切换 ===== */
 function sgSwitch(el, paneId){
   document.querySelectorAll('.sg-nav-item').forEach(i=>i.classList.remove('active'));
   el.classList.add('active');
   document.querySelectorAll('.sg-pane').forEach(p=>p.classList.remove('active'));
   document.getElementById(paneId).classList.add('active');
+  try{ sessionStorage.setItem('sg_pane', paneId); }catch(e){}
   // 切到审计日志 Tab 时自动加载一次
   if(paneId==='pane-system'){
     setTimeout(()=>sgEnsureAudit(), 50);
   }
 }
 
+// 刷新后停留在上次查看的分区，避免总跳回「基础配置」
+(function(){
+  let p = null;
+  try{ p = sessionStorage.getItem('sg_pane'); }catch(e){}
+  if(!p || p === 'pane-basic') return;
+  const nav = document.querySelector('.sg-nav-item[data-pane="' + p + '"]');
+  if(nav) sgSwitch(nav, p);
+})();
+
+/* ===== 核心高频规则：开关即时生效，需要参数的先弹窗（不跳转、不刷新） ===== */
+const SG_CORE_LABEL = {
+  buyer_tax_no:'税号白名单', red_flush:'拦截红冲',
+  sensitive_words:'拦截敏感词', cross_period:'限制跨期'
+};
+
+function _sgFailed(j){
+  return !!(j && (j.ok === false || (j.data && j.data.ok === false)));
+}
+
+async function sgCoreSwitch(el, id, name, want, okMsg){
+  el.disabled = true;
+  el.checked = !want;                       // 请求期间先回滚，等待后端确认
+  const j = await post(`/api/rules/${id}/toggle`, {});
+  el.disabled = false;
+  if(_sgFailed(j)){ el.checked = !want; return; }
+  el.checked = want;
+  toast(okMsg || ('已' + (want ? '开启' : '关闭') + '「' + name + '」'));
+}
+
+async function sgCoreToggle(el){
+  const id = Number(el.dataset.id);
+  const type = el.dataset.type || '';
+  const name = el.dataset.name || SG_CORE_LABEL[type] || '该规则';
+
+  // 1) 关闭：直接提交，无需弹窗
+  if(!el.checked){ return sgCoreSwitch(el, id, name, false); }
+
+  // 2) 开启且无需额外参数（如拦截红冲）：直接提交
+  if(type === 'red_flush'){
+    return sgCoreSwitch(el, id, name, true, '已开启作废/红冲拦截');
+  }
+
+  // 3) 开启且需要参数：先弹窗，取消则恢复未选中
+  const cfg = await sgRuleConfigModal(id, type, name);
+  if(cfg === null){ el.checked = false; return; }
+  el.disabled = true;
+  const fd = new FormData();
+  fd.append('config', JSON.stringify(cfg));
+  fd.append('enabled', '1');
+  const j = await post(`/api/rules/${id}/config`, fd);
+  el.disabled = false;
+  if(_sgFailed(j)){ el.checked = false; return; }
+  el.checked = true;
+  SG_CORE_CFG[id] = cfg;                    // 记住本次参数，下次打开弹窗可回填
+  toast('已开启「' + name + '」');
+}
+
+// 参数配置弹窗：返回 Promise<config|null>，null 表示取消
+function sgRuleConfigModal(id, type, name){
+  return new Promise(resolve=>{
+    const m = document.getElementById('modal');
+    const saved = SG_CORE_CFG[id] || {};
+    let ctrl = '';
+    if(type === 'buyer_tax_no' || type === 'sensitive_words'){
+      const isTax = type === 'buyer_tax_no';
+      ctrl = '<label class="muted" style="display:block;margin-bottom:6px;">'
+           + (isTax ? '允许的购买方税号' : '敏感词') + '（输入后按回车生成标签）</label>'
+           + '<div class="sg-tags" id="sgCmTags"></div>'
+           + '<input class="sg-tag-input" id="sgCmInput" placeholder="'
+           + (isTax ? '如 91110000XXXX1' : '如 烟、酒、礼品') + '">';
+      if(isTax && SG_COMPANIES.length){
+        ctrl += '<div style="margin-top:12px;"><label class="muted" style="display:block;margin-bottom:4px;">'
+             + '从基础配置带入（公司抬头）</label>'
+             + SG_COMPANIES.map(c =>
+                 '<label style="display:flex;align-items:center;gap:6px;font-size:13px;margin:3px 0;">'
+                 + '<input type="checkbox" class="sg-cm-co" value="' + _escHtml(c.tax_no || '') + '"> '
+                 + _escHtml(c.name || '') + '（' + _escHtml(c.tax_no || '') + '）</label>').join('')
+             + '</div>';
+      }
+    } else {
+      ctrl = '<label class="muted" style="display:block;margin-bottom:6px;">跨期限制方式</label>'
+           + '<select id="sgCmMode" style="width:100%;">'
+           + '<option value="period">报销期间内（发票日期须落在报销单起止区间）</option>'
+           + '<option value="year">仅限本年度</option>'
+           + '<option value="days">限制近 90 天</option>'
+           + '</select>';
+    }
+    m.innerHTML = '<h2 style="font-size:16px;margin-bottom:6px;">配置「' + _escHtml(name) + '」</h2>'
+      + '<p class="muted" style="margin-bottom:12px;">开关将在保存后开启；取消则保持关闭。</p>'
+      + '<div>' + ctrl + '</div>'
+      + '<div style="text-align:right;margin-top:16px;">'
+      + '<button class="btn btn-outline" id="sgCmCancel">取消</button> '
+      + '<button class="btn" id="sgCmOk">确定</button></div>';
+    openModal();
+
+    const done = v=>{ closeModal(); resolve(v); };
+    const modeSel = m.querySelector('#sgCmMode');
+    if(modeSel){
+      modeSel.value = (saved.mode === 'days' || saved.mode === 'year') ? saved.mode : 'period';
+    }
+
+    const box = m.querySelector('#sgCmTags');
+    const inp = m.querySelector('#sgCmInput');
+    const tags = [];
+    const render = ()=>{
+      if(!box) return;
+      box.innerHTML = '';
+      tags.forEach((t, i)=>{
+        const chip = document.createElement('span');
+        chip.className = 'sg-tag';
+        chip.appendChild(document.createTextNode(t));
+        const x = document.createElement('button');
+        x.type = 'button'; x.textContent = '×'; x.title = '移除';
+        x.onclick = ()=>{ tags.splice(i, 1); render(); };
+        chip.appendChild(x);
+        box.appendChild(chip);
+      });
+      // 基础配置勾选框与标签保持同步
+      m.querySelectorAll('.sg-cm-co').forEach(cb=>{ cb.checked = tags.indexOf(cb.value) >= 0; });
+    };
+    const add = ()=>{
+      if(!inp) return;
+      const v = inp.value.trim();
+      if(v && tags.indexOf(v) < 0) tags.push(v);
+      inp.value = ''; render();
+    };
+
+    if(box){
+      const isTax = type === 'buyer_tax_no';
+      const init = (saved[isTax ? 'tax_nos' : 'words'] || []).slice();
+      if(!init.length && !isTax) init.push('烟', '酒', '礼品');   // 敏感词默认值
+      init.forEach(t=>tags.push(t));
+      render();
+      inp.addEventListener('keydown', e=>{
+        if(e.key === 'Enter'){ e.preventDefault(); add(); }
+        else if(e.key === ',' || e.key === '，'){ e.preventDefault(); }
+        else if(e.key === 'Backspace' && !inp.value && tags.length){ tags.pop(); render(); }
+      });
+      inp.addEventListener('blur', add);
+      inp.focus();
+      m.querySelectorAll('.sg-cm-co').forEach(cb=>{
+        cb.onchange = ()=>{
+          if(cb.checked){ if(tags.indexOf(cb.value) < 0) tags.push(cb.value); }
+          else { const i = tags.indexOf(cb.value); if(i >= 0) tags.splice(i, 1); }
+          render();
+        };
+      });
+    }
+
+    m.querySelector('#sgCmOk').onclick = ()=>{
+      if(modeSel){ done(modeSel.value === 'days' ? {mode:'days', days:90} : {mode: modeSel.value}); return; }
+      add();
+      if(!tags.length){ toast('请至少填写一个标签后再开启', false); return; }
+      done(type === 'buyer_tax_no' ? {tax_nos: tags.slice()} : {words: tags.slice()});
+    };
+    m.querySelector('#sgCmCancel').onclick = ()=>done(null);
+    document.getElementById('modalBg').onclick = ()=>done(null);
+  });
+}
+</script>
+<script>
 /* ===== 业务规则：作用域联动 / Tag Input / 提交 / 顺序调整 ===== */
 // 作用域决定可选类型（option 的 data-scope：invoice 仅单张发票可用，both 两类都可用）
 function sgToggleRuleFields(){

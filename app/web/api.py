@@ -675,6 +675,56 @@ async def reorder_rules(ids: str = Form("")):
     return _j({"ids": order})
 
 
+@api.post("/rules/{rule_id}/config")
+async def configure_rule(rule_id: int, config: str = Form("{}"),
+                         enabled: str = Form("1")):
+    """核心规则弹窗配置：写入参数（税号/敏感词标签、跨期模式）并同步开关状态。"""
+    from app.domain.rules_engine import TAG_CONFIG_KEYS
+    from app.repository import db
+    from app.repository.repos import rule_repo
+    try:
+        cfg = json.loads(config or "{}")
+        if not isinstance(cfg, dict):
+            raise ValueError
+    except (json.JSONDecodeError, ValueError):
+        return {"ok": False, "message": "config 必须是合法 JSON"}
+    with db.tx() as conn:
+        rule = rule_repo.get(conn, rule_id)
+        if rule is None:
+            return {"ok": False, "message": "规则不存在"}
+        rt = rule["rule_type"]
+        if rt in TAG_CONFIG_KEYS:
+            key = TAG_CONFIG_KEYS[rt]
+            tags = [str(v).strip() for v in (cfg.get(key) or []) if str(v).strip()]
+            if enabled == "1" and not tags:
+                return {"ok": False, "message": "请至少填写一个标签后再开启"}
+            cfg[key] = tags
+            rule["tags"] = tags
+        elif rt == "amount":
+            lo, hi = cfg.get("min"), cfg.get("max")
+            if lo in (None, "") and hi in (None, ""):
+                return {"ok": False, "message": "请至少填写金额下限或上限"}
+            try:
+                if lo not in (None, "") and hi not in (None, "") and float(lo) > float(hi):
+                    return {"ok": False, "message": "金额下限不能大于上限"}
+            except (TypeError, ValueError):
+                return {"ok": False, "message": "金额必须是数字"}
+        elif rt == "cross_period":
+            mode = cfg.get("mode") or "period"
+            if mode not in ("period", "year", "days"):
+                return {"ok": False, "message": "跨期模式不合法"}
+            if mode == "days":
+                try:
+                    days = int(cfg.get("days") or 90)
+                except (TypeError, ValueError):
+                    return {"ok": False, "message": "天数必须是整数"}
+                cfg = {"mode": "days", "days": days}
+        rule["config"] = cfg
+        rule["enabled"] = enabled == "1"
+        rule_repo.update(conn, rule_id, rule)
+    return _j({"id": rule_id, "enabled": rule["enabled"], "config": cfg})
+
+
 @api.post("/rules/{rule_id}/toggle")
 async def toggle_rule(rule_id: int):
     from app.repository import db
