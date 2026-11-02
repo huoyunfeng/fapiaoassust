@@ -541,46 +541,117 @@ def _release_active_matches(conn, reimburse_ids: List[int], operator: str) -> Li
 
 
 def delete_reimburse(reimburse_id: int, operator: str = None) -> dict:
-    """删除报销单：同一事务内释放发票 -> 显式清理匹配记录 -> 删报销单（失败整体回滚）。
+    """软删除报销单：释放发票 -> 清理匹配记录 -> 写入 deleted_at（绝不物理删除）。
 
     报销单为 Excel 导入解析后的数据行，原始 Excel 未落盘，无物理文件需清理。
     """
     operator = operator or settings.default_operator
+    batch_id = uuid.uuid4().hex
     with db.tx() as conn:
         row = reimburse_repo.get(conn, reimburse_id)
-        if row is None:
+        if row is None or row.get("deleted_at"):
             return {"ok": False, "message": f"报销单 #{reimburse_id} 不存在"}
         _release_active_matches(conn, [reimburse_id], operator)
         n_match = match_repo.delete_for_reimburse(conn, reimburse_id)
-        reimburse_repo.delete(conn, reimburse_id)
+        reimburse_repo.soft_delete(conn, reimburse_id)
         # 汇总匹配的 match_pair 删空后，清理悬空的父级 match_result，防脏数据
         n_orphan = match_repo.delete_unpaired_summary(conn)
-        logger.info("报销单 #%s 已删除 (清理匹配记录 %s 条、孤儿汇总匹配 %s 条, by %s)",
+        from app.service import audit_service
+        audit_service.log(conn, "delete", "reimburse", reimburse_id,
+                          row.get("reimburse_no") or f"#{reimburse_id}",
+                          "有效", "已删除（移入回收站）", operator, "删除报销单")
+        logger.info("报销单 #%s 已移入回收站 (清理匹配记录 %s 条、孤儿汇总匹配 %s 条, by %s)",
                     reimburse_id, n_match, n_orphan, operator)
-        return {"ok": True, "message": "报销单已删除（关联匹配已级联删除）"}
+        return {"ok": True, "message": "报销单已移入回收站（可在 20 秒内撤销）",
+                "ids": [reimburse_id], "batch_id": batch_id}
 
 
 def delete_batch(batch_id: str, operator: str = None) -> dict:
-    """删除导入批次：同一事务内连带清理批次内全部报销单产生的匹配记录。"""
+    """软删除导入批次：连带清理批次内全部报销单产生的匹配记录。"""
     operator = operator or settings.default_operator
+    undo_id = uuid.uuid4().hex
     with db.tx() as conn:
         ids = [r["id"] for r in reimburse_repo.list(conn, batch_id=batch_id, limit=100000)]
         _release_active_matches(conn, ids, operator)
         n_match = 0
         for rid in ids:
             n_match += match_repo.delete_for_reimburse(conn, rid)
-        n = reimburse_repo.delete_batch(conn, batch_id)
+        n = reimburse_repo.soft_delete_batch(conn, batch_id)
         n_orphan = match_repo.delete_unpaired_summary(conn)
-        logger.info("批次 %s 已删除 %s 行 (清理匹配记录 %s 条、孤儿汇总匹配 %s 条, by %s)",
+        from app.service import audit_service
+        audit_service.log(conn, "delete", "reimburse_batch", batch_id,
+                          batch_id, "有效", "已删除（移入回收站）", operator,
+                          f"删除批次 {n} 行")
+        logger.info("批次 %s 已移入回收站 %s 行 (清理匹配记录 %s 条、孤儿汇总匹配 %s 条, by %s)",
                     batch_id, n, n_match, n_orphan, operator)
-        return {"ok": True, "message": f"批次 {batch_id} 已删除 {n} 行（关联匹配已级联删除）"}
+        return {"ok": True, "message": f"批次 {batch_id} 已删除 {n} 行（可在 20 秒内撤销）",
+                "ids": ids, "batch_id": undo_id}
+
+
+def restore_reimburses(ids: List[int], operator: str = None) -> dict:
+    """撤销删除：清空 deleted_at（回收站 20 秒撤销 / 回收站恢复共用）。"""
+    operator = operator or settings.default_operator
+    restored = []
+    with db.tx() as conn:
+        for rid in ids:
+            row = reimburse_repo.get(conn, rid)
+            if row is None or not row.get("deleted_at"):
+                continue
+            reimburse_repo.restore(conn, [rid])
+            restored.append(rid)
+            from app.service import audit_service
+            audit_service.log(conn, "restore", "reimburse", rid,
+                              row.get("reimburse_no") or f"#{rid}",
+                              "已删除", "已恢复", operator, "撤销删除（回收站恢复）")
+    result = {"ok": True, "restored": len(restored), "ids": restored,
+              "message": f"已恢复 {len(restored)} 条报销单" if restored else "没有可恢复的报销单"}
+    if restored:
+        # 恢复后重新执行匹配：删除时已释放其占用发票并清理匹配记录，需重跑匹配还原关联
+        from app.service import match_service   # 惰性导入，避免服务层循环依赖
+        try:
+            ms = match_service.run_matching(operator)
+            result["match"] = ms
+            result["message"] = (
+                f"已恢复 {len(restored)} 条报销单，并重新匹配"
+                f"（自动匹配 {ms.get('auto_matched', 0)} 张发票、待人工 {ms.get('pending', 0)} 张）")
+        except Exception as e:      # 匹配失败不影响恢复结果本身
+            logger.warning("恢复报销单后重新匹配失败: %s", e)
+    return result
+
+
+def list_deleted_reimburses(limit: int = 500) -> List[dict]:
+    """回收站：已删除报销单列表。"""
+    with db.read() as conn:
+        return reimburse_repo.list_deleted(conn, limit=limit)
+
+
+def purge_reimburses(ids: List[int], operator: str = None) -> dict:
+    """彻底删除报销单（物理删除数据库记录），仅回收站 / 自动清理调用。"""
+    operator = operator or settings.default_operator
+    purged = 0
+    with db.tx() as conn:
+        for rid in ids:
+            row = reimburse_repo.get(conn, rid)
+            if row is None or not row.get("deleted_at"):
+                continue
+            match_repo.delete_for_reimburse(conn, rid)
+            reimburse_repo.delete(conn, rid)
+            purged += 1
+            from app.service import audit_service
+            audit_service.log(conn, "purge", "reimburse", rid,
+                              row.get("reimburse_no") or f"#{rid}",
+                              "已删除", "已彻底删除", operator, "回收站彻底删除")
+    logger.info("回收站彻底删除报销单 %s 条 (by %s)", purged, operator)
+    return {"ok": True, "purged": purged, "message": f"已彻底删除 {purged} 条报销单"}
 
 
 def list_reimburses(batch_id: str = None, keyword: str = None,
-                    template_id: int = None, since: str = None) -> List[dict]:
+                    template_id: int = None, since: str = None,
+                    date_from: str = None, date_to: str = None) -> List[dict]:
     """报销单列表：分类 = 报销单自身分类（与发票侧隔离），已匹配时附发票侧分类与冲突。
 
     since: 冷热分离下界（按报销日期，None = 取全部历史；无日期行保留）。
+    date_from/date_to: 严格 BETWEEN（无日期行不计入），两者同时传入时 date_from 优先于 since。
 
     未匹配：只展示报销单自身分类（reimburse_category 人工值 > 导入的费用类型），可点击修改，
             绝不会影响任何发票（模块二「两座孤岛」）。
@@ -590,7 +661,7 @@ def list_reimburses(batch_id: str = None, keyword: str = None,
 
     with db.read() as conn:
         rows = reimburse_repo.list(conn, batch_id=batch_id, keyword=keyword,
-                                   since=since)
+                                   since=since, date_from=date_from, date_to=date_to)
         active_ids = match_repo.active_reimburse_ids(conn)
         invoices = match_repo.matched_invoice_ids(conn, [r["id"] for r in rows])
         all_ids = sorted({iid for ids in invoices.values() for iid in ids})

@@ -10,32 +10,32 @@
 
 /* ---- 顶部指标卡片 ---- */
 .db-cards{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;}
-.db-card{background:#fff;border:1px solid var(--border);border-radius:12px;padding:14px 18px;
+.db-card{background:var(--card);border:1px solid transparent;border-radius:var(--radius-card);padding:18px 20px;
   display:flex;align-items:center;gap:14px;cursor:pointer;
-  box-shadow:0 2px 8px rgba(15,23,42,.04);transition:box-shadow .15s,transform .15s;}
-.db-card:hover{box-shadow:0 6px 18px rgba(37,99,235,.12);transform:translateY(-1px);}
-.db-card .db-icon{width:44px;height:44px;border-radius:10px;display:flex;align-items:center;justify-content:center;
+  box-shadow:var(--shadow-card);transition:var(--transition);}
+.db-card:hover{box-shadow:var(--shadow-hover);transform:translateY(-2px);}
+.db-card .db-icon{width:44px;height:44px;border-radius:var(--radius-card);display:flex;align-items:center;justify-content:center;
   font-size:22px;flex-shrink:0;}
 .db-card .db-body{flex:1;min-width:0;}
-.db-card .db-label{font-size:12px;color:var(--muted);margin-bottom:4px;display:flex;align-items:center;gap:4px;}
+.db-card .db-label{font-size:12px;color:var(--text-2);margin-bottom:4px;display:flex;align-items:center;gap:4px;}
 .db-card .db-num{font-size:24px;font-weight:700;color:var(--text);font-variant-numeric:tabular-nums;line-height:1.1;}
-.db-card .db-sub{font-size:11px;color:#9ca3af;margin-top:3px;}
-/* 四种图标底色 */
-.db-icon.blue{background:#dbeafe;color:#1e40af;}
-.db-icon.green{background:#dcfce7;color:#166534;}
-.db-icon.purple{background:#f3e8ff;color:#6b21a8;}
-.db-icon.red{background:#fee2e2;color:#991b1b;}
-/* 红色警示卡：边框 + 极浅红底 */
-.db-card.danger{border-color:#fecaca;background:#fef2f2;}
-.db-card.danger .db-num{color:#991b1b;}
-.db-card.danger .db-sub{color:#b91c1c;}
+.db-card .db-sub{font-size:11px;color:var(--text-3);margin-top:3px;}
+/* 四种图标底色（浅底深字） */
+.db-icon.blue{background:var(--primary-light);color:var(--primary-dark);}
+.db-icon.green{background:var(--success-bg);color:var(--success-text);}
+.db-icon.purple{background:#f4f0ff;color:#5b21b6;}
+.db-icon.red{background:var(--danger-bg);color:var(--danger-text);}
+/* 红色警示卡：细边框 + 极浅红底 */
+.db-card.danger{border-color:var(--danger-border);background:var(--danger-bg);}
+.db-card.danger .db-num{color:var(--danger-text);}
+.db-card.danger .db-sub{color:var(--danger-text);}
 
 /* ---- 核心区 左6 + 右4 ---- */
 .db-main{display:grid;grid-template-columns:minmax(0,6fr) minmax(0,4fr);gap:16px;align-items:start;}
 
-/* 通用卡片 */
-.db-panel{background:#fff;border:1px solid var(--border);border-radius:12px;padding:18px;
-  box-shadow:0 2px 8px rgba(15,23,42,.04);}
+/* 通用卡片：与全局 Card 同一套圆角 / 阴影 */
+.db-panel{background:var(--card);border:1px solid transparent;border-radius:var(--radius-card);padding:var(--space);
+  box-shadow:var(--shadow-card);transition:var(--transition);}
 .db-panel-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;}
 .db-panel-head h2{font-size:15px;margin:0;display:flex;align-items:center;gap:6px;}
 
@@ -78,9 +78,9 @@
 
 /* ---- 右栏：快捷操作 + 待办 ---- */
 .db-quick{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-bottom:18px;}
-.db-quick a{display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--border);border-radius:8px;
-  text-decoration:none;color:var(--text);font-size:13px;background:#fff;transition:all .15s;}
-.db-quick a:hover{border-color:var(--primary);color:var(--primary);background:#eff6ff;}
+.db-quick a{display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--border);border-radius:var(--radius-card);
+  text-decoration:none;color:var(--text);font-size:13px;background:#fff;transition:var(--transition);}
+.db-quick a:hover{border-color:var(--primary);color:var(--primary);background:var(--primary-light);}
 .db-quick .q-icon{width:28px;height:28px;border-radius:6px;display:flex;align-items:center;justify-content:center;
   font-size:14px;background:#f1f5f9;}
 .db-quick a:hover .q-icon{background:#dbeafe;}
@@ -98,7 +98,7 @@
 /* 待办表格紧凑版 */
 .db-mini-table{width:100%;border-collapse:collapse;font-size:12px;}
 .db-mini-table th,.db-mini-table td{padding:6px 8px;border-bottom:1px solid #f1f5f9;text-align:left;white-space:nowrap;}
-.db-mini-table th{background:#fafbfc;color:#666;font-weight:600;font-size:11px;}
+.db-mini-table th{background:#f8f9fa;color:var(--text-2);font-weight:600;font-size:11px;}
 .db-mini-table tbody tr:hover td{background:#f8fafc;}
 .db-mini-table td.wrap{white-space:normal;max-width:180px;overflow:hidden;text-overflow:ellipsis;}
 .db-mini-table .go{font-size:11px;padding:3px 8px;}

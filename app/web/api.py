@@ -9,8 +9,8 @@ from fastapi.responses import (FileResponse, JSONResponse, Response,
 from starlette.background import BackgroundTask
 
 from app.service import (audit_service, backup_service, category_service,
-                         invoice_service, match_service, reimburse_service,
-                         report_service)
+                         invoice_service, match_service, recycle_service,
+                         reimburse_service, report_service)
 from app.service.mapping_service import mapping_service
 from app.service.template_service import template_service
 from app.infra.logger import get_logger
@@ -117,6 +117,15 @@ async def batch_delete_invoices(ids: str = Form(""), operator: str = Form("admin
     if not invoice_ids:
         return _j({"ok": False, "message": "未选择要删除的发票"})
     return _j(invoice_service.delete_invoices(invoice_ids, operator))
+
+
+@api.post("/invoices/restore")
+async def restore_invoices(ids: str = Form(""), operator: str = Form("admin")):
+    """20 秒撤销 / 回收站恢复：清空 deleted_at。"""
+    invoice_ids = [int(x) for x in ids.split(",") if x.strip().isdigit()]
+    if not invoice_ids:
+        return _j({"ok": False, "message": "未指定要恢复的发票"})
+    return _j(invoice_service.restore_invoices(invoice_ids, operator))
 
 
 # ---------------------------------------------------------------- 报销单
@@ -290,6 +299,47 @@ async def delete_reimburse(reimburse_id: int, operator: str = Form("admin")):
 @api.post("/reimburses/batch/{batch_id}/delete")
 async def delete_batch(batch_id: str, operator: str = Form("admin")):
     return _j(reimburse_service.delete_batch(batch_id, operator))
+
+
+@api.post("/reimburses/restore")
+async def restore_reimburses(ids: str = Form(""), operator: str = Form("admin")):
+    """20 秒撤销 / 回收站恢复：清空 deleted_at。"""
+    rid_list = [int(x) for x in ids.split(",") if x.strip().isdigit()]
+    if not rid_list:
+        return _j({"ok": False, "message": "未指定要恢复的报销单"})
+    return _j(reimburse_service.restore_reimburses(rid_list, operator))
+
+
+# ---------------------------------------------------------------- 回收站
+@api.get("/recycle-bin")
+async def recycle_bin(limit: int = 500):
+    """回收站列表（软删除的发票 + 报销单）与自动清理周期。"""
+    return _j(recycle_service.list_deleted(limit=limit))
+
+
+@api.post("/recycle-bin/restore")
+async def recycle_bin_restore(kind: str = Form(...), ids: str = Form(""),
+                              operator: str = Form("admin")):
+    id_list = [int(x) for x in ids.split(",") if x.strip().isdigit()]
+    return _j(recycle_service.restore(kind, id_list))
+
+
+@api.post("/recycle-bin/purge")
+async def recycle_bin_purge(kind: str = Form(...), ids: str = Form(""),
+                            operator: str = Form("admin")):
+    """彻底删除（不可恢复）：物理删除数据库记录 + 清理本地附件。"""
+    id_list = [int(x) for x in ids.split(",") if x.strip().isdigit()]
+    return _j(recycle_service.purge(kind, id_list))
+
+
+@api.get("/settings/recycle-days")
+async def get_recycle_days():
+    return _j({"days": recycle_service.get_auto_clean_days()})
+
+
+@api.post("/settings/recycle-days")
+async def set_recycle_days(days: int = Form(...)):
+    return _j(recycle_service.set_auto_clean_days(days))
 
 
 @api.get("/reimburses/batch/{batch_id}/ids")
@@ -679,6 +729,7 @@ async def reorder_rules(ids: str = Form("")):
 async def configure_rule(rule_id: int, config: str = Form("{}"),
                          enabled: str = Form("1")):
     """核心规则弹窗配置：写入参数（税号/敏感词标签、跨期模式）并同步开关状态。"""
+    from datetime import date
     from app.domain.rules_engine import TAG_CONFIG_KEYS
     from app.repository import db
     from app.repository.repos import rule_repo
@@ -711,7 +762,7 @@ async def configure_rule(rule_id: int, config: str = Form("{}"),
                 return {"ok": False, "message": "金额必须是数字"}
         elif rt == "cross_period":
             mode = cfg.get("mode") or "period"
-            if mode not in ("period", "year", "days"):
+            if mode not in ("period", "year", "days", "custom"):
                 return {"ok": False, "message": "跨期模式不合法"}
             if mode == "days":
                 try:
@@ -719,6 +770,19 @@ async def configure_rule(rule_id: int, config: str = Form("{}"),
                 except (TypeError, ValueError):
                     return {"ok": False, "message": "天数必须是整数"}
                 cfg = {"mode": "days", "days": days}
+            elif mode == "custom":
+                start = str(cfg.get("start") or "").strip()
+                end = str(cfg.get("end") or "").strip()
+                if not start and not end:
+                    return {"ok": False, "message": "请至少填写起始或终止日期"}
+                try:
+                    sd = date.fromisoformat(start) if start else None
+                    ed = date.fromisoformat(end) if end else None
+                except ValueError:
+                    return {"ok": False, "message": "日期格式应为 YYYY-MM-DD"}
+                if sd and ed and sd > ed:
+                    return {"ok": False, "message": "起始日期不能晚于终止日期"}
+                cfg = {"mode": "custom", "start": start or None, "end": end or None}
         rule["config"] = cfg
         rule["enabled"] = enabled == "1"
         rule_repo.update(conn, rule_id, rule)

@@ -2,21 +2,23 @@
 {% block content %}
 <style>
 /* ---- 设置页专属（命名空间前缀 .sg-）避免污染全局 ---- */
-.sg-layout{display:flex;gap:20px;min-height:calc(100vh - 52px - 48px);}
-.sg-nav{width:200px;background:#fff;border:1px solid var(--border);border-radius:12px;padding:10px 0;flex-shrink:0;align-self:flex-start;position:sticky;top:24px;}
-.sg-nav-title{font-size:12px;color:var(--muted);padding:8px 18px 6px;font-weight:600;letter-spacing:.5px;}
-.sg-nav-item{display:flex;align-items:center;gap:10px;padding:10px 18px;cursor:pointer;color:var(--text);font-size:13px;border-left:3px solid transparent;transition:background .15s;}
-.sg-nav-item:hover{background:#f8fafc;}
-.sg-nav-item.active{background:#eff6ff;color:var(--primary);border-left-color:var(--primary);font-weight:600;}
+/* 左侧导航：略深底色 + 选中项主色浅底 + 左侧蓝色竖条 */
+.sg-layout{display:flex;gap:20px;min-height:calc(100vh - 56px - 40px);}
+.sg-nav{width:200px;background:#fafafa;border:1px solid var(--border-light);border-radius:var(--radius-card);padding:10px 0;flex-shrink:0;align-self:flex-start;position:sticky;top:20px;}
+.sg-nav-title{font-size:12px;color:var(--text-3);padding:8px 18px 6px;font-weight:600;letter-spacing:.5px;}
+.sg-nav-item{display:flex;align-items:center;gap:10px;padding:10px 18px;cursor:pointer;color:var(--text-2);font-size:13px;border-left:3px solid transparent;transition:var(--transition);}
+.sg-nav-item:hover{background:#f5f7fa;color:var(--text);}
+.sg-nav-item.active{background:var(--primary-light);color:var(--primary);border-left-color:var(--primary);font-weight:600;}
 .sg-nav-icon{font-size:15px;width:18px;text-align:center;}
-.sg-content{flex:1;min-width:0;background:#f3f4f6;border-radius:12px;padding:20px;}
+/* 右侧内容区不再铺灰色大底，直接由白底卡片承载，避免大片灰色断层 */
+.sg-content{flex:1;min-width:0;background:transparent;padding:0;}
 .sg-pane{display:none;}
 .sg-pane.active{display:block;}
 
 /* 折叠面板（系统信息等）*/
-.sg-collapse{background:#fff;border:1px solid var(--border);border-radius:10px;margin-top:16px;}
-.sg-collapse-head{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;cursor:pointer;color:var(--primary);font-size:13px;font-weight:600;}
-.sg-collapse-head:hover{background:#f8fafc;}
+.sg-collapse{background:#fff;border:1px solid transparent;border-radius:var(--radius-card);margin-top:16px;box-shadow:var(--shadow-card);}
+.sg-collapse-head{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;cursor:pointer;color:var(--primary);font-size:13px;font-weight:600;border-radius:var(--radius-card);transition:var(--transition);}
+.sg-collapse-head:hover{background:#f5f7fa;}
 .sg-collapse-body{padding:0 16px 16px;display:none;}
 .sg-collapse.open .sg-collapse-body{display:block;}
 .sg-collapse .sg-arrow{transition:transform .2s;font-size:12px;}
@@ -24,13 +26,13 @@
 
 /* 审计日志筛选 + 表格 */
 .sg-filter-row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:14px;}
-.sg-filter-row .sg-sep{width:1px;height:28px;background:var(--border);}
-.sg-filter-row label{font-size:12px;color:var(--muted);}
+.sg-filter-row .sg-sep{width:1px;height:28px;background:var(--border-light);}
+.sg-filter-row label{font-size:12px;color:var(--text-3);}
 .sg-quick-date{display:flex;gap:6px;}
-.sg-quick-date button{padding:4px 10px;font-size:12px;border:1px solid var(--border);background:#fff;border-radius:4px;cursor:pointer;}
+.sg-quick-date button{height:28px;padding:0 10px;font-size:12px;border:1px solid var(--border);background:#fff;border-radius:var(--radius);cursor:pointer;color:var(--text-2);transition:var(--transition);}
+.sg-quick-date button:hover{border-color:var(--primary);color:var(--primary);}
 .sg-quick-date button.active{background:var(--primary);color:#fff;border-color:var(--primary);}
-.sg-zebra tbody tr:nth-child(even) td{background:#fafbfc;}
-.sg-zebra tbody tr:hover td{background:#eff6ff !important;}
+.sg-zebra tbody tr:hover td{background:var(--bg) !important;}
 .sg-cell-ellipsis{max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
 
 /* 规则表单（动态字段）*/
@@ -300,7 +302,7 @@
               <td>#{{ c.id }}</td>
               <td>{{ c.name }}</td>
               <td>{% if c.is_builtin %}<span class="badge badge-blue">系统预设</span>{% else %}<span class="badge badge-gray">自定义</span>{% endif %}</td>
-              <td>{% if c.enabled %}<span style="display:inline-block;padding:2px 10px;border-radius:10px;font-size:12px;background:#dcfce7;color:#166534;">启用</span>{% else %}<span style="display:inline-block;padding:2px 10px;border-radius:10px;font-size:12px;background:#f3f4f6;color:#4b5563;">已禁用</span>{% endif %}</td>
+              <td>{% if c.enabled %}<span class="badge badge-green">启用</span>{% else %}<span class="badge badge-gray">已禁用</span>{% endif %}</td>
               <td>
                 {% if c.is_builtin %}
                 <span class="muted" title="系统基础映射标准，已强制锁定">🔒 已锁定</span>
@@ -329,13 +331,14 @@
       <div class="tabs">
         <div class="tab active" onclick="switchTab(this,'sysBackup')">数据备份</div>
         <div class="tab" onclick="switchTab(this,'sysAudit')">审计日志</div>
+        <div class="tab" onclick="switchTab(this,'sysRecycle');sgRecycleEnsure()">回收站与数据管理</div>
         <div class="tab" onclick="switchTab(this,'sysInfo')">系统信息</div>
       </div>
 
       <!-- ---- Tab: 数据备份 ---- -->
       <div class="tabpane active" id="sysBackup">
         {% if storage %}
-        <div class="card"{% if storage.warn %} style="border-color:#fcd34d;background:#fffbeb;"{% endif %}>
+        <div class="card{% if storage.warn %} card-warn{% endif %}">
           <h2>附件存储容量</h2>
           <p class="muted mb">发票原始附件目录 uploads/ 的物理占用。超过 {{ storage.limit_human }} 时建议先备份、再清理历史附件。</p>
           <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
@@ -343,11 +346,11 @@
             <span class="muted">/ {{ storage.limit_human }} · 共 {{ storage.files }} 个附件</span>
             {% if storage.warn %}<span class="badge badge-yellow">容量已超过 5GB</span>{% endif %}
           </div>
-          <div style="max-width:420px;height:8px;background:#e5e7eb;border-radius:6px;overflow:hidden;margin-top:10px;">
-            <div style="height:100%;width:{{ [storage.percent, 100]|min }}%;background:{% if storage.warn %}#f59e0b{% else %}#2563eb{% endif %};"></div>
+          <div class="progress">
+            <div class="progress-fill{% if storage.warn %} warn{% endif %}" style="width:{{ [storage.percent, 100]|min }}%;"></div>
           </div>
           {% if storage.warn %}
-          <p style="margin-top:10px;color:#92400e;font-size:13px;">附件已超过 5GB：请先执行【一键备份数据】，再在发票管理中清理不再需要的附件，避免磁盘空间不足影响系统运行。</p>
+          <p class="warn-text">附件已超过 5GB：请先执行【一键备份数据】，再在发票管理中清理不再需要的附件，避免磁盘空间不足影响系统运行。</p>
           {% endif %}
         </div>
         {% endif %}
@@ -428,6 +431,50 @@
         </div>
       </div>
 
+      <!-- ---- Tab: 回收站与数据管理 ---- -->
+      <div class="tabpane" id="sysRecycle">
+        <div class="card">
+          <h2>回收站自动清理</h2>
+          <p class="muted mb">常规删除只做软删除（写入 deleted_at），数据先进入回收站；超过设定的天数后，系统每日自动彻底删除（含本地附件），并写入审计日志。</p>
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+            <label class="muted">回收站自动清理时间</label>
+            <select id="sgRecycleDays" onchange="sgRecycleSaveDays(this)" style="min-width:200px;">
+              <option value="7">7 天</option>
+              <option value="15">15 天</option>
+              <option value="30">30 天（默认）</option>
+              <option value="90">90 天</option>
+              <option value="0">永久保留（不自动删除）</option>
+            </select>
+            <span class="muted" id="sgRecycleDaysHint"></span>
+          </div>
+        </div>
+
+        <div class="card" style="position:relative;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+            <h2 style="margin:0;">回收站</h2>
+            <span class="muted" id="sgRecycleCount"></span>
+          </div>
+          <div id="sgRecycleLoading" style="display:none;position:absolute;inset:0;background:rgba(255,255,255,.6);z-index:5;border-radius:12px;align-items:center;justify-content:center;">
+            <div style="text-align:center;"><div class="spinner"></div><p class="muted" style="margin-top:8px;">加载中…</p></div>
+          </div>
+          <table class="sg-zebra">
+            <thead>
+              <tr>
+                <th style="width:70px;">类型</th>
+                <th style="width:170px;">编号</th>
+                <th class="sg-cell-ellipsis">明细</th>
+                <th style="width:110px;text-align:right;">金额</th>
+                <th style="width:170px;">删除时间</th>
+                <th style="width:160px;">操作</th>
+              </tr>
+            </thead>
+            <tbody id="sgRecycleTbody">
+              <tr><td colspan="6" class="muted" style="text-align:center;padding:24px;">加载中…</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
       <!-- ---- Tab: 系统信息 ---- -->
       <div class="tabpane" id="sysInfo">
         <div class="card">
@@ -501,8 +548,12 @@ function _sgFailed(j){
 async function sgCoreSwitch(el, id, name, want, okMsg){
   el.disabled = true;
   el.checked = !want;                       // 请求期间先回滚，等待后端确认
-  const j = await post(`/api/rules/${id}/toggle`, {});
-  el.disabled = false;
+  let j;
+  try{
+    j = await post(`/api/rules/${id}/toggle`, new FormData());
+  } finally {
+    el.disabled = false;                    // 无论成功/失败都恢复可点击，避免永久置灰
+  }
   if(_sgFailed(j)){ el.checked = !want; return; }
   el.checked = want;
   toast(okMsg || ('已' + (want ? '开启' : '关闭') + '「' + name + '」'));
@@ -528,12 +579,24 @@ async function sgCoreToggle(el){
   const fd = new FormData();
   fd.append('config', JSON.stringify(cfg));
   fd.append('enabled', '1');
-  const j = await post(`/api/rules/${id}/config`, fd);
-  el.disabled = false;
+  let j;
+  try{
+    j = await post(`/api/rules/${id}/config`, fd);
+  } finally {
+    el.disabled = false;                    // 无论成功/失败都恢复可点击，避免永久置灰
+  }
   if(_sgFailed(j)){ el.checked = false; return; }
   el.checked = true;
   SG_CORE_CFG[id] = cfg;                    // 记住本次参数，下次打开弹窗可回填
   toast('已开启「' + name + '」');
+}
+
+// 跨期限制弹窗：切换「自定义起止日期」时显示/隐藏日期输入
+function sgCmToggleCustomRange(){
+  const sel = document.getElementById('sgCmMode');
+  const range = document.getElementById('sgCmRange');
+  if(!sel || !range) return;
+  range.style.display = sel.value === 'custom' ? '' : 'none';
 }
 
 // 参数配置弹窗：返回 Promise<config|null>，null 表示取消
@@ -560,11 +623,19 @@ function sgRuleConfigModal(id, type, name){
       }
     } else {
       ctrl = '<label class="muted" style="display:block;margin-bottom:6px;">跨期限制方式</label>'
-           + '<select id="sgCmMode" style="width:100%;">'
+           + '<select id="sgCmMode" style="width:100%;" onchange="sgCmToggleCustomRange()">'
            + '<option value="period">报销期间内（发票日期须落在报销单起止区间）</option>'
            + '<option value="year">仅限本年度</option>'
            + '<option value="days">限制近 90 天</option>'
-           + '</select>';
+           + '<option value="custom">自定义起止日期</option>'
+           + '</select>'
+           + '<div id="sgCmRange" style="display:none;margin-top:10px;">'
+           + '<label class="muted">自定义日期区间</label>'
+           + '<div style="display:flex;gap:8px;align-items:center;">'
+           + '<input type="date" id="sgCmStart" style="width:48%;">'
+           + '<span class="muted">至</span>'
+           + '<input type="date" id="sgCmEnd" style="width:48%;">'
+           + '</div></div>';
     }
     m.innerHTML = '<h2 style="font-size:16px;margin-bottom:6px;">配置「' + _escHtml(name) + '」</h2>'
       + '<p class="muted" style="margin-bottom:12px;">开关将在保存后开启；取消则保持关闭。</p>'
@@ -577,7 +648,13 @@ function sgRuleConfigModal(id, type, name){
     const done = v=>{ closeModal(); resolve(v); };
     const modeSel = m.querySelector('#sgCmMode');
     if(modeSel){
-      modeSel.value = (saved.mode === 'days' || saved.mode === 'year') ? saved.mode : 'period';
+      modeSel.value = (saved.mode === 'days' || saved.mode === 'year' || saved.mode === 'custom') ? saved.mode : 'period';
+      sgCmToggleCustomRange();
+      if(saved.mode === 'custom'){
+        const s = m.querySelector('#sgCmStart'), e = m.querySelector('#sgCmEnd');
+        if(s) s.value = saved.start || '';
+        if(e) e.value = saved.end || '';
+      }
     }
 
     const box = m.querySelector('#sgCmTags');
@@ -629,7 +706,18 @@ function sgRuleConfigModal(id, type, name){
     }
 
     m.querySelector('#sgCmOk').onclick = ()=>{
-      if(modeSel){ done(modeSel.value === 'days' ? {mode:'days', days:90} : {mode: modeSel.value}); return; }
+      if(modeSel){
+        const mode = modeSel.value;
+        if(mode === 'days'){ done({mode:'days', days:90}); return; }
+        if(mode === 'custom'){
+          const s = (m.querySelector('#sgCmStart').value || '').trim();
+          const e = (m.querySelector('#sgCmEnd').value || '').trim();
+          if(!s && !e){ toast('请至少填写起始或终止日期', false); return; }
+          if(s && e && s > e){ toast('起始日期不能晚于终止日期', false); return; }
+          done({mode:'custom', start:s, end:e}); return;
+        }
+        done({mode: mode}); return;
+      }
       add();
       if(!tags.length){ toast('请至少填写一个标签后再开启', false); return; }
       done(type === 'buyer_tax_no' ? {tax_nos: tags.slice()} : {words: tags.slice()});
@@ -1127,6 +1215,118 @@ async function doRestore(input){
     if(data.ok){ await confirmDlg((data.message || '数据恢复成功') + '\n点击确认后页面将自动刷新。'); location.reload(); }
     else toast(data.message || '恢复失败', false);
   }catch(e){ busyDone(); toast('恢复请求失败：' + e, false); }
+}
+
+/* ===== 回收站与数据管理（模块四） ===== */
+let sgRecycleLoaded = false, sgRecycleItems = [];
+
+function sgRecycleEnsure(){
+  if(!sgRecycleLoaded){ sgRecycleLoad(); sgRecycleLoaded = true; }
+}
+
+async function sgRecycleLoad(){
+  const loading = document.getElementById('sgRecycleLoading');
+  loading.style.display = 'flex';
+  try{
+    const r = await fetch('/api/recycle-bin');
+    const j = await r.json(); const d = j.data || j;
+    sgRecycleItems = d.items || [];
+    const sel = document.getElementById('sgRecycleDays');
+    if(sel && d.auto_clean_days !== undefined){
+      sel.value = String(d.auto_clean_days);
+      sgRecycleDaysHint(Number(d.auto_clean_days));
+    }
+    document.getElementById('sgRecycleCount').textContent = `共 ${d.total || 0} 条`;
+    sgRenderRecycle();
+  }catch(e){
+    document.getElementById('sgRecycleTbody').innerHTML =
+      '<tr><td colspan="6" class="muted" style="text-align:center;padding:24px;">加载失败，请稍后重试</td></tr>';
+  }finally{
+    loading.style.display = 'none';
+  }
+}
+
+function sgRecycleDaysHint(days){
+  const el = document.getElementById('sgRecycleDaysHint');
+  if(!el) return;
+  el.textContent = days === 0 ? '当前：永久保留，不自动删除' : `当前：删除满 ${days} 天后自动彻底删除`;
+}
+
+function _sgEsc(s){
+  return String(s == null ? '' : s).replace(/[&<>"']/g, function(c){
+    if(c === '&') return '&amp;';
+    if(c === '<') return '&lt;';
+    if(c === '>') return '&gt;';
+    if(c === '"') return '&quot;';
+    return '&#39;';
+  });
+}
+
+function sgRenderRecycle(){
+  const tbody = document.getElementById('sgRecycleTbody');
+  if(!sgRecycleItems.length){
+    tbody.innerHTML = '<tr><td colspan="6" class="muted" style="text-align:center;padding:24px;">回收站为空</td></tr>';
+    return;
+  }
+  tbody.innerHTML = sgRecycleItems.map(item=>{
+    const kindCn = item.kind === 'invoice' ? '发票' : '报销单';
+    const time = _sgEsc((item.deleted_at || '').replace('T',' '));
+    const sub = [item.sub, item.invoice_date ? '日期 ' + item.invoice_date : ''].filter(Boolean).join(' · ');
+    const amt = item.amount == null || item.amount === '' ? '—' : Number(item.amount).toFixed(2);
+    return `<tr>
+      <td>${kindCn}</td>
+      <td>${_sgEsc(item.label)}</td>
+      <td class="sg-cell-ellipsis" title="${_sgEsc(sub)}">${_sgEsc(sub) || '—'}</td>
+      <td style="text-align:right;font-variant-numeric:tabular-nums;">${_sgEsc(amt)}</td>
+      <td class="muted" style="font-variant-numeric:tabular-nums;font-size:12px;">${time}</td>
+      <td>
+        <button class="btn btn-sm" onclick="sgRecycleRestore('${item.kind}',${item.id})">恢复</button>
+        <button class="btn btn-sm btn-danger" onclick="sgRecyclePurge('${item.kind}',${item.id})">彻底删除</button>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+async function sgRecyclePost(url, fd){
+  const r = await fetch(url, {method:'POST', body:fd});
+  const j = await r.json();
+  return j.data || j;
+}
+
+async function sgRecycleRestore(kind, id){
+  const fd = new FormData();
+  fd.append('kind', kind); fd.append('ids', String(id)); fd.append('operator', 'admin');
+  const d = await sgRecyclePost('/api/recycle-bin/restore', fd);
+  toast(d.message || (d.ok !== false ? '已恢复' : '恢复失败'), d.ok !== false);
+  if(d.ok !== false) sgRecycleLoad();
+}
+
+async function sgRecyclePurge(kind, id){
+  if(!await confirmDlg('彻底删除后不可恢复！\n数据库记录与本地附件将被永久清理，确认继续？')) return;
+  const fd = new FormData();
+  fd.append('kind', kind); fd.append('ids', String(id)); fd.append('operator', 'admin');
+  const d = await sgRecyclePost('/api/recycle-bin/purge', fd);
+  toast(d.message || (d.ok !== false ? '已彻底删除' : '彻底删除失败'), d.ok !== false);
+  if(d.ok !== false) sgRecycleLoad();
+}
+
+async function sgRecycleSaveDays(sel){
+  const days = Number(sel.value);
+  const fd = new FormData(); fd.append('days', String(days));
+  sel.disabled = true;
+  let d;
+  try{
+    d = await sgRecyclePost('/api/settings/recycle-days', fd);
+  }catch(e){
+    toast('保存失败，请稍后重试', false);
+    return;
+  }finally{
+    sel.disabled = false;
+  }
+  if(!d){ toast('保存失败，请稍后重试', false); return; }
+  toast(d.message || (d.ok !== false ? '已保存' : '保存失败'), d.ok !== false);
+  if(d.ok === false) sgRecycleLoad();
+  else sgRecycleDaysHint(days);
 }
 </script>
 {% endblock %}

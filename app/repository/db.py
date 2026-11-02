@@ -69,11 +69,11 @@ CREATE TABLE IF NOT EXISTS invoice (
     status           TEXT NOT NULL DEFAULT 'PARSING'
                      CHECK(status IN ('PARSING','PARSED','NORMAL','ABNORMAL','DUPLICATE','MATCHED')),
     is_red_flush     INTEGER NOT NULL DEFAULT 0,
+    -- 软删除标记：常规删除只写 deleted_at，物理删除仅在回收站「彻底删除」/自动清理时发生
+    deleted_at       TEXT,
     created_at       TEXT NOT NULL DEFAULT (datetime('now','localtime')),
     updated_at       TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
-
-CREATE UNIQUE INDEX IF NOT EXISTS uq_invoice_file_hash ON invoice(file_hash);
 
 -- 报销内容自定义词典：用户手动改名记忆（原始词 -> 新词）
 CREATE TABLE IF NOT EXISTS item_alias (
@@ -109,10 +109,7 @@ CREATE TABLE IF NOT EXISTS category_memory (
 CREATE UNIQUE INDEX IF NOT EXISTS uq_category_memory
     ON category_memory(kind, key);
 
--- 不变量 I2（部分唯一索引；含上述调整 1）
-CREATE UNIQUE INDEX IF NOT EXISTS uq_invoice_code_no
-    ON invoice(invoice_code, invoice_no)
-    WHERE invoice_code != '' AND invoice_no != '' AND status != 'DUPLICATE';
+-- 唯一索引在 _migrate 中创建（需先确保 deleted_at 列存在，且软删除数据不参与唯一约束）
 
 CREATE INDEX IF NOT EXISTS idx_invoice_no        ON invoice(invoice_no);
 CREATE INDEX IF NOT EXISTS idx_invoice_date      ON invoice(invoice_date);
@@ -141,6 +138,8 @@ CREATE TABLE IF NOT EXISTS reimburse (
     row_index      INTEGER NOT NULL,
     dup_flag       INTEGER NOT NULL DEFAULT 0,
     dup_source     TEXT NOT NULL DEFAULT '',
+    -- 软删除标记：常规删除只写 deleted_at，物理删除仅在回收站「彻底删除」/自动清理时发生
+    deleted_at     TEXT,
     created_at     TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
 
@@ -407,6 +406,24 @@ def _migrate(conn: sqlite3.Connection) -> None:
         if col not in cols:
             conn.execute(ddl)
             logger.info("迁移: reimburse 表新增列 %s", col)
+
+    # 1a0. 软删除：invoice / reimburse 增加 deleted_at（常规删除禁止物理删除）
+    inv_cols = {r[1] for r in conn.execute("PRAGMA table_info(invoice)").fetchall()}
+    if "deleted_at" not in inv_cols:
+        conn.execute("ALTER TABLE invoice ADD COLUMN deleted_at TEXT")
+        logger.info("迁移: invoice 表新增列 deleted_at")
+    if "deleted_at" not in cols:
+        conn.execute("ALTER TABLE reimburse ADD COLUMN deleted_at TEXT")
+        logger.info("迁移: reimburse 表新增列 deleted_at")
+    # 唯一约束排除软删除数据：删除后可重新导入同一文件/同号发票
+    conn.execute("DROP INDEX IF EXISTS uq_invoice_file_hash")
+    conn.execute("DROP INDEX IF EXISTS uq_invoice_code_no")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_invoice_file_hash "
+                 "ON invoice(file_hash) WHERE deleted_at IS NULL")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS uq_invoice_code_no "
+                 "ON invoice(invoice_code, invoice_no) "
+                 "WHERE invoice_code != '' AND invoice_no != '' "
+                 "AND status != 'DUPLICATE' AND deleted_at IS NULL")
 
     # 1a. match_result 表新增 match_points（无票号场景的 ✅ 命中点，供并排比对展示）
     mcols = {r[1] for r in conn.execute("PRAGMA table_info(match_result)").fetchall()}

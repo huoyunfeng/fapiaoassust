@@ -190,10 +190,10 @@ class RuleEngine:
 
         if rt == "cross_period" and isinstance(dto, InvoiceDTO):
             # 默认 period 模式依赖报销单期间，在 validate_pair 中处理；
-            # year / days 为发票单侧判定，导入校验与匹配时都生效。
+            # year / days / custom 为发票单侧判定，导入校验与匹配时都生效。
             mode = str(cfg.get("mode") or "period")
             inv_date = _as_date(dto.invoice_date)
-            if mode in ("year", "days") and inv_date is not None:
+            if mode in ("year", "days", "custom") and inv_date is not None:
                 if mode == "year" and inv_date.year != date.today().year:
                     issues.append(Issue(
                         "CROSS_PERIOD",
@@ -209,6 +209,23 @@ class RuleEngine:
                         issues.append(Issue(
                             "CROSS_PERIOD",
                             f"该【单张发票】开票日期（{inv_date}）超出最近 {limit} 天"
+                            f"（规则：{rule.name}）",
+                            sev))
+                        return True
+                if mode == "custom":
+                    sd = _as_date(cfg.get("start"))
+                    ed = _as_date(cfg.get("end"))
+                    if sd and inv_date < sd:
+                        issues.append(Issue(
+                            "CROSS_PERIOD",
+                            f"该【单张发票】开票日期（{inv_date}）早于自定义起始日期 {sd}"
+                            f"（规则：{rule.name}）",
+                            sev))
+                        return True
+                    if ed and inv_date > ed:
+                        issues.append(Issue(
+                            "CROSS_PERIOD",
+                            f"该【单张发票】开票日期（{inv_date}）晚于自定义终止日期 {ed}"
                             f"（规则：{rule.name}）",
                             sev))
                         return True

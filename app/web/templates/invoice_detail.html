@@ -1,11 +1,11 @@
 {% extends "base.html" %}
 {% block content %}
-<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
-  <h1 style="font-size:20px;">发票 {{ inv.invoice_no or '（无号）' }}
+<div class="page-head">
+  <h1>发票 {{ inv.invoice_no or '（无号）' }}
     <span class="badge {{ inv.status|badge }}" style="vertical-align:middle;">{{ inv.status|status_cn }}</span>
     {% if inv.is_red_flush %}<span class="badge badge-red">红冲</span>{% endif %}
   </h1>
-  <div>
+  <div class="page-head-actions">
     {% if inv.status == 'ABNORMAL' %}<button class="btn" onclick="openFix()">人工修正</button>{% endif %}
     {% if inv.status == 'DUPLICATE' %}<button class="btn btn-green" onclick="confirmDup()">确认非重复</button>{% endif %}
     <button class="btn btn-danger" onclick="delInv()">删除</button>
@@ -61,8 +61,11 @@
 <script>
 const INV_ID = {{ inv.id }};
 async function delInv(){
-  if(!await confirmDlg('确认删除该发票？关联匹配记录将级联删除（I8）。'))return;
-  post(`/api/invoices/${INV_ID}/delete`, null, {title:'正在删除发票…'}).then(()=>location.href='/invoices');
+  if(!await confirmDlg('确认删除该发票？\n删除后将移入回收站，可在 20 秒内撤销；关联匹配记录会清理（I8）。'))return;
+  post(`/api/invoices/${INV_ID}/delete`, null, {title:'正在删除发票…'}).then(j=>{
+    if(j && j.data && j.data.ok !== false) stashUndo('invoice', [INV_ID], '已删除 1 张发票');
+    location.href = '/invoices';
+  });
 }
 async function confirmDup(){
   const reason = await promptDlg('确认非重复的原因：','经人工核对为不同发票');

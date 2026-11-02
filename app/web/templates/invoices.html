@@ -3,23 +3,20 @@
 {% block content %}
 <style>
 /* ===== 与报销单页一致的 PRD 视觉规范 ===== */
-.card{box-shadow:0 2px 12px rgba(0,0,0,.06);}
-.table-scroll{overflow-x:auto;}
+/* ===== 全局设计规范：卡片 / 表格视觉统一 ===== */
+.table-scroll{overflow-x:auto;border-radius:var(--radius-card);}
 /* 固定布局：固定列 width 精确生效，无 width 的列平分剩余空间 */
 .invoice-table{table-layout:fixed!important;width:100%;}
-/* 格子边框：每行每列都有竖线分隔 */
-.invoice-table th,.invoice-table td{border-right:1px solid var(--border);text-align:center;}
-.invoice-table th:last-child,.invoice-table td:last-child{border-right:none;}
-/* 覆盖 base.html 中数字列的右对齐，统一居中 */
-.invoice-table .col-number,.invoice-table .cell-amount{text-align:center;}
-.invoice-table tbody td{background:#fff;}
-.invoice-table tbody tr:nth-child(even) td{background:#fafbfc;}
-.invoice-table tbody tr.row-unmatched td,
-.invoice-table tbody tr.row-unmatched:nth-child(even) td{background:#fef2f2;}
-.invoice-table tbody tr:hover td{background:#e8f0fe;}
-.invoice-table tbody tr.row-unmatched:hover td{background:#fdd8d8;}
-.cell-amount{color:#1677ff;font-weight:500;text-align:right;font-variant-numeric:tabular-nums;}
+/* 对齐规范：文本左对齐、金额右对齐、勾选/状态/操作居中 */
+.invoice-table th,.invoice-table td{text-align:left;}
+.invoice-table .col-check{text-align:center;}
+.invoice-table .col-number,.invoice-table .cell-amount{text-align:right;}
 .invoice-table .col-state,.invoice-table .col-action{text-align:center;}
+.invoice-table tbody td{background:#fff;}
+.invoice-table tbody tr.row-unmatched td{background:var(--danger-bg);}
+.invoice-table tbody tr:hover td{background:var(--bg);}
+.invoice-table tbody tr.row-unmatched:hover td{background:#ffecec;}
+.cell-amount{color:var(--primary);font-weight:500;text-align:right;font-variant-numeric:tabular-nums;}
 
 /* ===== 列宽策略：JS 按权重动态分配百分比宽度，CSS 仅设 min-width 下限 ===== */
 /* 所有列的 width 由 applyColVisibility() 根据权重动态计算（百分比） */
@@ -48,21 +45,22 @@
 .invoice-table .col-invoice_no{left:40px;}
 .invoice-table .col-status{right:80px;}
 /* 表头统一单色：固定列（fixed-left/right）也必须与普通列同色，否则一行白白灰灰无规律 */
-.invoice-table thead th{position:sticky;top:0;z-index:4;background:#eef2f7;color:#475569;font-weight:600;}
-.invoice-table thead th.fixed-left,.invoice-table thead th.fixed-right{z-index:5;background:#eef2f7;}
-.invoice-table thead th{box-shadow:inset 0 -2px 0 var(--border);}
-.invoice-table tbody tr:nth-child(even) td.fixed-left,
-.invoice-table tbody tr:nth-child(even) td.fixed-right{background:#fafbfc;}
+.invoice-table thead th{position:sticky;top:0;z-index:4;background:#f8f9fa;color:var(--text-2);font-weight:600;}
+.invoice-table thead th.fixed-left,.invoice-table thead th.fixed-right{z-index:5;background:#f8f9fa;}
+.invoice-table thead th{box-shadow:inset 0 -1px 0 var(--border-light);}
 .invoice-table tbody tr:hover td.fixed-left,
-.invoice-table tbody tr:hover td.fixed-right{background:#e8f0fe;}
+.invoice-table tbody tr:hover td.fixed-right{background:var(--bg);}
 .invoice-table tbody tr.row-unmatched td.fixed-left,
-.invoice-table tbody tr.row-unmatched td.fixed-right{background:#fef2f2;}
+.invoice-table tbody tr.row-unmatched td.fixed-right{background:var(--danger-bg);}
 .invoice-table tbody tr.row-unmatched:hover td.fixed-left,
-.invoice-table tbody tr.row-unmatched:hover td.fixed-right{background:#fdd8d8;}
+.invoice-table tbody tr.row-unmatched:hover td.fixed-right{background:#ffecec;}
+/* 固定列在横向滚动时的分隔阴影，替代生硬的整表竖线 */
+.invoice-table th.fixed-left,.invoice-table td.fixed-left{box-shadow:6px 0 8px -6px rgba(15,23,42,.12);}
+.invoice-table th.fixed-right,.invoice-table td.fixed-right{box-shadow:-6px 0 8px -6px rgba(15,23,42,.12);}
 
 /* 购买方/销售方双行：上名称，下税号灰字 */
 .cell-dual .c-name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-.cell-dual .c-tax{font-size:12px;color:#9ca3af;margin-top:2px;}
+.cell-dual .c-tax{font-size:12px;color:var(--text-3);margin-top:2px;}
 
 /* 列设置面板 */
 .col-settings{position:relative;display:inline-block;}
@@ -73,18 +71,25 @@
 .col-settings-panel label:hover{background:#f4f6f9;}
 /* 报销内容列：可双击编辑 */
 .invoice-table td.editable{cursor:text;position:relative;}
-.invoice-table td.editable:hover{background:#eef2ff!important;}
+.invoice-table td.editable:hover{background:var(--primary-light)!important;}
 .invoice-table td.editable:focus{outline:none;}
-.invoice-table td.editable.editing{outline:2px solid #2563eb;outline-offset:-2px;background:#fff!important;cursor:text;}
+.invoice-table td.editable.editing{outline:2px solid var(--primary);outline-offset:-2px;background:#fff!important;cursor:text;}
 
 /* 行点击打开详情抽屉 */
 .invoice-table tbody tr{cursor:pointer;}
 
-/* 仪表盘下钻过滤标签 */
-.drill-bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 16px;background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;margin-bottom:16px;font-size:13px;}
-.drill-tag{display:inline-flex;align-items:center;gap:6px;background:#fff;border:1px solid #bfdbfe;color:#1d4ed8;border-radius:999px;padding:3px 12px;}
-.drill-tag a{color:#1d4ed8;text-decoration:none;font-weight:700;cursor:pointer;padding:0 2px;}
-.drill-tag a:hover{color:#dc2626;}
+/* ===== 表格工具栏：左侧过滤标签 / 右侧操作按钮 ===== */
+.table-toolbar{display:flex;justify-content:space-between;align-items:center;gap:12px;
+  flex-wrap:wrap;margin-bottom:16px;}
+.filter-tags{display:flex;align-items:center;gap:8px;flex-wrap:wrap;flex:1;min-width:0;min-height:24px;}
+.filter-tag{display:inline-flex;align-items:center;gap:6px;max-width:320px;background:var(--primary-light);
+  border:1px solid var(--primary-border);color:var(--primary-dark);border-radius:999px;padding:3px 10px;font-size:12px;line-height:1.6;transition:var(--transition);}
+.filter-tag .ft-text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.filter-tag a{color:#64748b;text-decoration:none;font-weight:700;cursor:pointer;font-size:13px;flex-shrink:0;}
+.filter-tag a:hover{color:#dc2626;}
+.clear-filters{color:#94a3b8;font-size:12px;cursor:pointer;text-decoration:underline;white-space:nowrap;}
+.clear-filters:hover{color:#dc2626;}
+.toolbar-actions{display:flex;align-items:center;gap:8px;margin-left:auto;flex-shrink:0;}
 
 /* ===== 发票详情抽屉（右滑出，左 60% 原件预览 / 右 40% 数据） ===== */
 .drawer-mask{position:fixed;inset:0;background:rgba(15,23,42,.35);z-index:200;display:none;}
@@ -110,57 +115,81 @@
 .match-none{color:var(--muted);font-size:13px;padding:8px 0;}
 </style>
 
-<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
-  <h1 style="font-size:20px;">发票管理</h1>
-  <div>
+<div class="page-head">
+  <h1>发票管理</h1>
+  <div class="page-head-actions">
     <button class="btn" onclick="openModal()">上传发票文件</button>
     <button class="btn btn-outline" onclick="openModalManual()">人工录入</button>
   </div>
 </div>
 
-<div class="card">
-  <form class="inline" method="get">
-    <select name="status">
-      <option value="">全部状态</option>
-      {% for s in ['PARSING','PARSED','NORMAL','ABNORMAL','DUPLICATE','MATCHED'] %}
-      <option value="{{ s }}" {% if status==s %}selected{% endif %}>{{ {'PARSING':'解析中','PARSED':'已解析','NORMAL':'未匹配','ABNORMAL':'异常','DUPLICATE':'重复','MATCHED':'已匹配'}.get(s,s) }} ({{ counts.get(s,0) }})</option>
-      {% endfor %}
-    </select>
-    <input name="q" value="{{ q }}" placeholder="发票号/抬头/摘要关键词">
-    {# 保留下钻参数，筛选表单提交后不丢失分类/时间过滤 #}
-    {% if category %}<input type="hidden" name="category" value="{{ category }}">{% endif %}
-    {% if date_from %}<input type="hidden" name="date_from" value="{{ date_from }}">{% endif %}
-    {% if date_to %}<input type="hidden" name="date_to" value="{{ date_to }}">{% endif %}
-    {# 冷热分离：默认只查近 1 年（按开票日期），可切换全部历史 #}
-    <select name="range" title="数据时间范围（按开票日期，非导入时间）">
-      <option value="1y" {% if range_mode == '1y' %}selected{% endif %}>近1年</option>
-      <option value="all" {% if range_mode == 'all' %}selected{% endif %}>全部历史</option>
-    </select>
-    <button class="btn btn-sm">筛选</button>
-  </form>
-  {% if range_mode == '1y' %}
-  <div class="muted" style="margin-top:8px;">当前仅显示开票日期在 {{ range_since }} 之后的发票（按业务发生时间，补录历史数据不会被系统导入时间过滤）；切换「全部历史」可查看更早数据。</div>
-  {% endif %}
-</div>
-
-{% if category or date_from or date_to %}
-<div class="drill-bar">
-  <span class="muted">当前生效过滤：</span>
-  {% if category %}
-  <span class="drill-tag">已选分类：{{ category }} <a title="移除分类过滤" onclick="clearDrill('category')">×</a></span>
-  {% endif %}
-  {% if date_from or date_to %}
-  <span class="drill-tag">已选时间：{{ date_from or '最早' }} 至 {{ date_to or '今天' }} <a title="移除时间过滤" onclick="clearDrill('date')">×</a></span>
-  {% endif %}
-  <a class="btn btn-outline btn-sm" href="javascript:clearDrill('all')">一键清除</a>
-</div>
+{# 生效过滤标签：服务器端按当前查询参数生成，默认状态（全部状态 + 近1年）不产生任何标签 #}
+{% set filter_tags = [] %}
+{% if q %}{% set _ = filter_tags.append({'key': 'q', 'text': '关键词: ' ~ q}) %}{% endif %}
+{% if status %}
+{% set _status_cn = {'PARSING':'解析中','PARSED':'已解析','NORMAL':'未匹配','ABNORMAL':'异常','DUPLICATE':'重复','MATCHED':'已匹配','unmatched':'未匹配'}.get(status, status) %}
+{% set _ = filter_tags.append({'key': 'status', 'text': '状态: ' ~ _status_cn}) %}
 {% endif %}
+{% if range_mode == 'custom' %}
+{% set _ = filter_tags.append({'key': 'time', 'text': '时间: ' ~ (date_from or '最早') ~ ' 至 ' ~ (date_to or '今天')}) %}
+{% elif range_mode == 'this_month' %}{% set _ = filter_tags.append({'key': 'time', 'text': '时间: 本月'}) %}
+{% elif range_mode == 'last_month' %}{% set _ = filter_tags.append({'key': 'time', 'text': '时间: 上月'}) %}
+{% elif range_mode == 'last_3m' %}{% set _ = filter_tags.append({'key': 'time', 'text': '时间: 近三个月'}) %}
+{% elif range_mode == 'this_year' %}{% set _ = filter_tags.append({'key': 'time', 'text': '时间: 今年'}) %}
+{% elif range_mode == 'all' %}{% set _ = filter_tags.append({'key': 'time', 'text': '时间: 全部时间'}) %}
+{% endif %}
+{% if category %}{% set _ = filter_tags.append({'key': 'category', 'text': '分类: ' ~ category}) %}{% endif %}
 
-<div class="card">
-  {% if rows %}
-  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
-    <span class="muted" id="selInfo">已选 0 张</span>
-    <div style="display:flex;gap:8px;align-items:center;">
+<div class="card list-card">
+  <!-- 搜索区与表格同处一张白底卡片，中间用极细浅灰线分割 -->
+  <div class="list-filter">
+    <form class="inline" method="get" id="invFilterForm">
+      <select name="status">
+        <option value="">全部状态</option>
+        {% for s in ['PARSING','PARSED','NORMAL','ABNORMAL','DUPLICATE','MATCHED'] %}
+        <option value="{{ s }}" {% if status==s %}selected{% endif %}>{{ {'PARSING':'解析中','PARSED':'已解析','NORMAL':'未匹配','ABNORMAL':'异常','DUPLICATE':'重复','MATCHED':'已匹配'}.get(s,s) }} ({{ counts.get(s,0) }})</option>
+        {% endfor %}
+      </select>
+      {# 关键词搜索框占据更多宽度（发票号较长） #}
+      <input name="q" value="{{ q }}" placeholder="发票号/抬头/摘要关键词" style="flex:1;min-width:220px;">
+      {# 保留下钻分类参数，筛选表单提交后不丢失分类过滤 #}
+      {% if category %}<input type="hidden" name="category" value="{{ category }}">{% endif %}
+      {# 时间范围：按开票日期筛选，支持 7 个快捷选项 + 自定义起止日期 #}
+      <select name="range" id="rangeSelect" onchange="toggleCustomDates(this.value)" title="数据时间范围（按开票日期，非导入时间）">
+        <option value="all" {% if range_mode == 'all' %}selected{% endif %}>全部时间</option>
+        <option value="this_month" {% if range_mode == 'this_month' %}selected{% endif %}>本月</option>
+        <option value="last_month" {% if range_mode == 'last_month' %}selected{% endif %}>上月</option>
+        <option value="last_3m" {% if range_mode == 'last_3m' %}selected{% endif %}>近三个月</option>
+        <option value="this_year" {% if range_mode == 'this_year' %}selected{% endif %}>今年</option>
+        <option value="1y" {% if range_mode == '1y' %}selected{% endif %}>近1年</option>
+        <option value="custom" {% if range_mode == 'custom' %}selected{% endif %}>自定义时间</option>
+      </select>
+      {# 自定义时间：选中后联动显示起止日期选择器 #}
+      <span id="customDateRange" style="display:{% if range_mode == 'custom' %}flex{% else %}none{% endif %};gap:6px;align-items:center;">
+        <input type="date" name="date_from" value="{{ date_from }}" style="width:auto;">
+        <span class="muted">至</span>
+        <input type="date" name="date_to" value="{{ date_to }}" style="width:auto;">
+      </span>
+      <button class="btn" type="submit">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"></polygon></svg>筛选
+      </button>
+      <button class="btn btn-outline" type="button" onclick="resetFilterForm()">重置</button>
+    </form>
+    <div class="muted" style="margin-top:10px;">提示：如需查看超期历史发票，请在上方切换时间范围。</div>
+  </div>
+  <div class="card-divider"></div>
+  <div class="list-body">
+  <div class="table-toolbar">
+    <div class="filter-tags">
+      {% for t in filter_tags %}
+      <span class="filter-tag"><span class="ft-text">{{ t.text }}</span><a title="清除该条件" onclick="removeFilter('{{ t.key }}')">×</a></span>
+      {% endfor %}
+      {% if filter_tags|length > 2 %}
+      <a class="clear-filters" onclick="removeFilter('all')">清空筛选</a>
+      {% endif %}
+    </div>
+    <div class="toolbar-actions">
+      <span class="muted" id="selInfo">已选 0 张</span>
       <div class="col-settings" id="exportMenu">
         <button class="btn btn-outline btn-sm" type="button" onclick="toggleExportPanel(event)">导出 Excel ▾</button>
         <div class="col-settings-panel" id="exportPanel">
@@ -175,6 +204,7 @@
       <button class="btn btn-danger btn-sm" id="btnBatchDel" onclick="batchDelete()" disabled>批量删除</button>
     </div>
   </div>
+  {% if rows %}
   <div class="table-scroll">
   <table class="invoice-table">
     <colgroup>
@@ -275,7 +305,8 @@
   </div>
   {{ render_pager(pager) }}
   {% else %}<p class="empty-state">暂无相关数据</p>
-  <p class="muted" style="text-align:center;margin-top:-24px;padding-bottom:20px;font-size:12px;">点击右上角「上传发票文件」开始导入</p>{% endif %}
+  <p class="muted" style="text-align:center;padding-bottom:20px;">点击右上角「上传发票文件」开始导入</p>{% endif %}
+  </div>
 </div>
 
 <div id="modalRoot"></div>
@@ -448,18 +479,21 @@ function toggleAll(el){
 async function delOne(btn){
   // 发票号走 data 属性（HTML 转义），避免含引号的发票号破坏 onclick 的 JS 字符串
   const id = btn.dataset.id, label = btn.dataset.no;
-  if(!await confirmDlg('确认删除发票 ' + label + '？\n其匹配记录将级联删除，已匹配的报销单会自动释放。')) return;
+  if(!await confirmDlg('确认删除发票 ' + label + '？\n删除后将移入回收站，可在 20 秒内撤销；其匹配记录会清理，已匹配的报销单会自动释放。')) return;
   const fd = new FormData();
   const j = await post('/api/invoices/' + id + '/delete', fd, {title:'正在删除发票…'});
-  if(j.data && j.data.ok !== false) location.reload();
+  if(j.data && j.data.ok !== false){
+    stashUndo('invoice', [id], '已删除 1 张发票');
+    location.reload();
+  }
 }
 // 批量删除：逐张调用单条删除接口（每张独立事务），显示真实进度条；单张失败不影响其余
 async function batchDelete(){
   const ids = selectedIds();
   if(!ids.length) return;
-  if(!await confirmDlg('确认删除选中的 ' + ids.length + ' 张发票？\n其匹配记录将级联删除，已匹配的报销单会自动释放。')) return;
+  if(!await confirmDlg('确认删除选中的 ' + ids.length + ' 张发票？\n删除后将移入回收站，可在 20 秒内撤销；匹配记录会清理，已匹配的报销单自动释放。')) return;
   busyIndet('正在删除发票…', '共 ' + ids.length + ' 张');
-  let okCount = 0; const fails = [];
+  let okCount = 0; const fails = []; const okIds = [];
   for(let i = 0; i < ids.length; i++){
     busyProgress(Math.round(i / ids.length * 100),
                  '正在删除第 ' + (i + 1) + ' / 共 ' + ids.length + ' 张发票（#' + ids[i] + '）');
@@ -467,7 +501,7 @@ async function batchDelete(){
       const r = await fetch('/api/invoices/' + ids[i] + '/delete', {method:'POST', body:new FormData()});
       const j = await r.json();
       if(j.data && j.data.ok === false){ fails.push('#' + ids[i]); }
-      else{ okCount++; }
+      else{ okCount++; okIds.push(ids[i]); }
     }catch(err){ fails.push('#' + ids[i]); }
   }
   busyProgress(100, '删除完成');
@@ -475,6 +509,7 @@ async function batchDelete(){
   let msg = '已删除 ' + okCount + ' 张发票';
   if(fails.length) msg += '，失败 ' + fails.length + ' 张（' + fails.join('、') + '）';
   toast(msg, fails.length === 0);
+  if(okCount) stashUndo('invoice', okIds, '已删除 ' + okCount + ' 张发票');
   setTimeout(()=>location.reload(), 500);
 }
 // 多文件逐个上传：真实进度条（第 x/N 个文件 + 百分比），期间遮罩阻挡其它操作；
@@ -612,13 +647,34 @@ function _cancelEdit(td){
   _editingTd = null;
 }
 
-/* ===== 下钻过滤标签：一键清除 ===== */
-function clearDrill(which){
+/* ===== 过滤标签：单独清除某个条件并重新查询 ===== */
+function removeFilter(which){
   const u = new URL(location.href);
-  if(which === 'category' || which === 'all') u.searchParams.delete('category');
-  if(which === 'date' || which === 'all'){ u.searchParams.delete('date_from'); u.searchParams.delete('date_to'); }
+  if(which === 'q') u.searchParams.delete('q');
+  if(which === 'status') u.searchParams.delete('status');
+  if(which === 'time'){
+    u.searchParams.delete('range');
+    u.searchParams.delete('date_from');
+    u.searchParams.delete('date_to');
+  }
+  if(which === 'category') u.searchParams.delete('category');
+  if(which === 'all'){
+    ['q', 'status', 'category', 'range', 'date_from', 'date_to']
+      .forEach(k => u.searchParams.delete(k));
+  }
   u.searchParams.delete('page');
   location.href = u.toString();
+}
+
+/* ===== 顶部筛选栏：自定义时间联动显隐 ===== */
+function toggleCustomDates(val){
+  const box = document.getElementById('customDateRange');
+  if(box) box.style.display = (val === 'custom') ? 'flex' : 'none';
+}
+
+/* ===== 顶部筛选栏：重置（清空搜索词/状态/时间，回到无过滤列表） ===== */
+function resetFilterForm(){
+  location.href = '/invoices';
 }
 
 /* ===== 发票详情抽屉 ===== */

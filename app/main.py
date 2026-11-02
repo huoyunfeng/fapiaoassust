@@ -25,6 +25,14 @@ async def lifespan(app: FastAPI):
     except Exception as e:  # 迁移失败不阻塞启动
         from app.infra.logger import get_logger
         get_logger(__name__).warning("旧单号迁移失败: %s", e)
+    # 回收站自动清理：启动时先扫一次（超期数据不等待），再启动每日后台检查
+    from app.service.recycle_service import auto_cleanup, start_background_cleaner
+    try:
+        auto_cleanup()
+        start_background_cleaner()
+    except Exception as e:  # 清理失败不阻塞启动
+        from app.infra.logger import get_logger
+        get_logger(__name__).warning("回收站自动清理启动失败: %s", e)
     yield
 
 

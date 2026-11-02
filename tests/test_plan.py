@@ -121,7 +121,7 @@ class TestInvariants:
         transitions = [(l["from_status"], l["to_status"]) for l in logs]
         assert ("PARSING", "PARSED") in transitions and ("PARSED", "NORMAL") in transitions
 
-    def test_i8_delete_invoice_cascades_match(self, env):
+    def test_i8_delete_invoice_soft_deletes_and_cascades_match(self, env):
         env["inv"].import_files([("a.xml", "", xml_invoice("I8000000001", "100.00"))])
         env["reb"].import_excel("r.xlsx", make_excel([
             ["R8001", "张三", "2026-09-10", "2026-09-01", "2026-09-30", "费用", "100.00", "", "", ""]]))
@@ -133,10 +133,13 @@ class TestInvariants:
             assert row["n"] == 1  # 自动匹配产出 SUSPICIOUS 记录
         env["inv"].delete_invoice(inv["id"])
         with env["db"].read() as conn:
-            assert env["invoice_repo"].get(conn, inv["id"]) is None
+            # 常规删除为软删除：记录仍在，但 deleted_at 已写入、列表默认排除
+            row = env["invoice_repo"].get(conn, inv["id"])
+            assert row is not None and row["deleted_at"]
+            assert env["invoice_repo"].list(conn) == []
             rows = conn.execute("SELECT COUNT(*) n FROM match_result WHERE invoice_id=?",
                                 (inv["id"],)).fetchone()
-            assert rows["n"] == 0  # 级联删除
+            assert rows["n"] == 0  # 匹配记录级联删除
 
     def test_i9_transaction_rollback_on_failure(self, env):
         from app.repository.repos import reimburse_repo
@@ -2472,6 +2475,129 @@ class TestBusinessRules:
         with env["db"].read() as conn:
             inv = env["invoice_repo"].get(conn, inv_id)
         assert inv["status"] == "NORMAL"
+
+
+# =====================================================================
+# 模块四：高危操作防御（软删除 / 20 秒撤销 / 回收站自动清理）
+# =====================================================================
+class TestRecycleBin:
+
+    def _import_invoice(self, env, no="I1800000001", total="100.00"):
+        r = env["inv"].import_files([("a.xml", "", xml_invoice(no, total))])[0]
+        assert r["ok"]
+        return r["invoice_id"]
+
+    def test_soft_delete_and_restore_invoice(self, env):
+        from app.service import recycle_service
+        inv_id = self._import_invoice(env)
+        d = env["inv"].delete_invoice(inv_id)
+        assert d["ok"] and d["batch_id"]
+        with env["db"].read() as conn:
+            assert env["invoice_repo"].get(conn, inv_id)["deleted_at"]
+        items = recycle_service.list_deleted()
+        assert items["total"] == 1 and items["items"][0]["kind"] == "invoice"
+        r = recycle_service.restore("invoice", [inv_id])
+        assert r["ok"] and r["restored"] == 1
+        with env["db"].read() as conn:
+            row = env["invoice_repo"].get(conn, inv_id)
+            assert row["deleted_at"] is None
+            assert [x["id"] for x in env["invoice_repo"].list(conn)] == [inv_id]
+
+    def test_restore_invoice_reruns_matching(self, env):
+        """恢复发票后应自动重跑匹配，还原原有「已匹配」关联。"""
+        env["inv"].import_files([("a.xml", "", xml_invoice("I1900000001", "100.00"))],
+                                skip_match=True)
+        env["reb"].import_excel("r.xlsx", make_excel([
+            ["R19001", "张三", "2026-09-10", "2026-09-01", "2026-09-30",
+             "费用", "100.00", "I1900000001", "", ""]]))
+        env["match"].run_matching()
+        with env["db"].read() as conn:
+            inv_id = env["invoice_repo"].list(conn)[0]["id"]
+            assert env["invoice_repo"].get(conn, inv_id)["status"] == "MATCHED"
+        assert env["inv"].delete_invoice(inv_id)["ok"]
+        r = env["inv"].restore_invoices([inv_id])
+        assert r["restored"] == 1
+        with env["db"].read() as conn:
+            row = env["invoice_repo"].get(conn, inv_id)
+            assert row["status"] == "MATCHED"       # 恢复后自动重新匹配
+            active = conn.execute(
+                "SELECT COUNT(*) n FROM match_result WHERE invoice_id = ? "
+                "AND status IN ('MATCHED','CONFIRMED')", (inv_id,)).fetchone()
+            assert active["n"] >= 1
+
+    def test_soft_delete_and_restore_reimburse(self, env):
+        from app.service import recycle_service
+        env["reb"].import_excel("r.xlsx", make_excel([
+            ["R18001", "张三", "2026-09-10", "2026-09-01", "2026-09-30",
+             "费用", "100.00", "", "", ""]]))
+        with env["db"].read() as conn:
+            rid = env["reimburse_repo"].list(conn)[0]["id"]
+        assert env["reb"].delete_reimburse(rid)["ok"]
+        items = recycle_service.list_deleted()
+        assert items["items"][0]["kind"] == "reimburse"
+        assert recycle_service.restore("reimburse", [rid])["restored"] == 1
+        with env["db"].read() as conn:
+            assert env["reimburse_repo"].list(conn)[0]["id"] == rid
+
+    def test_purge_removes_db_and_attachment(self, env):
+        from app.service import recycle_service
+        inv_id = self._import_invoice(env)
+        with env["db"].read() as conn:
+            path = env["invoice_repo"].get(conn, inv_id)["source_path"]
+        assert os.path.exists(path)
+        assert env["inv"].delete_invoice(inv_id)["ok"]
+        assert os.path.exists(path)          # 软删除保留附件，便于撤销
+        r = recycle_service.purge("invoice", [inv_id])
+        assert r["ok"] and r["purged"] == 1
+        with env["db"].read() as conn:
+            assert env["invoice_repo"].get(conn, inv_id) is None
+        assert not os.path.exists(path)      # 彻底删除清理物理附件
+
+    def test_only_deleted_rows_can_be_purged(self, env):
+        inv_id = self._import_invoice(env)
+        r = env["inv"].purge_invoices([inv_id])
+        assert r["purged"] == 0              # 未软删除的数据禁止物理删除
+        with env["db"].read() as conn:
+            assert env["invoice_repo"].get(conn, inv_id) is not None
+
+    def test_auto_clean_days_persist_and_validate(self, env):
+        from app.service import recycle_service
+        assert recycle_service.get_auto_clean_days() == 30
+        assert recycle_service.set_auto_clean_days(7)["days"] == 7
+        assert recycle_service.get_auto_clean_days() == 7
+        assert recycle_service.set_auto_clean_days(0)["days"] == 0
+        assert recycle_service.get_auto_clean_days() == 0
+        assert recycle_service.set_auto_clean_days(999)["ok"] is False
+        assert recycle_service.get_auto_clean_days() == 0   # 非法值不改动配置
+
+    def test_auto_cleanup_purges_expired_and_audits(self, env):
+        from app.service import recycle_service, audit_service
+        inv_id = self._import_invoice(env)
+        assert env["inv"].delete_invoice(inv_id)["ok"]
+        with env["db"].tx() as conn:
+            conn.execute("UPDATE invoice SET deleted_at = ? WHERE id = ?",
+                         ("2020-01-01 00:00:00", inv_id))
+        recycle_service.set_auto_clean_days(7)
+        r = recycle_service.auto_cleanup()
+        assert r["purged"] == 1
+        with env["db"].read() as conn:
+            assert env["invoice_repo"].get(conn, inv_id) is None
+        logs = audit_service.list_recent(limit=20)["items"]
+        hit = [l for l in logs if l["action"] == "recycle_auto_cleanup"]
+        assert hit and "超期 7 天" in (hit[0]["detail"] or "")
+
+    def test_auto_cleanup_skips_when_keep_forever(self, env):
+        from app.service import recycle_service
+        inv_id = self._import_invoice(env)
+        assert env["inv"].delete_invoice(inv_id)["ok"]
+        with env["db"].tx() as conn:
+            conn.execute("UPDATE invoice SET deleted_at = ? WHERE id = ?",
+                         ("2020-01-01 00:00:00", inv_id))
+        recycle_service.set_auto_clean_days(0)
+        r = recycle_service.auto_cleanup()
+        assert r["purged"] == 0 and r["days"] == 0
+        with env["db"].read() as conn:
+            assert env["invoice_repo"].get(conn, inv_id) is not None
 
 
 def row_ids(env):

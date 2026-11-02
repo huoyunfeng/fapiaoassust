@@ -3,28 +3,29 @@
 <style>
 /* ===== 布局：顶部统计 + 左右分栏工作台 ===== */
 .rp-layout{display:flex;gap:20px;align-items:flex-start;}
-.rp-nav{width:220px;flex-shrink:0;background:#fff;border:1px solid var(--border);border-radius:12px;
-  padding:8px 0;position:sticky;top:16px;}
-.rp-nav-title{font-size:12px;color:var(--muted);padding:10px 16px 6px;font-weight:600;letter-spacing:.5px;}
+/* 左侧导航：略深底色，选中项主色浅底 + 左侧蓝色竖条 */
+.rp-nav{width:220px;flex-shrink:0;background:#fafafa;border:1px solid var(--border-light);border-radius:var(--radius-card);
+  padding:8px 0;position:sticky;top:20px;}
+.rp-nav-title{font-size:12px;color:var(--text-3);padding:10px 16px 6px;font-weight:600;letter-spacing:.5px;}
 .rp-nav-item{display:flex;align-items:center;gap:8px;padding:9px 16px;cursor:pointer;font-size:13px;
-  color:var(--text);border-left:3px solid transparent;transition:background .15s;}
-.rp-nav-item:hover{background:#f8fafc;}
-.rp-nav-item.active{background:#eff6ff;color:var(--primary);border-left-color:var(--primary);font-weight:600;}
+  color:var(--text-2);border-left:3px solid transparent;transition:var(--transition);}
+.rp-nav-item:hover{background:#f5f7fa;color:var(--text);}
+.rp-nav-item.active{background:var(--primary-light);color:var(--primary);border-left-color:var(--primary);font-weight:600;}
 .rp-nav-icon{width:18px;text-align:center;font-size:14px;}
-.rp-nav-cnt{margin-left:auto;min-width:20px;text-align:center;background:#f3f4f6;color:#4b5563;
+.rp-nav-cnt{margin-left:auto;min-width:20px;text-align:center;background:#f0f2f5;color:var(--text-2);
   border-radius:9px;font-size:11px;padding:1px 6px;font-weight:600;font-variant-numeric:tabular-nums;}
-.rp-nav-item.active .rp-nav-cnt{background:#dbeafe;color:#1e40af;}
-.rp-nav-cnt.warn{background:#fee2e2;color:#991b1b;}
-.rp-nav-cnt.zero{background:#f3f4f6;color:#9ca3af;}
+.rp-nav-item.active .rp-nav-cnt{background:var(--primary-light);color:var(--primary-dark);}
+.rp-nav-cnt.warn{background:var(--danger-bg);color:var(--danger-text);}
+.rp-nav-cnt.zero{background:#f0f2f5;color:var(--text-3);}
 .rp-main{flex:1;min-width:0;}
 .rp-view{display:none;}
 .rp-view.active{display:block;}
 
 /* ===== 统计卡片 ===== */
 .stat.is-zero{opacity:.85;}
-.stat.is-zero .num{color:#6b7280;}
-.stat.is-zero.stat-danger{border-color:var(--border);}
-.stat.is-zero.stat-danger .num{color:#16a34a;}
+.stat.is-zero .num{color:var(--text-3);}
+.stat.is-zero.stat-danger{border-color:var(--border-light);}
+.stat.is-zero.stat-danger .num{color:var(--success-text);}
 .stat-filter-on{outline:2px solid var(--primary);outline-offset:-1px;border-color:var(--primary);}
 .stat-foot{margin-top:6px;font-size:11px;color:var(--muted);}
 
@@ -39,23 +40,21 @@
 .col-panel.on{display:flex;}
 .col-panel label{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:#374151;}
 
-/* ===== 主表：固定布局 + 分栏线 + 斑马纹（与发票管理页同一套视觉规范） ===== */
+/* ===== 主表：固定布局 + 全局对齐规范（文本左 / 数字右 / 状态与操作居中） ===== */
 .rp-table{table-layout:fixed!important;width:100%;}
-.rp-table th,.rp-table td{padding:10px 8px;border-right:1px solid var(--border);
-  text-align:center;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:middle;}
-.rp-table th:last-child,.rp-table td:last-child{border-right:none;}
-.rp-table thead th{position:sticky;top:0;z-index:3;background:#eef2f7;color:#475569;font-weight:600;
-  box-shadow:inset 0 -2px 0 var(--border);}
-.rp-table tbody td{height:46px;background:#fff;}
-.rp-table tbody tr:nth-child(even) td{background:#fafbfc;}
-.rp-table tbody tr:hover td{background:#e8f0fe;}
-.rp-table .num-cell{text-align:center;font-variant-numeric:tabular-nums;}
+.rp-table th,.rp-table td{padding:12px 8px;text-align:left;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:middle;}
+.rp-table thead th{position:sticky;top:0;z-index:3;background:#f8f9fa;color:var(--text-2);font-weight:600;
+  box-shadow:inset 0 -1px 0 var(--border-light);}
+.rp-table tbody td{height:48px;background:#fff;}
+.rp-table tbody tr:hover td{background:var(--bg);}
+.rp-table .num-cell{text-align:right;font-variant-numeric:tabular-nums;}
+.rp-table .col-status,.rp-table .col-actions,.rp-table th.col-status,.rp-table th.col-actions{text-align:center;}
 /* 操作列：固定在最后一列（横向滚动时不移动），宽度较短 */
 .rp-table th.col-actions,.rp-table td.col-actions{position:sticky;right:0;z-index:2;
   background:#fff;box-shadow:-6px 0 8px -6px rgba(15,23,42,.14);}
-.rp-table thead th.col-actions{z-index:4;background:#eef2f7;}
-.rp-table tbody tr:nth-child(even) td.col-actions{background:#fafbfc;}
-.rp-table tbody tr:hover td.col-actions{background:#e8f0fe;}
+.rp-table thead th.col-actions{z-index:4;background:#f8f9fa;}
+.rp-table tbody tr:hover td.col-actions{background:var(--bg);}
 .rp-table .col-actions{overflow:visible;text-overflow:clip;white-space:normal;}
 /* 窄列内按钮紧凑排版，最多两行，避免行高被撑高 */
 .rp-table .col-actions .rp-ops{justify-content:center;gap:4px;}
@@ -64,8 +63,8 @@
 .rp-table .col-amount_cmp{white-space:normal;line-height:1.6;}
 .rp-table .rp-diff{overflow:hidden;text-overflow:ellipsis;}
 .rp-diff-txt{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
-.diff-danger{color:#dc2626;font-weight:700;}
-.amt-ok{color:#15803d;}
+.diff-danger{color:var(--danger-text);font-weight:700;}
+.amt-ok{color:var(--success-text);}
 .amt-diff{margin-left:6px;color:#dc2626;font-weight:700;font-size:12px;}
 /* 合并单元格：单号纵向居中 */
 .rp-table td.rowspan-cell{vertical-align:middle;font-weight:600;color:#334155;}

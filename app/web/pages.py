@@ -131,10 +131,54 @@ def _range_since(range_: str) -> Optional[str]:
     return (date.today() - timedelta(days=365)).isoformat()
 
 
+def _last_day_of_month(y: int, m: int) -> date:
+    """返回 y 年 m 月的最后一天。"""
+    if m == 12:
+        return date(y, 12, 31)
+    return date(y, m + 1, 1) - timedelta(days=1)
+
+
+def _months_ago(d: date, months: int) -> date:
+    """将 d 往前推 months 个月，日数自动 clamp 到目标月的最后一天（避免 1/31 越界）。"""
+    total = d.year * 12 + (d.month - 1) - months
+    y, m = divmod(total, 12)
+    m += 1
+    last = _last_day_of_month(y, m)
+    return date(y, m, min(d.day, last.day))
+
+
+def _range_bounds(range_: str):
+    """将时间快捷选项映射为 (date_from, date_to)。
+
+    纯日历计算（本月/上月/近三月/今年/近一年），不依赖任何具体业务字段。
+    调用方自行约定是开票日期还是报销日期口径。
+
+    返回 (None, None) 表示不限制；date_to 为 None 表示只设下界。
+    """
+    today = date.today()
+    r = (range_ or "").strip().lower()
+    if r == "this_month":
+        return (date(today.year, today.month, 1).isoformat(),
+                _last_day_of_month(today.year, today.month).isoformat())
+    if r == "last_month":
+        first = _months_ago(date(today.year, today.month, 1), 1)
+        return (first.isoformat(),
+                _last_day_of_month(first.year, first.month).isoformat())
+    if r == "last_3m":
+        return (_months_ago(today, 3).isoformat(), today.isoformat())
+    if r == "this_year":
+        return (date(today.year, 1, 1).isoformat(),
+                date(today.year, 12, 31).isoformat())
+    if r == "1y":
+        return ((today - timedelta(days=365)).isoformat(), today.isoformat())
+    # all 或未知：不限制
+    return (None, None)
+
+
 @pages.get("/invoices", response_class=HTMLResponse)
 def invoices_page(request: Request, status: str = "", q: str = "",
                   category: str = "", date_from: str = "", date_to: str = "",
-                  range_: str = Query("1y", alias="range"),
+                  range_: str = Query("", alias="range"),
                   page: int = 1, page_size: int = 20, focus_id: int = 0):
     # 路由联动语义参数：unmatched 映射为 NORMAL（未匹配发票 = NORMAL 状态）
     if status == "unmatched":
@@ -142,32 +186,53 @@ def invoices_page(request: Request, status: str = "", q: str = "",
     page_size = _norm_page_size(page_size)
     status_f, kw = status or None, q or None
     category_f = category or None
+
+    # ===== 时间范围解析：快捷选项 → (date_from, date_to)，均按开票日期 =====
+    r = (range_ or "").strip().lower()
     date_from_f, date_to_f = date_from or None, date_to or None
-    since = _range_since(range_)
+    has_drill_dates = bool(date_from_f or date_to_f)
+
+    if r == "all":
+        date_from_f = date_to_f = None
+        range_mode = "all"
+    elif r == "custom":
+        # 自定义时间：使用表单/下钻传入的起止日期
+        range_mode = "custom"
+    elif r in ("this_month", "last_month", "last_3m", "this_year", "1y"):
+        # 快捷选项：计算起止日期，覆盖下钻传入的日期
+        date_from_f, date_to_f = _range_bounds(r)
+        range_mode = r
+    else:
+        # 未指定 range：若有下钻日期则沿用（视为自定义），否则默认近 1 年
+        if has_drill_dates:
+            range_mode = "custom"
+        else:
+            date_from_f, date_to_f = _range_bounds("1y")
+            range_mode = "1y"
+
     total = invoice_service.count_invoices(status=status_f, keyword=kw,
                                            category=category_f,
                                            date_from=date_from_f, date_to=date_to_f,
-                                           since=since)
+                                           since=None)
     # focus 定位：目标行可能不在第 1 页，先算它所在的页码
     if focus_id:
         page = invoice_service.page_of_invoice(focus_id, status_f, kw, page_size,
                                                category=category_f,
                                                date_from=date_from_f,
                                                date_to=date_to_f,
-                                               since=since) or page
+                                               since=None) or page
     pages_n = max(1, (total + page_size - 1) // page_size)
     page = min(max(1, page), pages_n)
     rows = invoice_service.list_invoices(status=status_f, keyword=kw,
                                          category=category_f,
                                          date_from=date_from_f, date_to=date_to_f,
                                          limit=page_size, offset=(page - 1) * page_size,
-                                         since=since)
+                                         since=None)
     return templates.TemplateResponse(request, "invoices.html", {
         "request": request, "rows": rows,
         "status": status, "q": q,
-        "category": category, "date_from": date_from, "date_to": date_to,
-        "range_mode": "all" if since is None else "1y",
-        "range_since": since or "",
+        "category": category, "date_from": date_from_f or "", "date_to": date_to_f or "",
+        "range_mode": range_mode,
         "categories": category_service.enabled_names(),
         "counts": invoice_service.invoice_status_counts(),
         "pager": {"total": total, "page": page, "pages": pages_n,
@@ -187,16 +252,57 @@ def invoice_detail_page(request: Request, invoice_id: int):
 
 @pages.get("/reimburses", response_class=HTMLResponse)
 def reimburses_page(request: Request, batch_id: Optional[str] = None, q: str = "",
-                    status: str = "", range_: str = Query("1y", alias="range"),
+                    status: str = "", date_from: str = "", date_to: str = "",
+                    range_: str = Query("", alias="range"),
                     page: int = 1, page_size: int = 20, focus_id: int = 0):
     batches = reimburse_service.list_batches()
     # 默认激活最新批次：仅在 URL 完全没有 batch_id 参数时生效；
     # ?batch_id=（空串）是用户显式选择「全部批次」，不覆盖
     if batch_id is None:
         batch_id = batches[0]["batch_id"] if batches else ""
-    since = _range_since(range_)
+
+    # ===== 时间范围解析（按报销日期口径，与发票页 options 一致但过滤口径不同）=====
+    # 与 invoices_page 的故意差异：
+    #   1) 发票侧：发票必有开票日期，1y 也走严格 BETWEEN；since 始终传 None。
+    #   2) 报销侧：部分报销单可能没有 reimburse_date（如纯批次/手动录入），
+    #      因此「近 1 年」（显式或默认）走下界 since，保留无日期行；
+    #      而本月/上月/近三月/今年/自定义是用户明确的窗口，走严格 BETWEEN，排除无日期行。
+    r = (range_ or "").strip().lower()
+    date_from_f, date_to_f = date_from or None, date_to or None
+    has_drill_dates = bool(date_from_f or date_to_f)
+
+    if r == "all":
+        date_from_f = date_to_f = None
+        range_mode = "all"
+        since_f = None
+    elif r == "custom":
+        range_mode = "custom"
+        since_f = None
+    elif r == "1y":
+        # 显式「近 1 年」仍走下界过滤（保留无日期行），与默认未指定 range 的冷热分离口径一致
+        date_from_f = date_to_f = None
+        range_mode = "1y"
+        since_f = _range_since("1y")
+    elif r in ("this_month", "last_month", "last_3m", "this_year"):
+        # 严格时间窗口：用户明确要某个区间，无日期行不计入
+        date_from_f, date_to_f = _range_bounds(r)
+        range_mode = r
+        since_f = None
+    else:
+        # 未指定 range：若有下钻日期则沿用（视为自定义），否则默认近 1 年（冷热分离，保留无日期行）
+        if has_drill_dates:
+            range_mode = "custom"
+            since_f = None
+        else:
+            range_mode = "1y"
+            since_f = _range_since("1y")
+            date_from_f = date_to_f = None
+
     rows = reimburse_service.list_reimburses(batch_id=batch_id or None,
-                                             keyword=q or None, since=since)
+                                             keyword=q or None,
+                                             since=since_f,
+                                             date_from=date_from_f,
+                                             date_to=date_to_f)
     # 路由联动语义参数：按匹配状态过滤（matched 口径与差异报告一致）
     if status == "unmatched":
         rows = [r for r in rows if not r.get("matched")]
@@ -232,8 +338,10 @@ def reimburses_page(request: Request, batch_id: Optional[str] = None, q: str = "
         "batch_id": batch_id, "q": q, "status": status, "columns": columns,
         "pager": pager, "categories": category_service.enabled_names(),
         "all_batches": all_batches,
-        "range_mode": "all" if since is None else "1y",
-        "range_since": since or "",
+        "range_mode": range_mode,
+        "date_from": date_from_f or "",
+        "date_to": date_to_f or "",
+        "range_since": since_f or "",
     })
 
 

@@ -59,7 +59,7 @@ class InvoiceRepo:
 
     def get_by_hash(self, conn: sqlite3.Connection, file_hash: str) -> Optional[dict]:
         row = conn.execute(
-            "SELECT * FROM invoice WHERE file_hash = ?", (file_hash,)
+            "SELECT * FROM invoice WHERE file_hash = ? AND deleted_at IS NULL", (file_hash,)
         ).fetchone()
         return _row_to_dict(row)
 
@@ -77,6 +77,8 @@ class InvoiceRepo:
         """
         sql, params = "", []
         p = alias
+        # 软删除数据一律不出现在常规列表/统计中（回收站单独查询）
+        sql += f" AND {p}deleted_at IS NULL"
         if status:
             sql += f" AND {p}status = ?"
             params.append(status)
@@ -223,7 +225,8 @@ class InvoiceRepo:
 
     def fingerprints(self, conn: sqlite3.Connection, exclude_id: int = None) -> List[tuple]:
         """用于去重引擎的指纹列表 [(id, file_hash, invoice_code, invoice_no)]。"""
-        sql = "SELECT id, file_hash, invoice_code, invoice_no FROM invoice WHERE status != 'DUPLICATE'"
+        sql = ("SELECT id, file_hash, invoice_code, invoice_no FROM invoice "
+               "WHERE status != 'DUPLICATE' AND deleted_at IS NULL")
         params: list = []
         if exclude_id:
             sql += " AND id != ?"
@@ -231,7 +234,41 @@ class InvoiceRepo:
         return [tuple(r) for r in conn.execute(sql, params)]
 
     def delete(self, conn: sqlite3.Connection, invoice_id: int) -> None:
+        """物理删除（仅回收站彻底删除 / 自动清理调用）。"""
         conn.execute("DELETE FROM invoice WHERE id = ?", (invoice_id,))
+
+    def soft_delete(self, conn: sqlite3.Connection, invoice_id: int,
+                    deleted_at: str = None) -> bool:
+        """软删除：写入 deleted_at，返回是否命中未删除的有效行。"""
+        cur = conn.execute(
+            "UPDATE invoice SET deleted_at = COALESCE(?, datetime('now','localtime')), "
+            "updated_at = datetime('now','localtime') WHERE id = ? AND deleted_at IS NULL",
+            (deleted_at, invoice_id))
+        return cur.rowcount > 0
+
+    def restore(self, conn: sqlite3.Connection, ids: List[int]) -> int:
+        """撤销软删除：清空 deleted_at。"""
+        if not ids:
+            return 0
+        marks = ", ".join("?" for _ in ids)
+        cur = conn.execute(
+            f"UPDATE invoice SET deleted_at = NULL, updated_at = datetime('now','localtime') "
+            f"WHERE id IN ({marks})", list(ids))
+        return cur.rowcount
+
+    def list_deleted(self, conn: sqlite3.Connection, limit: int = 500) -> List[dict]:
+        """回收站：已软删除的发票（按删除时间倒序）。"""
+        rows = conn.execute(
+            "SELECT * FROM invoice WHERE deleted_at IS NOT NULL "
+            "ORDER BY deleted_at DESC, id DESC LIMIT ?", (limit,)).fetchall()
+        return _rows_to_dicts(rows)
+
+    def deleted_before(self, conn: sqlite3.Connection, cutoff: str) -> List[dict]:
+        """回收站中删除时间早于 cutoff 的发票（自动清理用）。"""
+        rows = conn.execute(
+            "SELECT id, source_path, invoice_no FROM invoice "
+            "WHERE deleted_at IS NOT NULL AND deleted_at < ?", (cutoff,)).fetchall()
+        return _rows_to_dicts(rows)
 
     def rename_item_summary(self, conn: sqlite3.Connection, old: str, new: str) -> int:
         """把库里所有同名报销内容批量改名（用户词典学习时同步历史数据）。"""
@@ -240,7 +277,9 @@ class InvoiceRepo:
         return cur.rowcount
 
     def count_by_status(self, conn: sqlite3.Connection) -> Dict[str, int]:
-        rows = conn.execute("SELECT status, COUNT(*) AS n FROM invoice GROUP BY status")
+        rows = conn.execute(
+            "SELECT status, COUNT(*) AS n FROM invoice "
+            "WHERE deleted_at IS NULL GROUP BY status")
         return {r["status"]: r["n"] for r in rows}
 
     def aggregate_by_item_summary(
@@ -257,7 +296,8 @@ class InvoiceRepo:
         sql = (
             "SELECT COALESCE(NULLIF(TRIM(item_summary),''), '其他') AS name, "
             "SUM(CAST(total_amount AS REAL)) AS amount, COUNT(*) AS count "
-            "FROM invoice WHERE status NOT IN ('ABNORMAL','DUPLICATE')"
+            "FROM invoice WHERE status NOT IN ('ABNORMAL','DUPLICATE') "
+            "AND deleted_at IS NULL"
         )
         params: list = []
         if date_from:
@@ -304,9 +344,10 @@ class ReimburseRepo:
 
     def list(self, conn: sqlite3.Connection, batch_id: str = None,
              keyword: str = None, limit: int = 500, offset: int = 0,
-             since: str = None) -> List[dict]:
-        """报销单列表。since: 冷热分离下界（按报销日期，无日期行保留）。"""
-        sql, params = "SELECT * FROM reimburse WHERE 1=1", []
+             since: str = None, date_from: str = None, date_to: str = None) -> List[dict]:
+        """报销单列表。since: 冷热分离下界（按报销日期，无日期行保留）；
+        date_from/date_to: 严格 BETWEEN（无日期行不计入）。两者同时传入时 date_from 优先。"""
+        sql, params = "SELECT * FROM reimburse WHERE 1=1 AND deleted_at IS NULL", []
         if batch_id:
             sql += " AND batch_id = ?"
             params.append(batch_id)
@@ -314,7 +355,14 @@ class ReimburseRepo:
             sql += " AND (reimburse_no LIKE ? OR submitter LIKE ? OR expense_type LIKE ? OR remark LIKE ?)"
             kw = f"%{keyword}%"
             params += [kw, kw, kw, kw]
-        if since:
+        if date_from or date_to:
+            if date_from:
+                sql += " AND reimburse_date IS NOT NULL AND reimburse_date >= ?"
+                params.append(date_from)
+            if date_to:
+                sql += " AND reimburse_date IS NOT NULL AND reimburse_date <= ?"
+                params.append(date_to)
+        elif since:
             sql += (" AND (reimburse_date IS NULL OR reimburse_date = ''"
                     " OR reimburse_date >= ?)")
             params.append(since)
@@ -339,6 +387,7 @@ class ReimburseRepo:
                            JOIN match_result m ON m.id = p.match_id AND m.{ACTIVE_SQL}
                    )
                ) ar ON ar.reimburse_id = r.id
+               WHERE r.deleted_at IS NULL
                GROUP BY r.batch_id ORDER BY created_at DESC"""
         ))
 
@@ -347,14 +396,48 @@ class ReimburseRepo:
         conn.execute("UPDATE reimburse SET remark = ? WHERE id = ?", (remark, rid))
 
     def delete(self, conn: sqlite3.Connection, rid: int) -> None:
+        """物理删除（仅回收站彻底删除 / 自动清理调用）。"""
         conn.execute("DELETE FROM reimburse WHERE id = ?", (rid,))
 
-    def delete_batch(self, conn: sqlite3.Connection, batch_id: str) -> int:
-        cur = conn.execute("DELETE FROM reimburse WHERE batch_id = ?", (batch_id,))
+    def soft_delete(self, conn: sqlite3.Connection, rid: int) -> bool:
+        """软删除单条报销单。"""
+        cur = conn.execute(
+            "UPDATE reimburse SET deleted_at = datetime('now','localtime') "
+            "WHERE id = ? AND deleted_at IS NULL", (rid,))
+        return cur.rowcount > 0
+
+    def soft_delete_batch(self, conn: sqlite3.Connection, batch_id: str) -> int:
+        """软删除整个导入批次，返回受影响行数。"""
+        cur = conn.execute(
+            "UPDATE reimburse SET deleted_at = datetime('now','localtime') "
+            "WHERE batch_id = ? AND deleted_at IS NULL", (batch_id,))
         return cur.rowcount
 
+    def restore(self, conn: sqlite3.Connection, ids: List[int]) -> int:
+        """撤销软删除：清空 deleted_at。"""
+        if not ids:
+            return 0
+        marks = ", ".join("?" for _ in ids)
+        cur = conn.execute(
+            f"UPDATE reimburse SET deleted_at = NULL WHERE id IN ({marks})", list(ids))
+        return cur.rowcount
+
+    def list_deleted(self, conn: sqlite3.Connection, limit: int = 500) -> List[dict]:
+        """回收站：已软删除的报销单（按删除时间倒序）。"""
+        rows = conn.execute(
+            "SELECT * FROM reimburse WHERE deleted_at IS NOT NULL "
+            "ORDER BY deleted_at DESC, id DESC LIMIT ?", (limit,)).fetchall()
+        return [self._to_dict(r) for r in rows]
+
+    def deleted_before(self, conn: sqlite3.Connection, cutoff: str) -> List[dict]:
+        rows = conn.execute(
+            "SELECT id, reimburse_no FROM reimburse "
+            "WHERE deleted_at IS NOT NULL AND deleted_at < ?", (cutoff,)).fetchall()
+        return _rows_to_dicts(rows)
+
     def count(self, conn: sqlite3.Connection) -> int:
-        return conn.execute("SELECT COUNT(*) AS n FROM reimburse").fetchone()["n"]
+        return conn.execute(
+            "SELECT COUNT(*) AS n FROM reimburse WHERE deleted_at IS NULL").fetchone()["n"]
 
     @staticmethod
     def _serialize(v, field: str = ""):

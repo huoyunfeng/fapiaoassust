@@ -3,34 +3,51 @@
 {% block content %}
 <style>
 .wiz-steps{display:flex;gap:8px;margin-bottom:18px;}
-.wiz-step{flex:1;text-align:center;padding:8px;border-radius:8px;background:#f3f4f6;color:var(--muted);font-size:13px;}
-.wiz-step.active{background:#eff6ff;color:var(--primary);font-weight:600;}
-.mode-card{flex:1;border:1px solid var(--border);border-radius:8px;padding:12px;cursor:pointer;display:block;}
-.mode-card.on{border-color:var(--primary);background:#eff6ff;}
-.guide{border:1px solid #bfdbfe;background:#eff6ff;border-radius:8px;padding:12px 14px;margin-bottom:12px;font-size:13px;}
+.wiz-step{flex:1;text-align:center;padding:8px;border-radius:8px;background:var(--bg);color:var(--muted);font-size:13px;}
+.wiz-step.active{background:var(--primary-light);color:var(--primary);font-weight:600;}
+.mode-card{flex:1;border:1px solid var(--border);border-radius:var(--radius-card);padding:12px;cursor:pointer;display:block;transition:var(--transition);}
+.mode-card.on{border-color:var(--primary);background:var(--primary-light);}
+.guide{border:1px solid var(--primary-border);background:var(--primary-light);border-radius:var(--radius-card);padding:12px 14px;margin-bottom:12px;font-size:13px;}
 .guide ol{margin:8px 0 0 18px;line-height:1.9;}
-.alert{border-radius:8px;padding:10px 14px;font-size:13px;margin-bottom:12px;}
-.alert-red{background:#fee2e2;color:#991b1b;border:1px solid #fecaca;}
-.alert-green{background:#dcfce7;color:#166534;border:1px solid #bbf7d0;}
-.err-list{max-height:180px;overflow:auto;background:#fff7f7;border:1px solid #fee2e2;border-radius:8px;padding:8px 12px;margin-bottom:12px;font-size:12px;line-height:1.8;}
+.alert{border-radius:var(--radius-card);padding:10px 14px;font-size:13px;margin-bottom:12px;}
+.alert-red{background:var(--danger-bg);color:var(--danger-text);border:1px solid var(--danger-border);}
+.alert-green{background:var(--success-bg);color:var(--success-text);border:1px solid var(--success-border);}
+.alert-warn{background:var(--warning-bg);color:var(--warning-text);border:1px solid var(--warning-border);}
+.alert-gray{background:var(--bg);color:var(--text-2);border:1px solid var(--border);}
+.err-list{max-height:180px;overflow:auto;background:var(--danger-bg);border:1px solid var(--danger-border);border-radius:var(--radius-card);padding:8px 12px;margin-bottom:12px;font-size:12px;line-height:1.8;}
 .hint{border:1px dashed var(--border);border-radius:8px;padding:8px 12px;font-size:12px;color:var(--muted);margin-top:10px;}
 
-/* ===== PRD 视觉规范：卡片阴影 ===== */
-.card{box-shadow:0 2px 12px rgba(0,0,0,.06);}
+/* ===== 搜索条件区：与发票管理页同构（左侧=状态+搜索，右侧=时间+筛选+重置） ===== */
+.filter-form{display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
+.filter-form select,.filter-form input:not([type=checkbox]):not([type=radio]){
+  height:36px;padding:0 12px;border:1px solid var(--border);border-radius:var(--radius);background:#fff;font-size:13px;}
+.filter-form .btn{height:36px;}
 
-/* ===== 数据表格：横向滚动 + 斑马行 + hover 高亮 ===== */
+/* ===== 表格工具栏：与发票管理页同构（左侧过滤标签，右侧操作按钮） ===== */
+.table-toolbar{display:flex;justify-content:space-between;align-items:center;gap:12px;
+  flex-wrap:wrap;margin-bottom:16px;}
+.filter-tags{display:flex;align-items:center;gap:8px;flex-wrap:wrap;flex:1;min-width:0;min-height:24px;}
+.filter-tag{display:inline-flex;align-items:center;gap:6px;max-width:320px;background:var(--primary-light);
+  border:1px solid var(--primary-border);color:var(--primary-dark);border-radius:999px;padding:3px 10px;font-size:12px;line-height:1.6;transition:var(--transition);}
+.filter-tag .ft-text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.filter-tag a{color:#64748b;text-decoration:none;font-weight:700;cursor:pointer;font-size:13px;flex-shrink:0;}
+.filter-tag a:hover{color:#dc2626;}
+.clear-filters{color:#94a3b8;font-size:12px;cursor:pointer;text-decoration:underline;white-space:nowrap;}
+.clear-filters:hover{color:#dc2626;}
+.toolbar-actions{display:flex;align-items:center;gap:8px;margin-left:auto;flex-shrink:0;}
+/* 发票页里有 col-settings 下拉，reimburse 没有，简化 */
+
+/* ===== 数据表格：全局视觉规范（斑马纹取消，统一整行 hover 高亮） ===== */
 .table-scroll{overflow-x:auto;}
 .reb-table{min-width:700px;}
-.reb-table thead th{background:#fafbfc;font-weight:600;white-space:nowrap;font-size:13px;color:#555;}
-.reb-table tbody td{height:46px;background:#fff;}
-.reb-table tbody tr:nth-child(even) td{background:#fafbfc;}
-.reb-table tbody tr.row-unmatched td,
-.reb-table tbody tr.row-unmatched:nth-child(even) td{background:#fef2f2;}
-.reb-table tbody tr:hover td{background:#e8f0fe;}
-.reb-table tbody tr.row-unmatched:hover td{background:#fdd8d8;}
+.reb-table thead th{background:#f8f9fa;color:var(--text-2);font-weight:600;white-space:nowrap;font-size:13px;}
+.reb-table tbody td{height:48px;background:#fff;}
+.reb-table tbody tr.row-unmatched td{background:var(--danger-bg);}
+.reb-table tbody tr:hover td{background:var(--bg);}
+.reb-table tbody tr.row-unmatched:hover td{background:#ffecec;}
 
 /* ===== 单元格智能渲染 ===== */
-.cell-amount{color:#1677ff;font-weight:500;text-align:right;font-variant-numeric:tabular-nums;}
+.cell-amount{color:var(--primary);font-weight:500;text-align:right;font-variant-numeric:tabular-nums;}
 .cell-long{max-width:200px;}
 .text-ellipsis{display:inline-block;max-width:180px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;vertical-align:middle;}
 /* 费用类型列：分类标签可能比单元格宽，不能省略号截断 */
@@ -47,33 +64,34 @@
 
 /* ===== 疑似重复标签 + 溯源气泡 ===== */
 .dup-tag{display:inline-block;position:relative;z-index:30;margin-top:4px;padding:1px 8px;
-  border-radius:10px;background:#fee2e2;color:#b91c1c;font-size:11px;font-weight:600;
-  cursor:help;border:1px solid #fecaca;}
+  border-radius:10px;background:var(--danger-bg);color:var(--danger-text);font-size:11px;font-weight:600;
+  cursor:help;border:1px solid var(--danger-border);transition:var(--transition);}
 .dup-pop{display:none;position:absolute;z-index:40;left:0;top:calc(100% + 6px);min-width:260px;
-  max-width:420px;background:#fff;border:1px solid #fecaca;border-radius:8px;
+  max-width:420px;background:#fff;border:1px solid var(--danger-border);border-radius:var(--radius-card);
   box-shadow:0 6px 24px rgba(0,0,0,.16);padding:10px 12px;font-weight:400;font-size:12px;
-  line-height:1.7;color:#374151;text-align:left;white-space:normal;}
+  line-height:1.7;color:var(--text-2);text-align:left;white-space:normal;}
 .dup-tag:hover .dup-pop,.dup-tag:focus .dup-pop,.dup-tag:focus-within .dup-pop{display:block;}
-.dup-pop a{color:#1677ff;text-decoration:underline;}
+.dup-pop a{color:var(--primary);text-decoration:underline;}
 .dup-line{display:block;}
-.dup-line + .dup-line{margin-top:6px;padding-top:6px;border-top:1px dashed #fecaca;}
-.dup-msg{font-size:13px;line-height:1.9;background:#fff7f7;border:1px solid #fee2e2;
-  border-radius:8px;padding:10px 12px;margin-bottom:12px;color:#991b1b;}
+.dup-line + .dup-line{margin-top:6px;padding-top:6px;border-top:1px dashed var(--danger-border);}
+.dup-msg{font-size:13px;line-height:1.9;background:var(--danger-bg);border:1px solid var(--danger-border);
+  border-radius:var(--radius-card);padding:10px 12px;margin-bottom:12px;color:var(--danger-text);}
 
 /* ===== 右侧固定列（状态/操作）：视觉分隔 ===== */
 .reb-table .col-state,
-.reb-table .col-action{border-left:1px solid var(--border);}
+.reb-table .col-action{border-left:1px solid var(--border-light);}
 .reb-table .col-state,.reb-table .col-action{text-align:center;white-space:nowrap;}
 
 /* ===== 批次卡片条：横向滚动 + 选中高亮 ===== */
-.batch-strip{display:flex;gap:12px;overflow-x:auto;padding:10px 2px 6px;}
-.batch-card{position:relative;flex:0 0 230px;border:2px solid var(--border);border-radius:12px;
+.list-batches{padding:16px var(--space) 10px;background:#fff;}
+.batch-strip{display:flex;gap:12px;overflow-x:auto;padding:8px 2px 4px;}
+.batch-card{position:relative;flex:0 0 230px;border:1px solid var(--border);border-radius:var(--radius-card);
   padding:12px 14px;cursor:pointer;background:#fff;
-  transition:border-color .15s,background .15s,box-shadow .15s;}
-.batch-card:hover{border-color:#93c5fd;box-shadow:0 4px 14px rgba(37,99,235,.12);}
-.batch-card.on{border-color:var(--primary);background:#eff6ff;box-shadow:0 4px 14px rgba(37,99,235,.18);}
+  box-shadow:0 2px 8px rgba(0,0,0,.04);transition:var(--transition);}
+.batch-card:hover{border-color:var(--primary-border);box-shadow:var(--shadow-hover);}
+.batch-card.on{border-color:var(--primary);background:var(--primary-light);box-shadow:0 4px 14px rgba(37,99,235,.18);}
 .batch-check{position:absolute;top:-9px;right:-9px;width:22px;height:22px;border-radius:50%;
-  background:#16a34a;color:#fff;font-size:13px;line-height:22px;text-align:center;
+  background:var(--success);color:#fff;font-size:13px;line-height:22px;text-align:center;
   box-shadow:0 1px 4px rgba(0,0,0,.25);z-index:2;}
 .batch-head{display:flex;justify-content:space-between;align-items:flex-start;gap:6px;}
 .batch-title{font-weight:600;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;}
@@ -90,24 +108,26 @@
 /* ===== 表格加载遮罩 ===== */
 .table-loading{position:absolute;inset:0;background:rgba(255,255,255,.88);z-index:20;
   display:none;flex-direction:column;align-items:center;justify-content:center;gap:10px;
-  border-radius:12px;font-size:13px;color:var(--muted);}
+  border-radius:var(--radius-card);font-size:13px;color:var(--muted);}
 .table-loading.on{display:flex;}
 .spinner{width:28px;height:28px;border:3px solid #dbeafe;border-top-color:var(--primary);
   border-radius:50%;animation:spin .8s linear infinite;}
 @keyframes spin{to{transform:rotate(360deg);}}
 </style>
 
-<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;">
-  <h1 style="font-size:20px;">报销单管理</h1>
-  <div style="display:flex;gap:8px;">
+<div class="page-head">
+  <h1>报销单管理</h1>
+  <div class="page-head-actions">
     <button class="btn btn-outline" onclick="openTemplateManager()">模板管理</button>
     <button class="btn btn-outline" onclick="openManualEntry()">手动录入</button>
     <button class="btn" onclick="openImportWizard()">导入报销单 Excel</button>
   </div>
 </div>
 
+<div class="card list-card table-card" style="position:relative;">
 {% if batches %}
-<div class="card" style="padding:8px 18px 12px;">
+<!-- 批次卡片区：与搜索区、表格区同处一张白底大卡片 -->
+<div class="list-batches">
   <div class="batch-strip">
     {% for b in batches %}
     <div class="batch-card{% if batch_id == b.batch_id %} on{% endif %}"
@@ -134,10 +154,12 @@
     {% endfor %}
   </div>
 </div>
+<div class="card-divider"></div>
 {% endif %}
 
-<div class="card">
-  <form class="inline" method="get" onsubmit="showTableLoading()">
+<!-- 搜索条件区：与发票管理页同构（左侧=批次/状态/搜索，右侧=时间+筛选+重置） -->
+<div class="list-filter">
+  <form class="inline filter-form" method="get" id="rebFilterForm">
     <select name="batch_id" onchange="gotoBatch(this.value)">
       <option value="">全部批次</option>
       {% for b in batches %}<option value="{{ b.batch_id }}" {% if batch_id==b.batch_id %}selected{% endif %}>{{ b.template_name or '手动录入' }} · {{ b.batch_id }}</option>{% endfor %}
@@ -147,21 +169,66 @@
       <option value="unmatched" {% if status=='unmatched' %}selected{% endif %}>未匹配</option>
       <option value="matched" {% if status=='matched' %}selected{% endif %}>已匹配</option>
     </select>
-    <input name="q" value="{{ q }}" placeholder="单号/提交人/费用类型">
-    {# 冷热分离：默认只查近 1 年（按报销日期），可切换全部历史 #}
-    <select name="range" title="数据时间范围（按报销日期，非导入时间）">
+    <input name="q" value="{{ q }}" placeholder="单号/提交人/费用类型" style="flex:1;min-width:220px;">
+    {# 时间范围：按报销日期筛选，7 个快捷选项 + 自定义起止日期 #}
+    <select name="range" id="rangeSelect" onchange="toggleCustomDates(this.value)" title="数据时间范围（按报销日期，非导入时间）">
+      <option value="all" {% if range_mode == 'all' %}selected{% endif %}>全部时间</option>
+      <option value="this_month" {% if range_mode == 'this_month' %}selected{% endif %}>本月</option>
+      <option value="last_month" {% if range_mode == 'last_month' %}selected{% endif %}>上月</option>
+      <option value="last_3m" {% if range_mode == 'last_3m' %}selected{% endif %}>近三个月</option>
+      <option value="this_year" {% if range_mode == 'this_year' %}selected{% endif %}>今年</option>
       <option value="1y" {% if range_mode == '1y' %}selected{% endif %}>近1年</option>
-      <option value="all" {% if range_mode == 'all' %}selected{% endif %}>全部历史</option>
+      <option value="custom" {% if range_mode == 'custom' %}selected{% endif %}>自定义时间</option>
     </select>
-    <button class="btn btn-sm">筛选</button>
+    <span id="customDateRange" style="display:{% if range_mode == 'custom' %}flex{% else %}none{% endif %};gap:6px;align-items:center;">
+      <input type="date" name="date_from" value="{{ date_from }}" style="width:auto;">
+      <span class="muted">至</span>
+      <input type="date" name="date_to" value="{{ date_to }}" style="width:auto;">
+    </span>
+    <button class="btn" type="submit" onclick="showTableLoading()">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"></polygon></svg>筛选
+    </button>
+    <button class="btn btn-outline" type="button" onclick="resetFilterForm()">重置</button>
   </form>
-  {% if range_mode == '1y' %}
-  <div class="muted" style="margin-top:8px;">当前仅显示报销日期在 {{ range_since }} 之后的报销单（按业务发生时间，补录历史数据不会被系统导入时间过滤）；切换「全部历史」可查看更早数据。</div>
-  {% endif %}
+  <div class="muted" style="margin-top:10px;">提示：如需查看超期历史数据，请在上方切换时间范围。</div>
 </div>
-
-<div class="card table-card" style="position:relative;">
+<div class="card-divider"></div>
+<div class="list-body">
   <div class="table-loading" id="tableLoading"><div class="spinner"></div><div>正在加载数据…</div></div>
+
+  {# 生效过滤标签：服务器端按当前查询参数生成，无条件则不渲染 #}
+  {% set filter_tags = [] %}
+  {% if batch_id %}{% set _ = filter_tags.append({'key':'batch','text':'批次: ' ~ (batch_id[:16] ~ '…' if batch_id|length > 16 else batch_id)}) %}{% endif %}
+  {% if status %}
+    {% set _status_cn = {'unmatched':'未匹配','matched':'已匹配'}.get(status, status) %}
+    {% set _ = filter_tags.append({'key': 'status', 'text': '状态: ' ~ _status_cn}) %}
+  {% endif %}
+  {% if q %}{% set _ = filter_tags.append({'key': 'q', 'text': '关键词: ' ~ q}) %}{% endif %}
+  {% if range_mode == 'custom' %}
+    {% set _ = filter_tags.append({'key': 'time', 'text': '时间: ' ~ (date_from or '最早') ~ ' 至 ' ~ (date_to or '今天')}) %}
+  {% elif range_mode == 'this_month' %}{% set _ = filter_tags.append({'key': 'time', 'text': '时间: 本月'}) %}
+  {% elif range_mode == 'last_month' %}{% set _ = filter_tags.append({'key': 'time', 'text': '时间: 上月'}) %}
+  {% elif range_mode == 'last_3m' %}{% set _ = filter_tags.append({'key': 'time', 'text': '时间: 近三个月'}) %}
+  {% elif range_mode == 'this_year' %}{% set _ = filter_tags.append({'key': 'time', 'text': '时间: 今年'}) %}
+  {% elif range_mode == '1y' %}{% set _ = filter_tags.append({'key': 'time', 'text': '时间: 近1年'}) %}
+  {% elif range_mode == 'all' %}{% set _ = filter_tags.append({'key': 'time', 'text': '时间: 全部时间'}) %}{% endif %}
+
+  <div class="table-toolbar">
+    <div class="filter-tags">
+      {% for t in filter_tags %}
+      <span class="filter-tag"><span class="ft-text">{{ t.text }}</span><a title="清除该条件" onclick="removeFilter('{{ t.key }}')">×</a></span>
+      {% endfor %}
+      {% if filter_tags|length > 2 %}
+      <a class="clear-filters" onclick="removeFilter('all')">清空筛选</a>
+      {% endif %}
+    </div>
+    <div class="toolbar-actions">
+      <span class="muted" id="selInfo">已选 0 条</span>
+      <button class="btn btn-outline btn-sm" id="btnBatchExp" type="button" disabled>导出 Excel</button>
+      <button class="btn btn-danger btn-sm" id="btnBatchDel" onclick="batchDelete()" disabled>批量删除</button>
+    </div>
+  </div>
+
   {% if rows %}
   <div class="table-scroll">
     <table class="reb-table">
@@ -228,7 +295,8 @@
   </div>
   {{ render_pager(pager) }}
   {% else %}<p class="empty-state">暂无相关数据</p>
-  <p class="muted" style="text-align:center;margin-top:-24px;padding-bottom:20px;font-size:12px;">点击右上角「导入报销单 Excel」开始</p>{% endif %}
+  <p class="muted" style="text-align:center;padding-bottom:20px;">点击右上角「导入报销单 Excel」开始</p>{% endif %}
+  </div>
 </div>
 
 <!-- ===================== 导入向导 ===================== -->
@@ -405,6 +473,39 @@ function showTableLoading(){
   const el = document.getElementById('tableLoading');
   if(el) el.classList.add('on');
 }
+
+/* ===== 过滤标签：清除指定条件并重新查询 ===== */
+function removeFilter(which){
+  const u = new URL(location.href);
+  if(which === 'q') u.searchParams.delete('q');
+  if(which === 'status') u.searchParams.delete('status');
+  if(which === 'batch') u.searchParams.delete('batch_id');
+  if(which === 'time'){
+    u.searchParams.delete('range');
+    u.searchParams.delete('date_from');
+    u.searchParams.delete('date_to');
+  }
+  if(which === 'all'){
+    ['q','status','batch_id','range','date_from','date_to']
+      .forEach(k => u.searchParams.delete(k));
+  }
+  u.searchParams.delete('page');
+  location.href = u.toString();
+}
+
+/* ===== 时间下拉：自定义时间联动显隐 ===== */
+function toggleCustomDates(val){
+  const box = document.getElementById('customDateRange');
+  if(box) box.style.display = (val === 'custom') ? 'flex' : 'none';
+}
+
+/* ===== 重置筛选 ===== */
+function resetFilterForm(){
+  location.href = '/reimburses';
+}
+
+/* ===== 批量删除占位（后续有复选框时启用） ===== */
+function batchDelete(){ toast('批量删除功能暂未开放', 'warn'); }
 
 let currentTemplates = [];
 let wizState = { mode:'template', templateId:null, file:null, headerRow:1,
@@ -667,7 +768,7 @@ function showDupConfirm(d, lastAction){
     (parts.length ? `其中，${esc(parts.join('；'))}。` : '');
   document.getElementById('dupTbody').innerHTML = dups.map(x => {
     const src = x.type === 'history'
-      ? `<span style="color:#b91c1c;font-weight:600;">${esc(x.no || '—')}</span>`
+      ? `<span style="color:var(--danger-text);font-weight:600;">${esc(x.no || '—')}</span>`
       : `<span>本次导入第 ${x.ref_row} 行</span>`;
     return `<tr>
       <td>${x.row}</td>
@@ -697,11 +798,11 @@ function renderSuccess(d){
   clearWizAlert();
   let html = `<div class="alert alert-green"><b>导入成功</b>，共 ${d.imported} 行。</div>`;
   if(d.duplicates_forced){
-    html += `<div class="alert" style="background:#fff7ed;color:#9a3412;border:1px solid #fed7aa;">
+    html += `<div class="alert alert-warn">
      已强制导入疑似重复数据 ${d.duplicates_forced} 行，列表已打「⚠️ 疑似重复」标签，可悬浮查看查重来源。</div>`;
   }
   if(d.duplicates_skipped){
-    html += `<div class="alert" style="background:#f3f4f6;color:#4b5563;border:1px solid #e5e7eb;">
+    html += `<div class="alert alert-gray">
      已跳过重复数据 ${d.duplicates_skipped} 行。</div>`;
   }
   if(d.errors && d.errors.length){
@@ -925,7 +1026,8 @@ async function delTemplate(id){
 // ============================================================
 async function delReimburse(id){
   if(!await confirmDlg('确认删除该报销单？关联匹配将级联删除，已匹配发票回到 NORMAL。')) return;
-  await post(`/api/reimburses/${id}/delete`, null, {title:'正在删除报销单…'});
+  const j = await post(`/api/reimburses/${id}/delete`, null, {title:'正在删除报销单…'});
+  if(j && j.data && j.data.ok !== false) stashUndo('reimburse', [id], '已删除 1 条报销单');
   location.reload();
 }
 async function delBatch(bid){
@@ -936,15 +1038,20 @@ async function delBatch(bid){
   if(!ids.length){ toast('该批次没有报销单', false); return; }
   if(!await confirmDlg(`确认删除批次 ${bid} 的 ${ids.length} 张报销单？\n关联匹配将级联删除，已匹配发票回到 NORMAL。`)) return;
   busyIndet('正在删除报销单批次…', `共 ${ids.length} 张`);
-  let fail = 0;
+  const okIds = [];
   for(let i = 0; i < ids.length; i++){
     busyProgress(Math.round(i / ids.length * 100), `正在删除第 ${i + 1}/${ids.length} 张报销单`);
     try{
-      await fetch(`/api/reimburses/${ids[i]}/delete`, {method:'POST', body:new FormData()});
-    }catch(err){ fail++; }
+      const resp = await fetch(`/api/reimburses/${ids[i]}/delete`, {method:'POST', body:new FormData()});
+      const rj = await resp.json();
+      if(rj && rj.data && rj.data.ok !== false) okIds.push(ids[i]);
+    }catch(err){}
   }
   busyDone();
-  if(fail) toast(`删除完成：${ids.length - fail} 张成功，${fail} 张失败`, false);
+  const fail = ids.length - okIds.length;
+  if(fail) toast(`删除完成：${okIds.length} 张成功，${fail} 张失败`, false);
+  // 可撤销：缓存本批次删除成功的 ID，20 秒内可撤销
+  if(okIds.length) stashUndo('reimburse', okIds, `已删除 ${okIds.length} 条报销单`);
   // 删除后跳回无参列表页：服务端自动选中最新批次（无批次则显示全部）
   setTimeout(()=>{ location.href = '/reimburses'; }, 400);
 }

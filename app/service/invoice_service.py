@@ -474,33 +474,33 @@ def confirm_not_duplicate(invoice_id: int, operator: str = None, reason: str = "
 
 
 def delete_invoice(invoice_id: int, operator: str = None) -> dict:
-    """删除发票（I8: 匹配记录级联删除；若已匹配，报销单自动释放）。
+    """删除发票（软删除：写入 deleted_at，绝不物理删除）。
 
-    安全顺序（业务规则）：先查物理文件路径 -> 事务内删数据库（含级联，失败整体回滚）
-    -> 事务提交后删物理文件（容错，仅记日志，绝不回滚数据库）。
+    I8: 匹配记录级联删除；已匹配的报销单自动释放。原始附件保留，
+    仅在回收站「彻底删除」或自动清理到期后才物理删除。
     删除后自动扫描 DUPLICATE 状态的孤儿记录（dup_of == 被删 id），
     对它们重新跑校验+去重，条件满足时恢复为 NORMAL。
     """
     operator = operator or settings.default_operator
     recovered = []
+    batch_id = uuid.uuid4().hex
     with db.tx() as conn:
         row = invoice_repo.get(conn, invoice_id)
-        if row is None:
+        if row is None or row.get("deleted_at"):
             return {"ok": False, "message": f"发票 #{invoice_id} 不存在"}
-        # 规则 2/3：删除前先查出物理文件路径（人工录入的发票无文件，为 None）
-        source_path = row.get("source_path")
-
-        # 规则 1：同一事务内显式清理关联数据（匹配记录、状态日志），
-        # 与外键 ON DELETE CASCADE 双保险，任何一步失败整个事务回滚
+        # 规则 1：同一事务内显式清理匹配记录（回收站恢复时发票回到未匹配）
         n_match = match_repo.delete_for_invoice(conn, invoice_id)
-        log_repo.delete_for_invoice(conn, invoice_id)
-        invoice_repo.delete(conn, invoice_id)
-        logger.info("发票 #%s 已删除 (status=%s, 清理匹配记录 %s 条, by %s)",
+        invoice_repo.soft_delete(conn, invoice_id)
+        audit_service.log(conn, "delete", "invoice", invoice_id,
+                          row.get("invoice_no") or f"#{invoice_id}",
+                          "有效", "已删除（移入回收站）", operator,
+                          "删除发票，附件保留至彻底删除或自动清理")
+        logger.info("发票 #%s 已移入回收站 (status=%s, 清理匹配记录 %s 条, by %s)",
                     invoice_id, row["status"], n_match, operator)
 
         # 恢复孤儿 DUPLICATE：raw_json.dup_of == 被删 id 的 DUPLICATE 记录重新去重
         dup_rows = conn.execute(
-            "SELECT id, raw_json FROM invoice WHERE status = 'DUPLICATE'"
+            "SELECT id, raw_json FROM invoice WHERE status = 'DUPLICATE' AND deleted_at IS NULL"
         ).fetchall()
         for dup_id, raw_json in dup_rows:
             try:
@@ -515,39 +515,109 @@ def delete_invoice(invoice_id: int, operator: str = None) -> dict:
                 logger.info("删除发票 #%s 后，孤儿 DUPLICATE #%s 恢复为 %s",
                             invoice_id, dup_id, new_status)
 
-    # 规则 3：数据库确认删除成功后，再删物理文件；文件删除失败仅记日志
-    file_cleaned = _file_store.delete(source_path) if source_path else False
-
-    msg = "发票已删除（匹配记录已级联删除）"
-    if source_path and file_cleaned:
-        msg += "，物理文件已清理"
+    msg = "发票已移入回收站（匹配记录已清理，可在 20 秒内撤销）"
     if recovered:
         msg += f"；{len(recovered)} 张重复发票已自动恢复: " + \
                ", ".join(f"#{i}->{s}" for i, s in recovered)
-    return {"ok": True, "message": msg, "recovered": recovered}
+    return {"ok": True, "message": msg, "recovered": recovered,
+            "ids": [invoice_id], "batch_id": batch_id}
 
 
 def delete_invoices(invoice_ids: List[int], operator: str = None) -> dict:
-    """批量删除发票：逐条删除，单条失败不影响其余。"""
+    """批量软删除发票：逐条处理，单条失败不影响其余。"""
     operator = operator or settings.default_operator
-    deleted, failed = 0, []
+    deleted, failed, deleted_ids = 0, [], []
+    batch_id = uuid.uuid4().hex
     for invoice_id in invoice_ids:
         r = delete_invoice(invoice_id, operator)
         if r["ok"]:
             deleted += 1
+            deleted_ids.append(invoice_id)
         else:
             failed.append(invoice_id)
     logger.info("批量删除发票: 成功 %s, 失败 %s (by %s)", deleted, failed, operator)
-    return {"ok": not failed, "deleted": deleted,
-            "failed": failed,
+    return {"ok": not failed, "deleted": deleted, "failed": failed,
+            "ids": deleted_ids, "batch_id": batch_id,
             "message": f"已删除 {deleted} 张" + (f"，{len(failed)} 张失败: {failed}" if failed else "")}
+
+
+def restore_invoices(invoice_ids: List[int], operator: str = None) -> dict:
+    """撤销删除：清空 deleted_at（回收站 20 秒撤销 / 回收站恢复共用）。"""
+    operator = operator or settings.default_operator
+    restored = []
+    with db.tx() as conn:
+        for invoice_id in invoice_ids:
+            row = invoice_repo.get(conn, invoice_id)
+            if row is None or not row.get("deleted_at"):
+                continue
+            invoice_repo.restore(conn, [invoice_id])
+            # 原状态为 MATCHED 但匹配记录已随删除清理：回到 NORMAL，避免出现"已匹配"假象
+            if row.get("status") == "MATCHED":
+                active = conn.execute(
+                    "SELECT 1 FROM match_result WHERE invoice_id = ? "
+                    "AND status IN ('MATCHED','CONFIRMED') LIMIT 1", (invoice_id,)).fetchone()
+                if not active:
+                    conn.execute("UPDATE invoice SET status = 'NORMAL' WHERE id = ?",
+                                 (invoice_id,))
+            restored.append(invoice_id)
+            audit_service.log(conn, "restore", "invoice", invoice_id,
+                              row.get("invoice_no") or f"#{invoice_id}",
+                              "已删除", "已恢复", operator, "撤销删除（回收站恢复）")
+    result = {"ok": True, "restored": len(restored), "ids": restored,
+              "message": f"已恢复 {len(restored)} 张发票" if restored else "没有可恢复的发票"}
+    if restored:
+        # 恢复后重新执行匹配：删除时匹配记录已被清理，恢复到未匹配状态只是中间态，
+        # 需要重跑一轮匹配把「已匹配发票 ↔ 报销单」的关联关系还原。
+        from app.service import match_service   # 惰性导入，避免服务层循环依赖
+        try:
+            ms = match_service.run_matching(operator)
+            result["match"] = ms
+            result["message"] = (
+                f"已恢复 {len(restored)} 张发票，并重新匹配"
+                f"（自动匹配 {ms.get('auto_matched', 0)} 张、待人工 {ms.get('pending', 0)} 张）")
+        except Exception as e:      # 匹配失败不影响恢复结果本身
+            logger.warning("恢复发票后重新匹配失败: %s", e)
+    return result
+
+
+def list_deleted_invoices(limit: int = 500) -> List[dict]:
+    """回收站：已删除发票列表。"""
+    with db.read() as conn:
+        return invoice_repo.list_deleted(conn, limit=limit)
+
+
+def purge_invoices(invoice_ids: List[int], operator: str = None) -> dict:
+    """彻底删除（物理删除数据库记录 + 清理附件），仅回收站 / 自动清理调用。"""
+    operator = operator or settings.default_operator
+    purged, paths = 0, []
+    with db.tx() as conn:
+        for invoice_id in invoice_ids:
+            row = invoice_repo.get(conn, invoice_id)
+            if row is None or not row.get("deleted_at"):
+                continue
+            paths.append(row.get("source_path"))
+            match_repo.delete_for_invoice(conn, invoice_id)
+            log_repo.delete_for_invoice(conn, invoice_id)
+            invoice_repo.delete(conn, invoice_id)
+            purged += 1
+            audit_service.log(conn, "purge", "invoice", invoice_id,
+                              row.get("invoice_no") or f"#{invoice_id}",
+                              "已删除", "已彻底删除", operator,
+                              "回收站彻底删除：数据库记录与附件已清理")
+    for p in paths:
+        if p:
+            _file_store.delete(p)
+    logger.info("回收站彻底删除发票 %s 张（附件 %s 个, by %s）",
+                purged, len([p for p in paths if p]), operator)
+    return {"ok": True, "purged": purged,
+            "message": f"已彻底删除 {purged} 张发票"}
 
 
 def invoice_detail(invoice_id: int) -> Optional[dict]:
     """发票详情（含状态日志、解析信息）。"""
     with db.read() as conn:
         row = invoice_repo.get(conn, invoice_id)
-        if row is None:
+        if row is None or row.get("deleted_at"):
             return None
         row["raw"] = _raw_json(row)
         row["status_log"] = log_repo.list_for_invoice(conn, invoice_id)
@@ -558,7 +628,7 @@ def invoice_preview(invoice_id: int) -> Optional[dict]:
     """抽屉详情：结构化字段 + 生效匹配记录（报销单号/提交人/金额）+ 原件文件信息。"""
     with db.read() as conn:
         row = invoice_repo.get(conn, invoice_id)
-        if row is None:
+        if row is None or row.get("deleted_at"):
             return None
         row.pop("raw_json", None)
         src = row.pop("source_path", "") or ""   # 绝对路径不下发前端

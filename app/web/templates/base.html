@@ -5,46 +5,93 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>{% block title %}发票报销核对助手{% endblock %}</title>
 <style>
-:root{--primary:#2563eb;--bg:#f5f7fa;--card:#fff;--border:#e5e7eb;--text:#1f2937;--muted:#6b7280;}
+/* ============================================================
+   全局设计 Token（全系统唯一色彩 / 圆角 / 阴影 / 间距来源）
+   所有页面只允许引用变量，禁止再硬编码色值
+   ============================================================ */
+:root{
+  /* 主色（企业蓝） */
+  --primary:#2563eb;--primary-dark:#1d4ed8;--primary-light:#eff6ff;--primary-border:#bfdbfe;
+  /* 语义色：浅底 + 深字 */
+  --success:#52c41a;--success-text:#389e0d;--success-bg:#f0f9eb;--success-border:#c2e7b0;
+  --warning:#faad14;--warning-text:#d48806;--warning-bg:#fdf6ec;--warning-border:#faecd8;
+  --danger:#ff4d4f;--danger-text:#cf1322;--danger-bg:#fef0f0;--danger-border:#fde2e2;
+  /* 文字与背景 */
+  --bg:#f5f7fa;--card:#fff;
+  --border:#e4e7ed;--border-light:#ebeef5;
+  --text:#303133;--text-2:#606266;--text-3:#909399;--muted:#909399;
+  /* 圆角 / 阴影 / 间距 */
+  --radius-card:8px;--radius:4px;
+  --shadow-card:0 2px 12px 0 rgba(0,0,0,.05);
+  --shadow-hover:0 4px 16px 0 rgba(0,0,0,.1);
+  --space:20px;
+  /* 统一过渡：消除生硬跳变 */
+  --transition:all .3s ease;
+}
 *{box-sizing:border-box;margin:0;padding:0;}
-body{font-family:"Microsoft YaHei",system-ui,sans-serif;background:var(--bg);color:var(--text);font-size:14px;}
+body{font-family:"Microsoft YaHei",system-ui,sans-serif;background:var(--bg);color:var(--text);font-size:14px;line-height:1.5;}
 /* 按钮/表单控件默认不继承 body 字体，强制继承保持全局字体协调 */
 button,input,select,textarea{font-family:inherit;color:inherit;}
-.nav{background:var(--card);border-bottom:1px solid var(--border);padding:0 24px;display:flex;align-items:center;gap:4px;height:52px;}
+.nav{background:var(--card);border-bottom:1px solid var(--border-light);padding:0 20px;display:flex;align-items:center;gap:4px;height:56px;box-shadow:0 1px 4px rgba(0,0,0,.04);}
 .nav .brand{font-weight:700;font-size:16px;margin-right:24px;color:var(--primary);}
-.nav a{padding:8px 14px;border-radius:6px;color:var(--text);text-decoration:none;}
-.nav a:hover,.nav a.active{background:#eff6ff;color:var(--primary);}
-.container{max-width:1560px;margin:24px auto;padding:0 24px;}
-.card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:20px;margin-bottom:20px;}
-.card h2{font-size:16px;margin-bottom:14px;}
+.nav a{padding:8px 14px;border-radius:var(--radius);color:var(--text-2);text-decoration:none;transition:var(--transition);}
+.nav a:hover,.nav a.active{background:var(--primary-light);color:var(--primary);}
+.container{max-width:1560px;margin:var(--space) auto;padding:0 var(--space);}
+/* 卡片：8px 圆角 + 极浅阴影，去掉生硬边框（保留透明边框位，便于风险卡片着色） */
+.card{background:var(--card);border:1px solid transparent;border-radius:var(--radius-card);padding:var(--space);margin-bottom:var(--space);box-shadow:var(--shadow-card);transition:var(--transition);}
+.card h2{font-size:16px;font-weight:600;margin-bottom:14px;}
+/* 列表页大卡片：搜索区 + 极细分割线 + 表格区，同一白底，不出现灰色断层 */
+.list-card{padding:0;overflow:hidden;}
+.list-filter{padding:var(--space);}
+.card-divider{height:1px;background:var(--border-light);}
+.list-body{padding:16px var(--space) var(--space);}
+/* 卡片风险态 + 容量进度条（替代页面内联硬编码颜色） */
+.card-warn{border-color:var(--warning-border);background:var(--warning-bg);}
+.progress{max-width:420px;height:8px;background:#e5e7eb;border-radius:6px;overflow:hidden;margin-top:10px;}
+.progress-fill{height:100%;background:var(--primary);transition:var(--transition);}
+.progress-fill.warn{background:var(--warning);}
+.warn-text{margin-top:10px;color:var(--warning-text);font-size:13px;}
+/* 页面标题栏 */
+.page-head{display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:var(--space);}
+.page-head h1{font-size:20px;font-weight:600;color:var(--text);}
+.page-head-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
 .grid{display:grid;gap:16px;}
 .g4{grid-template-columns:repeat(4,1fr);}
 .g2{grid-template-columns:repeat(2,1fr);}
-.stat{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:18px;}
-.stat .num{font-size:26px;font-weight:700;margin-top:6px;}
-.stat .label{color:var(--muted);font-size:13px;}
+/* 统计卡片：悬停微上浮 + 阴影加深 */
+.stat{background:var(--card);border:1px solid transparent;border-radius:var(--radius-card);padding:var(--space);box-shadow:var(--shadow-card);transition:var(--transition);}
+.stat:hover{transform:translateY(-2px);box-shadow:var(--shadow-hover);}
+.stat .num{font-size:26px;font-weight:700;margin-top:6px;font-variant-numeric:tabular-nums;}
+.stat .label{color:var(--text-2);font-size:13px;}
+/* 表格：浅灰表头 + 宽裕行距 + 整行 hover；文本左 / 数字右 / 状态与操作居中 */
 table{width:100%;border-collapse:collapse;}
-th,td{padding:9px 10px;border-bottom:1px solid var(--border);text-align:left;white-space:nowrap;vertical-align:middle;}
-tbody td{height:46px;}
-th{color:#666;font-weight:600;background:#fafbfc;font-size:13px;}
-tr:hover td{background:#f5f6f8;}
+th,td{padding:12px 8px;border-bottom:1px solid var(--border-light);text-align:left;white-space:nowrap;vertical-align:middle;transition:background .3s ease;}
+tbody td{height:48px;}
+th{color:var(--text-2);font-weight:600;background:#f8f9fa;font-size:13px;}
+tr:hover td{background:var(--bg);}
 td.wrap{white-space:normal;min-width:160px;}
-td.num,th.num{text-align:right;}
+td.num,th.num,.ta-r{text-align:right;}
 td.num{font-variant-numeric:tabular-nums;}
+.ta-c,td.center,th.center{text-align:center;}
+.ta-l{text-align:left;}
 /* 发票表格：固定布局，列宽按 colgroup 分配，长文本省略号 */
 .invoice-table{table-layout:fixed;width:100%;}
-.invoice-table th,.invoice-table td{padding:10px 8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:middle;}
+.invoice-table th,.invoice-table td{padding:12px 8px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:middle;}
 .invoice-table tbody td{height:auto;}
 .invoice-table .col-number{text-align:right;font-variant-numeric:tabular-nums;}
 .invoice-table .col-action{width:88px;min-width:88px;overflow:visible;}
 .invoice-table td.col-action{overflow:visible;}
-/* 操作按钮：文字与箭头不折行 */
-.action-btn{white-space:nowrap;padding:6px 12px;}
-.badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:12px;font-weight:500;}
-.badge-green{background:#dcfce7;color:#166534;}.badge-red{background:#fee2e2;color:#991b1b;}
-.badge-orange{background:#ffedd5;color:#9a3412;}.badge-blue{background:#dbeafe;color:#1e40af;}
-.badge-purple{background:#f3e8ff;color:#6b21a8;}.badge-gray{background:#f3f4f6;color:#4b5563;}
-.badge-yellow{background:#fef3c7;color:#92400e;border:1px solid #fcd34d;}
+/* 操作按钮：文字与箭头不折行；高度与全局按钮统一 */
+.action-btn{white-space:nowrap;padding:0 10px;}
+/* 标签：统一「浅底 + 深字 + 细边框」，不使用生硬实心色块 */
+.badge{display:inline-block;padding:1px 8px;border-radius:var(--radius);font-size:12px;font-weight:500;line-height:20px;border:1px solid transparent;transition:var(--transition);}
+.badge-green{background:var(--success-bg);color:var(--success-text);border-color:var(--success-border);}
+.badge-red{background:var(--danger-bg);color:var(--danger-text);border-color:var(--danger-border);}
+.badge-orange{background:var(--warning-bg);color:var(--warning-text);border-color:var(--warning-border);}
+.badge-blue{background:var(--primary-light);color:var(--primary-dark);border-color:var(--primary-border);}
+.badge-purple{background:#f4f0ff;color:#5b21b6;border-color:#e4d9ff;}
+.badge-gray{background:#f4f4f5;color:var(--text-2);border-color:#e9e9eb;}
+.badge-yellow{background:var(--warning-bg);color:var(--warning-text);border-color:var(--warning-border);}
 /* 写操作按钮 Loading：点击后立即禁用并显示转圈，直到接口返回 */
 .btn.is-loading,.btn.is-loading:hover{opacity:.75;cursor:progress;filter:none;}
 .btn-spin{display:inline-block;width:10px;height:10px;margin-right:6px;vertical-align:-1px;
@@ -55,8 +102,8 @@ td.num{font-variant-numeric:tabular-nums;}
 .cat-tag{display:inline-flex;align-items:center;gap:4px;border-radius:999px;padding:2px 9px;font-size:12px;
   cursor:pointer;border:1px solid transparent;white-space:nowrap;line-height:1.6;}
 .cat-tag:hover{filter:brightness(.96);}
-.cat-tag.confirmed{background:#dcfce7;color:#166534;border-color:#bbf7d0;}
-.cat-tag.pending{background:#fef3c7;color:#92400e;border-color:#fcd34d;}
+.cat-tag.confirmed{background:var(--success-bg);color:var(--success-text);border-color:var(--success-border);}
+.cat-tag.pending{background:var(--warning-bg);color:var(--warning-text);border-color:var(--warning-border);}
 /* 未报销的游离发票：系统推测分类用 dashed 边框区分 */
 .cat-tag.orphan{border-style:dashed;}
 /* 未匹配发票的报销单：标签只读，不出现手型 */
@@ -83,16 +130,29 @@ td.num{font-variant-numeric:tabular-nums;}
 .dropdown-menu.open{display:block;}
 .dropdown-menu a,.dropdown-menu button{display:block;width:100%;padding:8px 14px;text-align:left;border:0;background:none;font-size:13px;color:var(--text);cursor:pointer;text-decoration:none;}
 .dropdown-menu a:hover,.dropdown-menu button:hover{background:#f5f7fa;}
-.dropdown-menu .danger{color:#dc2626;}
-.btn{display:inline-block;padding:7px 14px;border-radius:6px;border:1px solid transparent;background:var(--primary);color:#fff;cursor:pointer;font-size:13px;text-decoration:none;}
-.btn:hover{opacity:.9;}
-.btn-sm{padding:4px 10px;font-size:12px;}
-.btn-outline{background:#fff;color:var(--text);border-color:var(--border);}
-.btn-outline:hover{border-color:var(--primary);color:var(--primary);opacity:1;}
-.btn-danger{background:#dc2626;}
-.btn-green{background:#16a34a;}
-input,select,textarea{padding:7px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;background:#fff;}
-input:focus,select:focus{outline:none;border-color:var(--primary);}
+.dropdown-menu .danger{color:var(--danger-text);}
+/* 按钮：统一高度 36px（大按钮 40px），4px 圆角，主/次/危险三态 */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;height:36px;padding:0 16px;border-radius:var(--radius);
+  border:1px solid transparent;background:var(--primary);color:#fff;cursor:pointer;font-size:13px;text-decoration:none;
+  white-space:nowrap;transition:var(--transition);}
+.btn:hover{background:var(--primary-dark);box-shadow:0 2px 6px rgba(37,99,235,.25);}
+.btn:disabled{opacity:.5;cursor:not-allowed;box-shadow:none;}
+.btn-sm{height:28px;padding:0 10px;font-size:12px;}
+.btn-lg{height:40px;padding:0 20px;font-size:14px;}
+.btn-outline{background:#fff;color:var(--text-2);border-color:var(--border);}
+.btn-outline:hover{background:#fff;border-color:var(--primary);color:var(--primary);box-shadow:none;}
+.btn-danger{background:var(--danger);border-color:var(--danger);}
+.btn-danger:hover{background:#f5222d;border-color:#f5222d;box-shadow:0 2px 6px rgba(255,77,79,.25);}
+.btn-green{background:var(--success);border-color:var(--success);}
+.btn-green:hover{background:#4aa50f;border-color:#4aa50f;box-shadow:0 2px 6px rgba(82,196,26,.25);}
+/* 表单控件：统一高度 36px，聚焦时边框切换主色并带轻微光晕 */
+input:not([type=checkbox]):not([type=radio]):not([type=range]),select,textarea{
+  height:36px;padding:0 12px;border:1px solid var(--border);border-radius:var(--radius);font-size:13px;
+  background:#fff;color:var(--text);transition:var(--transition);}
+textarea{height:auto;min-height:72px;padding:8px 12px;line-height:1.6;}
+input:not([type=checkbox]):not([type=radio]):not([type=range]):focus,select:focus,textarea:focus{
+  outline:none;border-color:var(--primary);box-shadow:0 0 0 2px rgba(37,99,235,.12);}
+input[type=checkbox],input[type=radio]{accent-color:var(--primary);cursor:pointer;}
 form.inline{display:flex;gap:8px;flex-wrap:wrap;align-items:center;}
 .muted{color:var(--muted);font-size:12px;}
 .mt{margin-top:12px;}.mb{margin-bottom:12px;}
@@ -101,18 +161,27 @@ form.inline{display:flex;gap:8px;flex-wrap:wrap;align-items:center;}
 .kv .k{color:var(--muted);}
 pre{background:#0f172a;color:#e2e8f0;padding:14px;border-radius:8px;font-size:12px;overflow:auto;}
 .modal-bg{display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);z-index:9;}
-.modal{display:none;position:fixed;top:8%;left:50%;transform:translateX(-50%);background:#fff;border-radius:10px;padding:24px;width:560px;max-height:84vh;overflow:auto;z-index:10;}
+.modal{display:none;position:fixed;top:8%;left:50%;transform:translateX(-50%);background:#fff;border-radius:var(--radius-card);padding:24px;width:560px;max-height:84vh;overflow:auto;z-index:10;box-shadow:0 8px 30px rgba(0,0,0,.18);}
 .tabs{display:flex;gap:0;border-bottom:2px solid var(--border);margin-bottom:16px;}
 .tabs .tab{padding:10px 18px;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-2px;color:var(--muted);}
 .tabs .tab.active{color:var(--primary);border-color:var(--primary);font-weight:600;}
 .tabpane{display:none;}.tabpane.active{display:block;}
 .toast{position:fixed;top:70px;right:24px;background:#111827;color:#fff;padding:10px 18px;border-radius:8px;z-index:99;display:none;max-width:420px;font-size:13px;}
+/* 高危操作撤销提示：右下角常驻，带倒计时与撤销按钮 */
+.undo-toast{position:fixed;right:24px;bottom:24px;z-index:120;display:none;align-items:center;gap:14px;
+  background:#111827;color:#fff;padding:12px 16px;border-radius:10px;font-size:13px;
+  box-shadow:0 8px 24px rgba(0,0,0,.25);max-width:440px;}
+.undo-toast .undo-msg{flex:1;line-height:1.5;}
+.undo-toast .undo-btn{background:none;border:1px solid #93c5fd;color:#93c5fd;border-radius:6px;
+  padding:4px 12px;cursor:pointer;font-size:13px;white-space:nowrap;}
+.undo-toast .undo-btn:hover{background:#93c5fd;color:#111827;}
+.undo-toast .undo-count{color:#9ca3af;font-size:12px;min-width:40px;text-align:right;}
 /* 底部分页组件 */
 .pager{display:flex;align-items:center;gap:8px;justify-content:flex-end;margin-top:14px;flex-wrap:wrap;}
 .pager select{padding:4px 6px;}
 .pager .btn[disabled]{opacity:.45;cursor:not-allowed;}
 .pager-custom{display:inline-flex;align-items:center;gap:6px;}
-.pager-custom input{width:120px;padding:4px 8px;text-align:center;}
+.pager-custom input{width:120px;height:32px;padding:4px 8px;text-align:center;}
 /* 空状态占位 */
 .empty-state{text-align:center;color:var(--muted);padding:36px 0;font-size:14px;}
 /* 全局忙碌遮罩：导入/删除等耗时操作期间显示进度并阻挡一切点击（z-index 高于弹窗/下拉/提示） */
@@ -129,14 +198,14 @@ pre{background:#0f172a;color:#e2e8f0;padding:14px;border-radius:8px;font-size:12
 .busy-detail{margin-top:10px;color:var(--muted);font-size:12px;min-height:16px;word-break:break-all;}
 .busy-pct{margin-top:6px;font-size:12px;font-weight:600;color:var(--primary);min-height:15px;}
 /* ---- 全局路由联动（上下文穿透） ---- */
-/* 可点击的统计卡片 / 列表行：手型 + 阴影提示 */
-.stat-link{cursor:pointer;transition:box-shadow .15s,transform .15s;}
-.stat-link:hover{box-shadow:0 6px 16px rgba(37,99,235,.16);transform:translateY(-2px);}
+/* 可点击的统计卡片 / 列表行：手型 + 上浮阴影提示 */
+.stat-link{cursor:pointer;transition:var(--transition);}
+.stat-link:hover{box-shadow:var(--shadow-hover);transform:translateY(-2px);}
 /* 风险警示卡片：未匹配发票等需财务优先处理的风险数据 */
-.stat-danger{border-color:#fca5a5;}
-.stat-danger:hover{box-shadow:0 6px 16px rgba(220,38,38,.18);}
-.stat-danger .num{color:#dc2626;}
-.text-danger{color:#dc2626 !important;}
+.stat-danger{border-color:var(--danger-border);}
+.stat-danger:hover{box-shadow:0 4px 16px 0 rgba(255,77,79,.16);}
+.stat-danger .num{color:var(--danger-text);}
+.text-danger{color:var(--danger-text) !important;}
 tr.clickable{cursor:pointer;}
 tr.clickable:hover td{background:#eff6ff;}
 /* focus 定位高亮：黄色闪烁 3 次后自动恢复（animation 结束即回默认背景） */
@@ -158,6 +227,11 @@ tr.row-focus td{animation:focusFlash .7s ease-in-out 3;}
 <div class="modal-bg" id="modalBg" onclick="closeModal()"></div>
 <div class="modal" id="modal">{% block modal %}{% endblock %}</div>
 <div class="toast" id="toast"></div>
+<div class="undo-toast" id="undoToast">
+  <span class="undo-msg" id="undoMsg"></span>
+  <button class="undo-btn" type="button" onclick="undoDeleteNow()">撤销</button>
+  <span class="undo-count" id="undoCount"></span>
+</div>
 <div class="busy-bg" id="busyBg">
   <div class="busy-card">
     <div class="spinner"></div>
@@ -171,9 +245,62 @@ tr.row-focus td{animation:focusFlash .7s ease-in-out 3;}
 function toast(msg, ok=true){
   const t=document.getElementById('toast');
   t.textContent=msg;t.style.display='block';
-  t.style.background=ok?'#059669':'#dc2626';
+  t.style.background=ok?'#52c41a':'#ff4d4f';
   setTimeout(()=>t.style.display='none',3500);
 }
+// ---- 高危操作撤销提示（右下角，20 秒倒计时）----
+let _undoTimer=null, _undoFn=null;
+function showUndoToast(msg, undoFn, seconds){
+  seconds = seconds || 20;
+  const box=document.getElementById('undoToast');
+  document.getElementById('undoMsg').textContent=msg;
+  _undoFn=undoFn;
+  let left=seconds;
+  document.getElementById('undoCount').textContent=left+'s';
+  box.style.display='flex';
+  clearInterval(_undoTimer);
+  _undoTimer=setInterval(()=>{
+    left--;
+    document.getElementById('undoCount').textContent=left>0?left+'s':'';
+    if(left<=0) hideUndoToast();
+  },1000);
+}
+function hideUndoToast(){
+  clearInterval(_undoTimer); _undoTimer=null; _undoFn=null;
+  const box=document.getElementById('undoToast');
+  if(box) box.style.display='none';
+}
+async function undoDeleteNow(){
+  const fn=_undoFn;
+  hideUndoToast();
+  if(fn){ try{ await fn(); }catch(e){ toast('撤销失败，请稍后重试', false); } }
+}
+// 删除后跨页面保留撤销信息（页面刷新/跳转后仍能在 20 秒内撤销）
+const UNDO_ENDPOINTS = {invoice:'/api/invoices/restore', reimburse:'/api/reimburses/restore'};
+function stashUndo(kind, ids, msg){
+  try{
+    sessionStorage.setItem('undoDelete', JSON.stringify(
+      {kind, ids, msg, expire: Date.now() + 20000}));
+  }catch(e){}
+}
+function consumeUndo(){
+  let u;
+  try{ u = JSON.parse(sessionStorage.getItem('undoDelete') || 'null'); }catch(e){ u = null; }
+  if(!u) return;
+  sessionStorage.removeItem('undoDelete');
+  const left = Math.round((u.expire - Date.now()) / 1000);
+  if(left <= 0){ toast('删除已完成（撤销窗口已过期）'); return; }
+  showUndoToast(u.msg, async ()=>{
+    const fd = new FormData();
+    fd.append('ids', (u.ids || []).join(','));
+    const r = await fetch(UNDO_ENDPOINTS[u.kind] || '', {method:'POST', body:fd});
+    const j = await r.json();
+    const d = j.data || j;
+    toast(d.message || (d.ok !== false ? '已撤销删除' : '撤销失败'), d.ok !== false);
+    if(d.ok !== false) setTimeout(()=>location.reload(), 600);
+  }, left);
+}
+document.addEventListener('DOMContentLoaded', consumeUndo);
 // ---- 忙碌遮罩：显示期间覆盖全页，用户无法点击其它按钮 ----
 function busyShow(title,detail){
   document.getElementById('busyTitle').textContent = title || '正在处理…';
@@ -195,7 +322,12 @@ function busyIndet(title,detail){
 }
 function busyDone(){ document.getElementById('busyBg').classList.remove('on'); }
 async function post(url, data, opts){
-  const fd = data instanceof FormData ? data : new FormData(data);
+  // 兼容多种入参：FormData / 表单元素 / 普通对象 / 空，避免 new FormData({}) 抛 TypeError
+  let fd;
+  if(data instanceof FormData){ fd = data; }
+  else if(data instanceof HTMLFormElement){ fd = new FormData(data); }
+  else if(data && typeof data === 'object'){ fd = new FormData(); for(const k in data){ if(data.hasOwnProperty(k)) fd.append(k, data[k] == null ? '' : data[k]); } }
+  else { fd = new FormData(); }
   // 250ms 内完成的快操作不闪遮罩；慢操作出现「正在处理…」并阻挡点击
   const timer = setTimeout(()=>busyIndet(opts && opts.title), 250);
   try{
