@@ -8,7 +8,8 @@ import argparse
 
 import uvicorn
 
-from app.config import settings
+from app.config import settings  # noqa: F401（初始化路径）
+from app.main import app
 
 
 def main() -> None:
@@ -17,8 +18,9 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8000)
     args = parser.parse_args()
 
+    # 直接传入 app 对象：打包为 exe 后不依赖 "模块:属性" 字符串再导入一次
     uvicorn.run(
-        "app.main:app",
+        app,
         host=args.host,
         port=args.port,
         log_level="info",

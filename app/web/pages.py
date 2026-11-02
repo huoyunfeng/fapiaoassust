@@ -6,13 +6,14 @@ from typing import Optional
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
-from pathlib import Path
 
+from app.config import RESOURCE_DIR
 from app.service import (audit_service, category_service, invoice_service,
                          match_service, reimburse_service, report_service)
 
 pages = APIRouter(tags=["pages"])
-templates = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
+# frozen 时模板在 PyInstaller 解压目录下的 app/web/templates
+templates = Jinja2Templates(directory=str(RESOURCE_DIR / "app" / "web" / "templates"))
 
 STATUS_BADGE = {
     "PARSING": "badge-gray", "PARSED": "badge-blue", "NORMAL": "badge-green",

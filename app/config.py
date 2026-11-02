@@ -1,10 +1,17 @@
 """全局配置（基础设施层可替换的参数集中在此）。"""
 import os
+import sys
 from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
 
-BASE_DIR = Path(__file__).resolve().parent.parent
+# 打包成 exe（PyInstaller）后 __file__ 位于临时解压目录，退出即删；
+# 因此可写数据（数据库/上传/日志）必须落在 exe 同目录，只读资源从包内目录读取。
+FROZEN = bool(getattr(sys, "frozen", False))
+BASE_DIR = (Path(sys.executable).resolve().parent if FROZEN
+            else Path(__file__).resolve().parent.parent)
+# 打包资源（模板等）所在根目录：frozen 时是 PyInstaller 的解压目录
+RESOURCE_DIR = Path(getattr(sys, "_MEIPASS", BASE_DIR))
 
 
 @dataclass
