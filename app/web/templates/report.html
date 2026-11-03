@@ -118,6 +118,11 @@ tr.row-out{opacity:0;transform:translateX(24px);transition:opacity .3s,transform
 .modal{z-index:310;}
 </style>
 
+<div style="display:flex;justify-content:flex-end;align-items:center;gap:10px;margin-bottom:12px;">
+  <span class="muted">重算在后台异步执行，可切换页面查看进度</span>
+  <button class="btn" type="button" onclick="RecalcTask.start(this)">重算匹配</button>
+</div>
+
 <div class="grid g4" style="margin-bottom:18px;">
   <div class="stat stat-link" id="cardInvoice" onclick="setView('all')" title="点击查看全部匹配明细">
     <div class="label">发票总数</div><div class="num" id="statInvoice">—</div>

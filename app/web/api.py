@@ -10,7 +10,8 @@ from starlette.background import BackgroundTask
 
 from app.service import (audit_service, backup_service, category_service,
                          invoice_service, match_service, recycle_service,
-                         reimburse_service, report_service)
+                         reimburse_service, rematch_task_service,
+                         report_service)
 from app.service.mapping_service import mapping_service
 from app.service.template_service import template_service
 from app.infra.logger import get_logger
@@ -356,6 +357,29 @@ async def list_batch_ids(batch_id: str):
 @api.post("/match/run")
 async def run_match(operator: str = Form("admin")):
     return _j(await run_in_threadpool(match_service.run_matching, operator))
+
+
+@api.post("/match/tasks")
+async def start_match_task(operator: str = Form("admin")):
+    """异步重算：立即返回 task_id，匹配在后台线程执行。"""
+    task_id, message = rematch_task_service.start(operator)
+    if not task_id:
+        return {"ok": False, "message": message}
+    return _j({"task_id": task_id})
+
+
+@api.get("/match/tasks/current")
+async def current_match_task():
+    """当前/最近一次任务快照（刷新页面后恢复进度条用）。"""
+    return _j(rematch_task_service.get_current())
+
+
+@api.get("/match/tasks/{task_id}")
+async def match_task_status(task_id: str):
+    task = rematch_task_service.get_task(task_id)
+    if task is None:
+        return {"ok": False, "message": "任务不存在或已过期"}
+    return _j(task)
 
 
 @api.post("/match/{match_id}/confirm")

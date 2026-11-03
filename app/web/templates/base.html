@@ -167,7 +167,7 @@ pre{background:#0f172a;color:#e2e8f0;padding:14px;border-radius:8px;font-size:12
 .tabs .tab{padding:10px 18px;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-2px;color:var(--muted);}
 .tabs .tab.active{color:var(--primary);border-color:var(--primary);font-weight:600;}
 .tabpane{display:none;}.tabpane.active{display:block;}
-.toast{position:fixed;top:70px;right:24px;background:#111827;color:#fff;padding:10px 18px;border-radius:8px;z-index:99;display:none;max-width:420px;font-size:13px;}
+.toast{position:fixed;top:70px;right:24px;background:#111827;color:#fff;padding:10px 18px;border-radius:8px;z-index:1100;display:none;max-width:420px;font-size:13px;}
 /* 高危操作撤销提示：右下角常驻，带倒计时与撤销按钮 */
 .undo-toast{position:fixed;right:24px;bottom:24px;z-index:120;display:none;align-items:center;gap:14px;
   background:#111827;color:#fff;padding:12px 16px;border-radius:10px;font-size:13px;
@@ -212,6 +212,29 @@ tr.clickable:hover td{background:#eff6ff;}
 /* focus 定位高亮：黄色闪烁 3 次后自动恢复（animation 结束即回默认背景） */
 @keyframes focusFlash{0%,100%{background:#fef9c3;}50%{background:#fde047;}}
 tr.row-focus td{animation:focusFlash .7s ease-in-out 3;}
+/* 全局重算进度悬浮卡：任务运行期间跨页面常驻，不阻塞其他操作 */
+.recalc-card{display:none;position:fixed;top:70px;right:24px;z-index:998;width:264px;
+  background:#fff;border:1px solid var(--border);border-radius:10px;padding:12px 14px;
+  box-shadow:0 8px 24px rgba(15,23,42,.12);}
+.recalc-card.on{display:block;}
+.recalc-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;}
+.recalc-title{font-size:13px;font-weight:600;color:var(--text);}
+.recalc-pct{font-size:13px;font-weight:700;color:var(--primary);font-variant-numeric:tabular-nums;}
+.recalc-track{height:6px;background:#e5e7eb;border-radius:4px;overflow:hidden;}
+.recalc-bar{height:100%;width:0;background:var(--primary);border-radius:4px;transition:width .3s;}
+.recalc-detail{margin-top:8px;font-size:12px;color:var(--muted);line-height:1.5;}
+/* 重算结果弹窗：独立于页面 modal，避免页面自身弹窗内容覆盖 */
+.recalc-modal-bg{display:none;position:fixed;inset:0;background:rgba(15,23,42,.45);
+  z-index:1200;align-items:center;justify-content:center;}
+.recalc-modal-bg.on{display:flex;}
+.recalc-modal{width:520px;max-width:92vw;background:#fff;border-radius:12px;
+  padding:22px 24px;box-shadow:0 12px 40px rgba(0,0,0,.2);}
+.recalc-modal-title{font-size:16px;font-weight:700;color:var(--text);margin-bottom:12px;}
+.recalc-modal-body{font-size:13px;color:var(--text-2);line-height:1.8;}
+.recalc-modal-body b{color:var(--text);}
+.recalc-warn{display:inline-block;margin-top:6px;padding:8px 12px;border-radius:8px;
+  background:#fffbeb;color:#92400e;border:1px solid #fde68a;}
+.recalc-modal-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:20px;}
 </style>
 </head>
 <body>
@@ -228,6 +251,24 @@ tr.row-focus td{animation:focusFlash .7s ease-in-out 3;}
 <div class="modal-bg" id="modalBg" onclick="closeModal()"></div>
 <div class="modal" id="modal">{% block modal %}{% endblock %}</div>
 <div class="toast" id="toast"></div>
+<div class="recalc-card" id="recalcCard" aria-live="polite">
+  <div class="recalc-head">
+    <span class="recalc-title">正在重算…</span>
+    <span class="recalc-pct" id="recalcPct">0%</span>
+  </div>
+  <div class="recalc-track"><div class="recalc-bar" id="recalcBar"></div></div>
+  <div class="recalc-detail" id="recalcDetail">正在准备数据…</div>
+</div>
+<div class="recalc-modal-bg" id="recalcModalBg">
+  <div class="recalc-modal">
+    <div class="recalc-modal-title" id="recalcModalTitle">重算完成</div>
+    <div class="recalc-modal-body" id="recalcModalBody"></div>
+    <div class="recalc-modal-actions">
+      <button class="btn btn-outline" type="button" onclick="RecalcTask.closeResult()">知道了</button>
+      <button class="btn" type="button" id="recalcGotoBtn" onclick="RecalcTask.gotoReport()">前往差异报告查看</button>
+    </div>
+  </div>
+</div>
 <div class="undo-toast" id="undoToast">
   <span class="undo-msg" id="undoMsg"></span>
   <button class="undo-btn" type="button" onclick="undoDeleteNow()">撤销</button>
@@ -928,6 +969,147 @@ function applyFocus(){
   });
 }
 document.addEventListener('DOMContentLoaded',applyFocus);
+
+// ---- 全局异步重算任务：后台执行 + 2s 轮询 + 刷新恢复 ----
+const RecalcTask = {
+  ACK_PREFIX: 'recalc_ack:',
+  timer: null,
+  taskId: null,
+  _pendingAck: null,
+
+  init(){
+    window.addEventListener('pagehide', () => this.stopPolling());
+    if(document.readyState === 'loading'){
+      document.addEventListener('DOMContentLoaded', () => this.resume());
+    }else{
+      this.resume();
+    }
+  },
+
+  // 发起重算：后端立即返回 task_id，匹配在后台线程执行
+  async start(btn){
+    try{
+      const r = await fetch('/api/match/tasks', {method:'POST'});
+      const j = await r.json();
+      const d = (j && j.data) || {};
+      if(j.ok === false || d.ok === false || !d.task_id){
+        toast(d.message || j.message || '已有重算任务正在进行，请稍候', false);
+        return;
+      }
+      this.taskId = d.task_id;
+      this.render({percent:0, processed:0, total:0, phase:'准备数据'});
+      this.showCard();
+      this.startPolling();
+      toast('重算任务已启动，可切换页面继续查看进度');
+    }catch(e){
+      toast('启动重算失败，请稍后重试', false);
+    }
+  },
+
+  // 刷新/切换页面后检查是否有正在运行的任务，有则无缝恢复进度条
+  async resume(){
+    try{
+      const r = await fetch('/api/match/tasks/current', {cache:'no-store'});
+      const j = await r.json();
+      const d = j.data || j;
+      if(!d || !d.status || d.status === 'idle') return;
+      this.taskId = d.task_id;
+      if(d.status === 'running'){
+        this.render(d);
+        this.showCard();
+        this.startPolling();
+      }else if(!this.acked(d.task_id)){
+        if(d.status === 'completed') this.showResult(d);
+        else if(d.status === 'failed') this.showFailed(d);
+      }
+    }catch(e){}
+  },
+
+  startPolling(){
+    this.stopPolling();
+    this.timer = setInterval(() => this.poll(), 2000);
+  },
+
+  stopPolling(){
+    if(this.timer){ clearInterval(this.timer); this.timer = null; }
+  },
+
+  async poll(){
+    if(!this.taskId){ this.stopPolling(); return; }
+    try{
+      const r = await fetch('/api/match/tasks/' + encodeURIComponent(this.taskId), {cache:'no-store'});
+      const j = await r.json();
+      const d = j.data || j;
+      if(j.ok === false || !d || !d.status){
+        this.stopPolling(); this.hideCard(); this.taskId = null;
+        return;
+      }
+      if(d.status === 'running'){ this.render(d); return; }
+      this.stopPolling();
+      this.hideCard();
+      if(d.status === 'completed') this.showResult(d);
+      else if(d.status === 'failed') this.showFailed(d);
+    }catch(e){ /* 网络抖动：保留定时器继续轮询 */ }
+  },
+
+  showCard(){ document.getElementById('recalcCard').classList.add('on'); },
+  hideCard(){ document.getElementById('recalcCard').classList.remove('on'); },
+
+  render(d){
+    const pct = Math.max(0, Math.min(100, Number(d.percent) || 0));
+    document.getElementById('recalcBar').style.width = pct + '%';
+    document.getElementById('recalcPct').textContent = pct + '%';
+    const phase = d.phase || '正在重算';
+    document.getElementById('recalcDetail').textContent =
+      d.total ? (phase + ' · ' + (d.processed || 0) + '/' + d.total + ' 条') : phase;
+  },
+
+  acked(id){
+    try{ return localStorage.getItem(this.ACK_PREFIX + id) === '1'; }catch(e){ return false; }
+  },
+
+  ack(id){
+    try{ localStorage.setItem(this.ACK_PREFIX + id, '1'); }catch(e){}
+  },
+
+  showResult(d){
+    const result = d.result || {};
+    const records = result.records != null ? result.records : (d.records || 0);
+    const stale = result.stale_count != null ? result.stale_count : (d.stale_count || 0);
+    let body = '本次共处理 <b>' + records + '</b> 条数据。';
+    if(stale > 0){
+      body += '<br><span class="recalc-warn">⚠️ 发现 <b>' + stale +
+        '</b> 条历史发票（已超期 365 天）未能匹配，请核实是否需扩大时间范围或将其作废。</span>';
+    }
+    this._openModal('✅ 重算完成！', body, false, d.task_id);
+  },
+
+  showFailed(d){
+    this._openModal('重算任务意外中断',
+      '重算任务意外中断，请检查数据完整性后重试。', true, d.task_id);
+  },
+
+  _openModal(title, bodyHtml, failed, taskId){
+    document.getElementById('recalcModalTitle').textContent = title;
+    document.getElementById('recalcModalBody').innerHTML = bodyHtml;
+    document.getElementById('recalcGotoBtn').style.display = failed ? 'none' : 'inline-flex';
+    document.getElementById('recalcModalBg').classList.add('on');
+    this._pendingAck = taskId;
+  },
+
+  closeResult(){
+    if(this._pendingAck) this.ack(this._pendingAck);
+    this._pendingAck = null;
+    document.getElementById('recalcModalBg').classList.remove('on');
+  },
+
+  gotoReport(){
+    if(this._pendingAck) this.ack(this._pendingAck);
+    this._pendingAck = null;
+    location.href = '/report';
+  }
+};
+RecalcTask.init();
 </script>
 <!-- ECharts（环形图等） -->
 <script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>

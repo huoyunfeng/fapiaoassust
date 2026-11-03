@@ -697,6 +697,7 @@ def list_reimburses(batch_id: str = None, keyword: str = None,
         rows = reimburse_repo.list(conn, batch_id=batch_id, keyword=keyword,
                                    since=since, date_from=date_from, date_to=date_to)
         active_ids = match_repo.active_reimburse_ids(conn)
+        manual_ids = match_repo.manual_reimburse_ids(conn, [r["id"] for r in rows])
         invoices = match_repo.matched_invoice_ids(conn, [r["id"] for r in rows])
         all_ids = sorted({iid for ids in invoices.values() for iid in ids})
         decisions = invoice_service.resolve_categories(conn, all_ids)
@@ -708,30 +709,41 @@ def list_reimburses(batch_id: str = None, keyword: str = None,
         _attach_category(
             r, invoices.get(r["id"]) or [], decisions,
             (own_map.get(r["id"]) or {}).get("category") or "",
-            conflicts.get(r["id"]), dict_names, r["matched"])
+            conflicts.get(r["id"]), dict_names, r["matched"],
+            r["id"] in manual_ids)
         _attach_dup(r)
     return rows
 
 
 def _attach_category(row: dict, invoice_ids: List[int], decisions: dict,
                      manual_category: str, conflict: Optional[dict],
-                     dict_names: List[str], matched: bool) -> None:
+                     dict_names: List[str], matched: bool,
+                     manual_match: bool = False) -> None:
     """报销单分类载荷：自身分类 + 发票侧分类 + 冲突标记。
 
     报销单分类是独立存储的（reimburse_category），未匹配时修改它不会触碰发票；
     已匹配时页面据此提示「仅改报销单 / 同步更新关联发票」。
+
+    主动（人工）匹配：发票侧已确认分类即视为双方已确认，报销单无需再次确认。
     """
     own_raw = (manual_category or "").strip() or (row.get("expense_type") or "").strip()
     own = normalize_category(own_raw, dict_names) if own_raw else ""
     inv_cats = sorted({(decisions.get(iid) or {}).get("category") or ""
                        for iid in invoice_ids} - {""})
+    inv_confirmed = sorted(
+        {(decisions.get(iid) or {}).get("category") or ""
+         for iid in invoice_ids
+         if (decisions.get(iid) or {}).get("status") == STATUS_CONFIRMED} - {""})
     status = STATUS_CONFIRMED if own else ""
     source = "manual" if (manual_category or "").strip() else ("reimburse" if own else "")
     suggest = ""
     hint = ""
     # 已匹配且报销单自身无分类：按模块五口径借用发票侧分类，只作建议并标【待确认】
     if not own and matched and inv_cats:
-        if len(inv_cats) == 1:
+        if manual_match and len(inv_confirmed) == 1:
+            # 主动匹配且发票侧已确认：直接沿用以视为双方确认，不再要求报销单确认
+            own, status, source = inv_confirmed[0], STATUS_CONFIRMED, "invoice"
+        elif len(inv_cats) == 1:
             own, status, source = inv_cats[0], STATUS_PENDING, "inferred"
             suggest = inv_cats[0]
             hint = "报销单未填分类，暂按关联发票分类显示，请确认"

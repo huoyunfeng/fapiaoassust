@@ -215,6 +215,16 @@ class TestMatcher:
             self._inv(invoice_date="2026-01-01"), self._reb(invoice_no=""))
         assert ps_out.score < ps_in.score
 
+    def test_registered_invoice_date_outside_single_day_window(self):
+        """报销单未填期间但登记了发票日期：按登记日期判定，不被报销日期单日窗口误杀。"""
+        ps = MatchEngine().score_pair(
+            self._inv(invoice_no="NO100", invoice_date="2026-06-13"),
+            ReimburseDTO(amount=Decimal("100.00"), invoice_no="NO999",
+                         reimburse_date="2026-06-01", invoice_date="2026-06-13"))
+        assert ps.raw_scores["date"] == 1.0
+        assert ps.suspected_no_error
+        assert MatchEngine().decide_status(ps) == "SUSPICIOUS"
+
     def test_many_to_one(self):
         eng = MatchEngine()
         combo = eng.find_many_to_one(

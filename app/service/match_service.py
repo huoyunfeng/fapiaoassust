@@ -97,6 +97,7 @@ def _reb_dto(row: dict) -> ReimburseDTO:
         period_end=row.get("period_end"),
         amount=to_decimal(row.get("amount")),
         invoice_no=row.get("invoice_no") or "",
+        invoice_date=row.get("invoice_date"),
         remark=_strip_note(row.get("remark")),
         extra_data=row.get("extra_data") or {},
     )
@@ -198,16 +199,28 @@ def _ambiguity_note(tied_ids: List[int], inv_rows: Dict[int, dict], reb_row: dic
 
 
 # ---------------------------------------------------------------- 执行匹配
-def run_matching(operator: str = None) -> dict:
+def run_matching(operator: str = None, progress=None) -> dict:
     """执行一轮匹配（全量重评估）。
 
     先清理上一轮非生效评估记录（生效匹配保留），再对
     NORMAL 且无生效匹配的发票 与 未占用的报销单 重新评分。
+
+    progress: 可选回调 progress(processed, total, phase)，用于后台任务的真实进度反馈；
+              总工作量 = 3 轮报销单遍历 + 1 轮发票收尾（均按条计数）。
     """
     operator = operator or settings.default_operator
     summary = {"cleared": 0, "auto_matched": 0, "pending": 0, "conflict": 0,
                "unmatched": 0, "many_to_one": 0, "evaluated_reimburses": 0,
                "category_conflict": 0}
+    processed = 0
+    total = 0
+
+    def tick(phase: str = "") -> None:
+        """遍历进度：每处理一条工作单元回调一次（节流由任务层负责）。"""
+        nonlocal processed
+        processed += 1
+        if progress:
+            progress(processed, total, phase)
 
     with db.tx() as conn:
         summary["cleared"] = match_repo.delete_non_active(conn)
@@ -223,6 +236,10 @@ def run_matching(operator: str = None) -> dict:
         occupied = match_repo.active_reimburse_ids(conn)
         reimburses = [r for r in reimburse_repo.list(conn, limit=100000)
                       if r["id"] not in occupied]
+
+        total = 3 * len(reimburses) + len(invoices)
+        if progress:
+            progress(0, max(total, 1), "准备数据")
 
         inv_rows = {r["id"]: r for r in invoices}
         inv_dtos = {r["id"]: _inv_dto(r) for r in invoices}
@@ -240,6 +257,7 @@ def run_matching(operator: str = None) -> dict:
         #   注：短路已跳过安全锁/日期/文本等所有后续打分；无号场景直接交第三轮
         # ================================================================
         for reb_row in reimburses:
+            tick("第一轮：唯一键匹配")
             summary["evaluated_reimburses"] += 1
             reb = _reb_dto(reb_row)
             reb_no = (reb.invoice_no or "").strip()
@@ -296,6 +314,7 @@ def run_matching(operator: str = None) -> dict:
         #   固定得分 0.90 -> SUSPICIOUS（软锁定，交人工确认）
         # ================================================================
         for reb_row in reimburses:
+            tick("第二轮：多对一组合")
             if reb_row["id"] in done:
                 continue
             reb = _reb_dto(reb_row)
@@ -356,6 +375,7 @@ def run_matching(operator: str = None) -> dict:
         #   仅号码冲突且不满足「疑似填错」（is_rejected）的候选才淘汰。
         # ================================================================
         for reb_row in reimburses:
+            tick("第三轮：模糊特征兜底")
             if reb_row["id"] in done:
                 continue
             reb = _reb_dto(reb_row)
@@ -438,11 +458,14 @@ def run_matching(operator: str = None) -> dict:
 
         # ---- 无任何候选的发票 -> UNMATCHED（命中阻断规则时写明原因）----
         for inv_id in sorted(available):
+            tick("收尾：无候选发票")
             if inv_id in has_candidate:
                 continue
             _persist_unmatched(conn, inv_id, inv_rows[inv_id], block_notes.get(inv_id, ""))
             summary["unmatched"] += 1
 
+    if progress:
+        progress(total, total, "匹配完成")
     logger.info("匹配完成: %s (by %s)", summary, operator)
     return summary
 

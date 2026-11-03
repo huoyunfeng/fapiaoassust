@@ -607,6 +607,26 @@ class MatchRepo:
         )
         return {r["reimburse_id"] for r in rows if r["reimburse_id"] is not None}
 
+    def manual_reimburse_ids(self, conn: sqlite3.Connection,
+                             reimburse_ids: List[int]) -> set:
+        """主动（人工）匹配占用的报销单 id：生效且 match_type='manual'。"""
+        if not reimburse_ids:
+            return set()
+        marks = ", ".join("?" for _ in reimburse_ids)
+        rows = conn.execute(
+            f"""SELECT DISTINCT reimburse_id FROM (
+                    SELECT reimburse_id FROM match_result
+                     WHERE {ACTIVE_SQL} AND match_type = 'manual'
+                       AND reimburse_id IN ({marks})
+                    UNION
+                    SELECT p.reimburse_id FROM match_pair p
+                        JOIN match_result m ON m.id = p.match_id
+                     WHERE m.{ACTIVE_SQL} AND m.match_type = 'manual'
+                       AND p.reimburse_id IN ({marks})
+                )""",
+            list(reimburse_ids) * 2)
+        return {r["reimburse_id"] for r in rows if r["reimburse_id"] is not None}
+
     def active_invoice_ids(self, conn: sqlite3.Connection) -> set:
         """所有已占用（生效匹配）的发票 id，含多对一汇总匹配（一次查询，替代逐票查询）。"""
         rows = conn.execute(

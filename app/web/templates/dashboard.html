@@ -42,14 +42,17 @@
 /* ---- 费用构成分析（左栏）---- */
 .expense-card{display:flex;flex-direction:column;}
 .expense-header-right{display:flex;align-items:center;gap:10px;}
+.panel-icon{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;
+  color:var(--primary);flex-shrink:0;}
+.panel-icon svg{width:16px;height:16px;}
 .expense-date-range{display:none;align-items:center;gap:6px;font-size:12px;color:var(--muted);}
 .expense-date-range.show{display:flex;}
 .expense-date-range input[type=date]{
   padding:4px 6px;border:1px solid var(--border);border-radius:4px;
   background:#fff;font-size:12px;outline:none;color:var(--text);font-family:inherit;}
 .expense-date-range input[type=date]:focus{border-color:#2563eb;}
-.expense-row-right{display:flex;align-items:center;gap:10px;flex-shrink:0;}
-.expense-row-pct{font-size:12px;color:#9ca3af;font-variant-numeric:tabular-nums;min-width:44px;text-align:right;}
+.expense-row-right{display:flex;align-items:center;gap:6px;flex-shrink:0;margin-left:8px;}
+.expense-row-pct{font-size:12px;color:#9ca3af;font-variant-numeric:tabular-nums;min-width:40px;text-align:right;}
 .expense-body{display:flex;gap:40px;min-height:320px;align-items:center;}
 .expense-chart-wrap{position:relative;width:300px;flex-shrink:0;}
 .expense-chart{width:100%;height:300px;}
@@ -61,11 +64,15 @@
 .expense-row{display:flex;flex-direction:column;gap:6px;cursor:pointer;padding:8px 10px;margin:0 -10px;border-radius:8px;transition:background .15s;}
 .expense-row:hover{background:#f1f5f9;}
 .expense-row-top{display:flex;align-items:center;justify-content:space-between;}
-.expense-row-title{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text);}
+.expense-row-title{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--text);min-width:0;flex:1;}
 .expense-dot{width:10px;height:10px;border-radius:50%;display:inline-block;flex-shrink:0;}
-.expense-row-amt{font-size:14px;font-weight:700;color:var(--text);font-variant-numeric:tabular-nums;}
-.expense-bar-bg{width:100%;height:6px;background:#f1f5f9;border-radius:3px;overflow:hidden;}
-.expense-bar-fill{height:100%;border-radius:3px;transition:width .4s ease;opacity:.85;}
+.expense-name{flex:1;min-width:0;max-width:190px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.expense-row-cnt{color:#9ca3af;font-size:11px;white-space:nowrap;flex-shrink:0;}
+.expense-row-amt{font-size:14px;font-weight:700;color:var(--text);font-variant-numeric:tabular-nums;
+  white-space:nowrap;text-align:right;flex-shrink:0;}
+.expense-row-amt.compact{font-size:12px;}
+.expense-bar-bg{width:100%;height:8px;background:#e8edf3;border-radius:4px;overflow:hidden;}
+.expense-bar-fill{height:100%;border-radius:4px;transition:width .4s ease;}
 .expense-empty{width:100%;text-align:center;color:var(--muted);padding:60px 0;font-size:14px;}
 .expense-pending-tip{display:none;align-items:center;gap:6px;background:#fef3c7;border:1px solid #fcd34d;
   color:#92400e;border-radius:8px;padding:7px 12px;font-size:12px;margin:-2px 0 14px;}
@@ -162,7 +169,7 @@
     <!-- ========== 左栏：费用构成分析 ========== -->
     <div class="db-panel expense-card" id="expenseCard">
       <div class="db-panel-head">
-        <h2>📈 费用构成分析</h2>
+        <h2><span class="panel-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 3v9h9"/></svg></span>费用构成分析</h2>
         <div class="expense-header-right">
           <select id="expenseFilter" onchange="onExpenseFilterChange()" style="padding:5px 10px;border:1px solid var(--border);border-radius:6px;background:#fff;font-size:12px;outline:none;">
             <option value="all">全部时间</option>
@@ -290,13 +297,15 @@ function dbSubTab(btn, paneId){
 
 /* ===== 费用构成分析（ECharts 环形图 + 排行榜） ===== */
 const EXPENSE_COLORS = ['#60a5fa', '#4ade80', '#fbbf24', '#f87171', '#a78bfa', '#059669'];
+const EXPENSE_TOP_N = 5;          // Top N 具体分类
+const EXPENSE_MAX_CATS = 6;       // 超过该数量才合并「其他费用」
 let expenseChart = null;
 let expenseRange = { from:'', to:'' };
+let expenseItems = [];            // 当前渲染的分类项（供图表点击取数）
 
 function expenseDrill(category){
-  if(!category) return;
   const u = new URL('/invoices', location.origin);
-  u.searchParams.set('category', category);
+  if(category) u.searchParams.set('category', category);
   if(expenseRange.from) u.searchParams.set('date_from', expenseRange.from);
   if(expenseRange.to)   u.searchParams.set('date_to',   expenseRange.to);
   location.href = u.toString();
@@ -367,17 +376,22 @@ async function reloadExpenseBreakdown(filterKey, customFrom, customTo){
     renderExpenseBreakdown({total_amount:0, total_count:0, items:[]}, range.label);
   }finally{ loading.classList.add('hidden'); }
 }
+function escHtml(s){
+  return String(s == null ? '' : s).replace(/[&<>"']/g, m => (
+    {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+}
 function renderExpenseBreakdown(data, fallbackLabel){
   const body = document.getElementById('expenseBody');
   const empty = document.getElementById('expenseEmpty');
   const chartEl = document.getElementById('expenseChart');
   const listEl = document.getElementById('expenseList');
-  const items = data.items || [];
+  let items = data.items || [];
   const total = data.total_amount || 0;
   const label = data.label_when_all || fallbackLabel;
   if(items.length === 0 || total <= 0){
     body.style.display = 'none'; empty.style.display = 'block';
     if(expenseChart){ expenseChart.dispose(); expenseChart = null; }
+    expenseItems = [];
     listEl.innerHTML = '';
     const tip0 = document.getElementById('expensePendingTip');
     if(tip0){ tip0.classList.remove('show'); tip0.innerHTML = ''; }
@@ -385,8 +399,28 @@ function renderExpenseBreakdown(data, fallbackLabel){
   }
   body.style.display = 'flex'; empty.style.display = 'none';
 
-  const rawAmts = items.map(it => it.amount);
-  const rawSum = rawAmts.reduce((a,b)=>a+b, 0);
+  // Top N 聚合：分类超过 6 种时，第 6 名及以后合并为「其他费用」作为第 6 个色块
+  if(items.length > EXPENSE_MAX_CATS){
+    const head = items.slice(0, EXPENSE_TOP_N);
+    const tail = items.slice(EXPENSE_TOP_N);
+    const other = tail.reduce((acc, it) => {
+      acc.amount += Number(it.amount) || 0;
+      acc.count += Number(it.count) || 0;
+      acc.pending_amount += Number(it.pending_amount) || 0;
+      acc.pending_count += Number(it.pending_count) || 0;
+      acc.conflict_amount += Number(it.conflict_amount) || 0;
+      acc.conflict_count += Number(it.conflict_count) || 0;
+      return acc;
+    }, { name:'其他费用', amount:0, count:0, pending_amount:0, pending_count:0,
+         conflict_amount:0, conflict_count:0, is_other:true, merged: tail.map(t => t.name) });
+    other.has_pending = other.pending_count > 0;
+    other.has_conflict = other.conflict_count > 0;
+    items = head.concat([other]);
+  }
+  expenseItems = items;
+
+  const rawAmts = items.map(it => Number(it.amount) || 0);
+  const rawSum = rawAmts.reduce((a,b)=>a+b, 0) || 1;
   const flooredPcts = rawAmts.map(a => Math.floor(a / rawSum * 1000) / 10);
   const flooredSum  = flooredPcts.reduce((a,b)=>a+b, 0);
   const diff = Math.round((100 - flooredSum) * 10) / 10;
@@ -396,27 +430,33 @@ function renderExpenseBreakdown(data, fallbackLabel){
   const isSingle = items.length === 1;
   const chartData = items.map((it, idx) => ({
     name: it.name, value: it.amount,
-    itemStyle: { color: EXPENSE_COLORS[idx % EXPENSE_COLORS.length], borderColor: EXPENSE_COLORS[idx % EXPENSE_COLORS.length], borderWidth: 0 }
+    itemStyle: { color: EXPENSE_COLORS[idx % EXPENSE_COLORS.length],
+                 borderColor: EXPENSE_COLORS[idx % EXPENSE_COLORS.length],
+                 // 单分类 360° 扇区用同色描边盖住首尾接缝
+                 borderWidth: isSingle ? 1 : 0 }
   }));
   const option = {
     tooltip: { trigger: 'item',
       formatter: p => {
         const it = items[p.dataIndex] || {};
-        let s = `${p.name}<br/>金额：${fmtMoney(p.value)}<br/>占比：${finalPcts[p.dataIndex]}%<br/>笔数：${it.count}`;
+        let s = `${escHtml(p.name)}<br/>金额：${fmtMoney(p.value)}<br/>占比：${finalPcts[p.dataIndex]}%<br/>笔数：${it.count}`;
+        if(it.is_other) s += `<br/><span style="color:#6b7280;">含：${escHtml((it.merged || []).join('、'))}</span>`;
         if(it.has_pending) s += `<br/><span style="color:#92400e;">含待确认：${fmtMoney(it.pending_amount)}（${it.pending_count} 笔）</span>`;
         return s;
       } },
     series: [{
       type: 'pie',
-      radius: isSingle ? ['45%', '78%'] : ['50%', '75%'],
+      // 单一分类时收小半径，避免巨型圆环；同时保持首尾同色无缝隙
+      radius: isSingle ? ['38%', '64%'] : ['50%', '75%'],
       center: ['50%', '50%'],
       avoidLabelOverlap: false,
       label: { show: true, position: 'center',
         formatter: () => `{title|${label}}\n{amount|${fmtMoney(total)}}`,
         rich: { title: { fontSize: 12, fill: '#9ca3af', fontWeight: 400 },
-               amount: { fontSize: 24, fill: '#1f2937', fontWeight: 700, padding: [6, 0, 0, 0] } },
+               amount: { fontSize: isSingle ? 20 : 24, fill: '#1f2937', fontWeight: 700, padding: [6, 0, 0, 0] } },
         lineHeight: 32 },
       labelLine: { show: false },
+      itemStyle: { shadowBlur: 10, shadowColor: 'rgba(0,0,0,0.05)' },
       data: chartData,
       emphasis: isSingle ? { disabled: true }
                          : { scale: true, scaleSize: 8, label: { show: false } },
@@ -426,7 +466,10 @@ function renderExpenseBreakdown(data, fallbackLabel){
     try{
       if(!expenseChart){
         expenseChart = echarts.init(chartEl);
-        expenseChart.on('click', p => { if(p && p.name) expenseDrill(p.name); });
+        expenseChart.on('click', p => {
+          const it = expenseItems[p.dataIndex];
+          if(it) expenseDrill(it.is_other ? '' : it.name);
+        });
         window.addEventListener('resize', ()=> expenseChart && expenseChart.resize());
       }
       expenseChart.setOption(option, true);
@@ -451,26 +494,42 @@ function renderExpenseBreakdown(data, fallbackLabel){
   listEl.innerHTML = items.map((it, idx) => {
     const color = EXPENSE_COLORS[idx % EXPENSE_COLORS.length];
     const pct = finalPcts[idx];
-    const barWidth = isSingle ? 80 : Math.min(pct, 100);
+    // 100% 必须铺满底槽（含单分类场景），其余按占比；修复原先单分类固定 80% 的留缝问题
+    const barWidth = pct >= 99.95 ? 100 : Math.max(0, Math.min(pct, 100));
     const pendingMark = it.has_pending
       ? '<span class="cat-pending-mark" title="含待确认推测数据">' + fmtMoney(it.pending_amount) + '</span>'
       : '';
+    const amtText = fmtMoney(it.amount);
+    const amtClass = amtText.length > 13 ? ' compact' : '';
+    const nameText = it.is_other ? '其他费用' : it.name;
+    const fullName = it.is_other
+      ? '其他费用（含：' + (it.merged || []).join('、') + '）'
+      : it.name;
+    const rowTitle = it.is_other
+      ? '点击查看该时间段全部发票明细（其他费用由 ' + (it.merged || []).length + ' 个分类合并）'
+      : '点击查看「' + it.name + '」发票明细';
     return `
-      <div class="expense-row" onclick="expenseDrill('${it.name}')" title="点击查看「${it.name}」发票明细">
+      <div class="expense-row" data-idx="${idx}" title="${escHtml(rowTitle)}">
         <div class="expense-row-top">
           <div class="expense-row-title">
             <span class="expense-dot" style="background:${color};opacity:.85;"></span>
-            <span>${it.name}</span>${pendingMark}
-            <span style="color:#9ca3af;font-size:11px;">· ${it.count} 笔</span>
+            <span class="expense-name" title="${escHtml(fullName)}">${escHtml(nameText)}</span>${pendingMark}
+            <span class="expense-row-cnt">· ${it.count} 笔</span>
           </div>
           <div class="expense-row-right">
             <span class="expense-row-pct">${pct}%</span>
-            <div class="expense-row-amt">${fmtMoney(it.amount)}</div>
+            <div class="expense-row-amt${amtClass}">${amtText}</div>
           </div>
         </div>
         <div class="expense-bar-bg"><div class="expense-bar-fill" style="width:${barWidth}%;background:${color};"></div></div>
       </div>`;
   }).join('');
+  listEl.querySelectorAll('.expense-row').forEach(el => {
+    el.addEventListener('click', () => {
+      const it = items[Number(el.dataset.idx)];
+      if(it) expenseDrill(it.is_other ? '' : it.name);
+    });
+  });
 }
 reloadExpenseBreakdown('all');
 </script>

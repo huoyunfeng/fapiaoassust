@@ -280,10 +280,13 @@ class MatchEngine:
             applicable["amount"] = False
 
         # ---------- 维度 3：日期 ----------
-        # 优先用报销单期间检查；报销单缺期间时降级用「报销日期 vs 发票日期 ±90 天」做近似检查
-        start, end = reb.period_range
+        # 三级优先：显式报销期间 > 报销单登记的发票日期 > 报销日期（±30/±90 天近似）。
+        # 注意：period_range 会把「无期间」的报销日期当成单日期间，导致登记发票日期
+        # 与 ±30 天容差分支永远走不到，这里改为直接读显式期间。
+        start, end = reb.period_start, reb.period_end
         start, end = (str(start)[:10] if start else None), (str(end)[:10] if end else None)
         inv_d = _parse_d(inv.invoice_date)
+        declared_d = _parse_d(getattr(reb, "invoice_date", None))
         reb_d = _parse_d(getattr(reb, "reimburse_date", None))
 
         if inv_d and (start or end):
@@ -300,8 +303,23 @@ class MatchEngine:
                 diff_fields.append(f"日期: 开票 {inv.invoice_date} 不在报销期间 [{start or ''} ~ {end or ''}]")
                 notes.append(f"日期不匹配（开票 {inv.invoice_date} 不在报销期间 [{start or ''} ~ {end or ''}]）")
 
+        elif inv_d and declared_d:
+            # 报销单已登记发票日期：同日满分，±7 天半分，更远判为不符
+            applicable["date"] = True
+            gap = abs((inv_d - declared_d).days)
+            if gap == 0: raw["date"] = 1.0
+            elif gap <= DATE_NEAR_DAYS: raw["date"] = 0.5
+            else: raw["date"] = 0.0
+            if raw["date"] < 1.0:
+                diff_fields.append(
+                    f"日期: 开票 {inv.invoice_date} vs 报销单登记发票日期 "
+                    f"{reb.invoice_date}（相差 {gap} 天）")
+                notes.append(
+                    f"开票日期 {inv.invoice_date} 与报销单登记的发票日期 "
+                    f"{reb.invoice_date} 相差 {gap} 天")
+
         elif inv_d and reb_d:
-            # 报销单缺期间，但有报销日期 → 近似检查（±90 天给 0.5 分，±30 天给 1.0 分）
+            # 报销单缺期间、也未登记发票日期，但有报销日期 → 近似检查（±90 天 0.5，±30 天 1.0）
             applicable["date"] = True
             gap = abs((inv_d - reb_d).days)
             if gap <= 30: raw["date"] = 1.0
@@ -375,7 +393,9 @@ class MatchEngine:
             missing.append("发票号")
         # 双方都没有日期信息才视为"日期缺失"；发票有开票日或报销有报销日期都算有参考
         inv_has_date = bool(inv.invoice_date)
-        reb_has_date = bool((reb.period_range[0] or reb.period_range[1] or getattr(reb, "reimburse_date", None)))
+        reb_has_date = bool(reb.period_start or reb.period_end
+                            or getattr(reb, "invoice_date", None)
+                            or getattr(reb, "reimburse_date", None))
         if not inv_has_date and not reb_has_date:
             missing.append("日期")
         capped, cap_reason = False, ""

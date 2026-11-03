@@ -7,9 +7,10 @@
 </style>
 <div class="page-head">
   <h1>匹配中心</h1>
-  <form class="inline" onsubmit="submitForm(event,'/api/match/run')">
-    <button class="btn">执行匹配（全量重评估）</button>
-  </form>
+  <div class="inline">
+    <button class="btn" type="button" onclick="RecalcTask.start(this)">执行匹配（全量重评估）</button>
+    <span class="muted">后台异步执行，可切换页面查看进度</span>
+  </div>
 </div>
 
 <div class="card">
