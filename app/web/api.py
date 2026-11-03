@@ -814,24 +814,83 @@ async def delete_rule(rule_id: int):
 # ---------------------------------------------------------------- 数据备份与恢复
 @api.get("/backup")
 async def download_backup():
-    """一键备份：数据库 + 全部发票附件打包为 zip 并触发浏览器下载。"""
-    zip_path = await run_in_threadpool(backup_service.create_backup)
+    """一键备份：数据库 + 全部发票附件 + 配置 + 近期日志打包为 zip。
+
+    返回 FileResponse，文件名带时间戳。前端在调用前可轮询 /backup/status
+    确认当前没有备份/恢复在进行；服务端也会自己加锁。
+    """
+    try:
+        info = await run_in_threadpool(backup_service.create_backup)
+    except backup_service.BackingUpError as e:
+        return JSONResponse(
+            status_code=409,
+            content={"ok": False, "message": str(e)},
+        )
+    zip_path = info["zip_path"]
+    logger.info("备份已生成: %s (inv=%d, reb=%d, att=%d, size=%s)",
+                zip_path.name, info["invoices"], info["reimburses"],
+                info["attachments"], info["size_human"])
     return FileResponse(
         zip_path,
         media_type="application/zip",
         filename=zip_path.name,
-        background=BackgroundTask(zip_path.unlink, True),  # 发送完成后清理临时 zip
     )
+
+
+@api.get("/backup/status")
+async def backup_status():
+    """备份/恢复状态查询（前端轮询 + 写路径拦截）。"""
+    return _j({"backing_up": backup_service.is_backing_up()})
 
 
 @api.post("/backup/restore")
 async def restore_backup(file: UploadFile = File(...)):
-    """恢复数据：上传 zip 覆盖数据库与附件（旧数据自动 .bak 保底，失败回滚）。"""
+    """恢复数据：上传 zip 覆盖数据库与附件（旧数据带时间戳保底，失败自动回滚）。"""
     content = await file.read()
     if not content:
         return _j({"ok": False, "message": "未收到备份文件，请重新选择"})
     if not (file.filename or "").lower().endswith(".zip"):
         return _j({"ok": False, "message": "仅支持 .zip 格式的备份文件"})
-    # 覆盖解压为阻塞 IO，放线程池执行
-    result = await run_in_threadpool(backup_service.restore_backup, content)
+    try:
+        result = await run_in_threadpool(backup_service.restore_backup, content)
+    except backup_service.BackingUpError as e:
+        return JSONResponse(
+            status_code=409,
+            content={"ok": False, "message": str(e)},
+        )
     return _j(result)
+
+
+# ---------------------------------------------------------------- 存储容量与附件清理
+@api.get("/storage")
+async def storage_info():
+    """存储容量：整体占用 + 回收站附件体积 + 孤儿文件体积（清理弹窗预扫描用）。"""
+    try:
+        info = await run_in_threadpool(backup_service.storage_usage)
+        return _j({"ok": True, **info})
+    except Exception as e:
+        logger.exception("storage_info 失败")
+        return _j({"ok": False, "message": str(e)})
+
+
+@api.post("/storage/clean")
+async def storage_clean(body: dict):
+    """清理附件。body 例：{"recycle": true, "orphan": true, "detach_original": false}。"""
+    try:
+        if backup_service.is_backing_up():
+            return JSONResponse(
+                status_code=409,
+                content={"ok": False, "message": "系统正在生成备份/恢复，请稍候再清理"},
+            )
+        recycle = bool(body.get("recycle"))
+        orphan = bool(body.get("orphan"))
+        detach = bool(body.get("detach_original"))
+        if not (recycle or orphan or detach):
+            return _j({"ok": False, "message": "请至少选择一种清理策略"})
+        result = await run_in_threadpool(
+            backup_service.cleanup_attachments, recycle, orphan, detach
+        )
+        return _j(result)
+    except Exception as e:
+        logger.exception("storage_clean 失败")
+        return _j({"ok": False, "message": str(e)})

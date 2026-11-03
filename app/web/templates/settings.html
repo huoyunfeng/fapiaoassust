@@ -338,30 +338,42 @@
       <!-- ---- Tab: 数据备份 ---- -->
       <div class="tabpane active" id="sysBackup">
         {% if storage %}
-        <div class="card{% if storage.warn %} card-warn{% endif %}">
+        <div class="card{% if storage.warn5 %} card-warn{% elif storage.warn4 %} card-warn{% endif %}" id="storageCard">
           <h2>附件存储容量</h2>
-          <p class="muted mb">发票原始附件目录 uploads/ 的物理占用。超过 {{ storage.limit_human }} 时建议先备份、再清理历史附件。</p>
+          <p class="muted mb">发票原始附件目录 uploads/ 的物理占用。超过 4GB 建议清理历史附件；超过 5GB 可能影响系统运行。</p>
           <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
             <span style="font-size:18px;font-weight:700;">{{ storage.human }}</span>
             <span class="muted">/ {{ storage.limit_human }} · 共 {{ storage.files }} 个附件</span>
-            {% if storage.warn %}<span class="badge badge-yellow">容量已超过 5GB</span>{% endif %}
+            {% if storage.warn5 %}<span class="badge badge-red">空间严重不足，超过 5GB</span>
+            {% elif storage.warn4 %}<span class="badge badge-yellow">容量已超过 4GB</span>
+            {% endif %}
+            <span style="margin-left:auto;">
+              <button class="btn btn-outline btn-sm" onclick="openCleanModal()">去清理</button>
+            </span>
           </div>
           <div class="progress">
-            <div class="progress-fill{% if storage.warn %} warn{% endif %}" style="width:{{ [storage.percent, 100]|min }}%;"></div>
+            <div class="progress-fill{% if storage.warn5 %} critical{% elif storage.warn4 %} warn{% endif %}"
+                 style="width:{{ [storage.percent, 100]|min }}%;"></div>
           </div>
-          {% if storage.warn %}
-          <p class="warn-text">附件已超过 5GB：请先执行【一键备份数据】，再在发票管理中清理不再需要的附件，避免磁盘空间不足影响系统运行。</p>
+          {% if storage.warn5 %}
+          <p class="warn-text">空间严重不足，请立即清理：系统运行日志、附件缓存可能因磁盘满而丢失。建议先【一键备份】再清理。</p>
+          {% elif storage.warn4 %}
+          <p class="warn-text">容量接近上限：超过 4GB 建议清理。可清理回收站附件（最安全）、孤儿文件或仅清理老旧发票的原件。</p>
           {% endif %}
+          <p class="muted" style="font-size:12px;margin-top:8px;">
+            可清理：回收站附件 <b id="cleanRecycle">{{ storage.recycle.human }}</b>（{{ storage.recycle.files }} 个）
+            · 孤儿文件 <b id="cleanOrphan">{{ storage.orphan.human }}</b>（{{ storage.orphan.files }} 个）
+          </p>
         </div>
         {% endif %}
         <div class="card">
           <h2>数据备份与恢复</h2>
-          <p class="muted mb">本系统为本地化软件，全部数据（数据库 + 原始发票附件）仅保存在本机。重装系统或更换电脑前，请务必先执行【一键备份数据】。</p>
+          <p class="muted mb">本系统全部数据（包含发票、报销单、审计日志、系统配置及原始附件）均保存在本机。一键备份将打包上述所有内容；恢复会覆盖当前系统全部数据。</p>
           <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
             <button class="btn btn-green" onclick="downloadBackup()">一键备份数据</button>
             <button class="btn btn-danger" onclick="askRestore()">恢复数据</button>
             <input type="file" id="restoreFile" accept=".zip" style="display:none" onchange="doRestore(this)">
-            <span class="muted">备份内容：fapiao.db 数据库 + uploads/ 全部发票附件，打包为带时间戳的 zip</span>
+            <span class="muted">备份内容：fapiao.db 数据库 + uploads/ 全部发票附件 + config/.env + 近 30 天日志</span>
           </div>
         </div>
       </div>
@@ -1194,13 +1206,27 @@ async function mergeCat(id, name){
   else toast((d && d.message) || '合并失败', false);
 }
 
-function downloadBackup(){ toast('正在生成备份压缩包，请稍候…'); window.location.href = '/api/backup'; }
+async function downloadBackup(){
+  // 锁状态检查（模块二·1：防并发断档）
+  try{
+    const s = await fetch('/api/backup/status').then(r=>r.json());
+    if(s.backing_up){ toast('系统正在生成备份，请稍候再操作', false); return; }
+  }catch(e){ /* 网络异常不阻断，后端自己会加锁 */ }
+  toast('正在生成备份压缩包，请稍候…');
+  window.location.href = '/api/backup';
+}
 
 async function askRestore(){
-  const ok = await confirmDlg('警告：恢复数据将彻底覆盖您当前的所有发票和报销记录，且不可逆！\n确定要继续吗？');
+  // 模块四·1：红字警告（两行）
+  const ok = await confirmDlg(
+    '⚠️ 警告：恢复数据将彻底覆盖您当前系统的所有发票、报销单和日志，操作不可逆！\n\n'
+    + '系统会自动保留您当前的数据为临时备份（fapiao_old_时间戳 + uploads_old_时间戳），\n'
+    + '但恢复成功后请尽快删除，以免磁盘空间不足。\n\n确定要继续吗？'
+  );
   if(!ok) return;
   document.getElementById('restoreFile').click();
 }
+
 async function doRestore(input){
   const f = input.files[0];
   input.value = '';
@@ -1212,9 +1238,47 @@ async function doRestore(input){
     const r = await fetch('/api/backup/restore', {method:'POST', body:fd});
     const j = await r.json(); const data = j.data || j;
     busyDone();
-    if(data.ok){ await confirmDlg((data.message || '数据恢复成功') + '\n点击确认后页面将自动刷新。'); location.reload(); }
-    else toast(data.message || '恢复失败', false);
+    if(data.ok){
+      // 模块四·2：恢复成功后强制重启弹窗（不可被轻易关闭）
+      _restoreSuccessModal(data);
+    }else{
+      toast(data.message || '恢复失败', false);
+    }
   }catch(e){ busyDone(); toast('恢复请求失败：' + e, false); }
+}
+
+function _restoreSuccessModal(data){
+  // 移除任何已存在的同名弹窗（防堆叠）
+  document.getElementById('restoreSuccessModal')?.remove();
+  const mask = document.createElement('div');
+  mask.id = 'restoreSuccessModal';
+  mask.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:2000;'
+                      + 'display:flex;align-items:center;justify-content:center;';
+  // 禁止 Esc / 点击遮罩关闭（模块四·2：强制重启）
+  mask.addEventListener('click', (e)=>{ if(e.target===mask){ toast('请点击「立即刷新并重启系统」', false); } });
+  const modal = document.createElement('div');
+  modal.style.cssText = 'background:#fff;border-radius:12px;padding:28px 32px;'
+                      + 'max-width:460px;box-shadow:0 16px 48px rgba(0,0,0,.2);';
+  modal.innerHTML = `
+    <h3 style="margin:0 0 12px;color:#16a34a;">✅ 数据恢复成功</h3>
+    <div style="color:#606266;font-size:14px;line-height:1.8;">
+      <div>已恢复：<b>${data.invoices ?? '—'}</b> 张发票 / <b>${data.reimburses ?? '—'}</b> 条报销单
+             ${data.attachments != null ? '/ <b>'+data.attachments+'</b> 个附件' : ''}</div>
+      <div style="color:#909399;margin-top:8px;">
+        原数据已保留为 <code>${data.backup_db ?? 'fapiao_old_*.db'}</code> 与
+        <code>${data.backup_uploads ?? 'uploads_old_*'}</code>，
+        请确认无误后手动删除以释放磁盘空间。
+      </div>
+      <div style="margin-top:12px;color:#fa8c16;">
+        为确保系统稳定，<b>建议立即刷新页面</b>以加载最新数据。
+      </div>
+    </div>
+    <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:20px;">
+      <button class="btn btn-danger" onclick="location.reload()">立即刷新并重启系统</button>
+    </div>
+  `;
+  mask.appendChild(modal);
+  document.body.appendChild(mask);
 }
 
 /* ===== 回收站与数据管理（模块四） ===== */
@@ -1327,6 +1391,134 @@ async function sgRecycleSaveDays(sel){
   toast(d.message || (d.ok !== false ? '已保存' : '保存失败'), d.ok !== false);
   if(d.ok === false) sgRecycleLoad();
   else sgRecycleDaysHint(days);
+}
+
+// ===== 附件清理弹窗 =====
+async function openCleanModal(){
+  const r = await fetch('/api/storage').then(x=>x.json());
+  const info = r.data || r;
+  if(!info.ok && !info.recycle){ toast('读取容量信息失败', false); return; }
+  window._cleanInfo = info;
+
+  // 移除旧弹窗
+  document.getElementById('cleanModal')?.remove();
+  const mask = document.createElement('div');
+  mask.id = 'cleanModal';
+  mask.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:2000;'
+                      + 'display:flex;align-items:center;justify-content:center;';
+  mask.addEventListener('click', e=>{ if(e.target===mask) mask.remove(); });
+  const modal = document.createElement('div');
+  modal.style.cssText = 'background:#fff;border-radius:12px;padding:24px 28px;min-width:560px;'
+                      + 'box-shadow:0 16px 48px rgba(0,0,0,.18);max-height:80vh;overflow:auto;';
+  modal.innerHTML = `
+    <h3 style="margin:0 0 14px;">清理附件释放空间</h3>
+    <p class="muted" style="font-size:13px;margin:0 0 16px;">整体占用 ${info.human} / ${info.limit_human}。
+    勾选要清理的策略，点击【开始清理】立即执行。</p>
+
+    <div class="clean-item" style="margin-bottom:12px;padding:12px 14px;border:1px solid var(--border);
+         border-radius:8px;cursor:pointer;" onclick="this.querySelector('input').click();this.classList.toggle('on')">
+      <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;">
+        <input type="checkbox" class="clean-opt" data-key="orphan" style="margin-top:2px;">
+        <div style="flex:1;">
+          <div style="font-weight:600;">清理孤儿文件（系统底层垃圾）
+            <span class="badge badge-gray" style="margin-left:6px;">${info.orphan.human} · ${info.orphan.files} 个</span>
+          </div>
+          <div class="muted" style="font-size:12px;margin-top:4px;">因系统意外中断或数据损坏，残留在文件夹中但数据库无记录的冗余文件。</div>
+        </div>
+      </label>
+    </div>
+
+    <div class="clean-item" style="margin-bottom:12px;padding:12px 14px;border:1px solid var(--border);
+         border-radius:8px;cursor:pointer;" onclick="this.querySelector('input').click();this.classList.toggle('on')">
+      <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;">
+        <input type="checkbox" class="clean-opt" data-key="recycle" style="margin-top:2px;">
+        <div style="flex:1;">
+          <div style="font-weight:600;color:#d48806;">⚠️ 清理回收站附件（最安全，推荐）
+            <span class="badge badge-gray" style="margin-left:6px;">${info.recycle.human} · ${info.recycle.files} 个</span>
+          </div>
+          <div class="muted" style="font-size:12px;margin-top:4px;">回收站中已被删除的发票，其原始 PDF/图片仍占用空间。彻底清理后不可恢复。</div>
+        </div>
+      </label>
+    </div>
+
+    <div class="clean-item" style="margin-bottom:12px;padding:12px 14px;border:1px solid var(--border);
+         border-radius:8px;cursor:pointer;" onclick="this.querySelector('input').click();this.classList.toggle('on')">
+      <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;">
+        <input type="checkbox" class="clean-opt" data-key="detach_original" style="margin-top:2px;">
+        <div style="flex:1;">
+          <div style="font-weight:600;color:#d48806;">⚠️ 仅清理原件（保留台账数据）</div>
+          <div class="muted" style="font-size:12px;margin-top:4px;">保留发票的所有金额、税号等结构化数据，仅删除本地 PDF/图片。适合针对年代久远的发票。
+          清理后数据库标记该发票"原件已按需清理"。</div>
+        </div>
+      </label>
+    </div>
+
+    <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:20px;">
+      <button class="btn btn-outline" onclick="document.getElementById('cleanModal').remove()">取消</button>
+      <button class="btn btn-green" id="cleanDoBtn" onclick="doClean()">开始清理</button>
+    </div>
+  `;
+  // 点击 checkbox 时同步 item 高亮
+  modal.querySelectorAll('input.clean-opt').forEach(cb=>{
+    cb.addEventListener('change', ()=>{
+      const item = cb.closest('.clean-item');
+      if(cb.checked) item.classList.add('on'); else item.classList.remove('on');
+    });
+  });
+  mask.appendChild(modal);
+  document.body.appendChild(mask);
+}
+
+async function doClean(){
+  const selected = {};
+  document.querySelectorAll('input.clean-opt').forEach(cb=>{ selected[cb.dataset.key] = cb.checked; });
+  if(!selected.recycle && !selected.orphan && !selected.detach_original){
+    toast('请至少勾选一项', false); return;
+  }
+  const ok = await confirmDlg(
+    `⚠️ 确认执行清理？\n\n` +
+    `${selected.recycle ? '· 回收站附件（物理删除，不可恢复）\n' : ''}` +
+    `${selected.orphan ? '· 孤儿文件（物理删除）\n' : ''}` +
+    `${selected.detach_original ? '· 仅清理原件（台账保留，原件标记已清理）\n' : ''}` +
+    `\n此操作不可撤销，请确认已先备份数据。`
+  );
+  if(!ok) return;
+
+  const btn = document.getElementById('cleanDoBtn');
+  btn.disabled = true; btn.textContent = '清理中…';
+  try{
+    const r = await fetch('/api/storage/clean', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(selected)
+    });
+    const d = await r.json(); const data = d.data || d;
+    document.getElementById('cleanModal').remove();
+    if(data.ok){
+      toast(`✅ ${data.message}`);
+      refreshStorageCard();
+    }else{
+      toast(data.message || '清理失败', false);
+    }
+  }catch(e){ toast('清理请求失败：'+e, false); }
+  finally{ btn.disabled=false; btn.textContent='开始清理'; }
+}
+
+async function refreshStorageCard(){
+  const r = await fetch('/api/storage').then(x=>x.json());
+  const d = r.data || r;
+  if(!d.human) return;
+  // 轻量刷新：更新卡片内关键元素（不清空 DOM 结构）
+  const card = document.getElementById('storageCard');
+  if(card){
+    card.querySelector('.progress-fill').style.width = Math.min(d.percent, 100) + '%';
+    const pct = Math.min(d.percent, 100);
+    card.classList.remove('card-warn');
+    card.querySelector('.progress-fill').classList.remove('warn','critical');
+    if(d.warn5){ card.classList.add('card-warn'); card.querySelector('.progress-fill').classList.add('critical'); }
+    else if(d.warn4){ card.classList.add('card-warn'); card.querySelector('.progress-fill').classList.add('warn'); }
+  }
+  const rEl = document.getElementById('cleanRecycle'); if(rEl) rEl.textContent = d.recycle.human;
+  const oEl = document.getElementById('cleanOrphan'); if(oEl) oEl.textContent = d.orphan.human;
 }
 </script>
 {% endblock %}

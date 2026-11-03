@@ -2286,11 +2286,16 @@ class TestStorageUsage:
         (up / "a.pdf").write_bytes(b"x" * 100)
         (up / "202601" / "b.ofd").write_bytes(b"y" * 200)
         u = backup_service.storage_usage()
-        assert u["files"] == 2 and u["bytes"] == 300 and not u["warn"]
+        assert u["files"] == 2 and u["bytes"] == 300 and not u["warn5"] and not u["warn4"]
+        # 同时应有 recycle / orphan 预扫描字段
+        assert "recycle" in u and "orphan" in u
 
+        # 把 5GB / 4GB 阈值都降到 250 触发红色严重警告
+        monkeypatch.setattr(backup_service, "STORAGE_WARN5_BYTES", 250)
+        monkeypatch.setattr(backup_service, "STORAGE_WARN4_BYTES", 200)
         monkeypatch.setattr(backup_service, "STORAGE_LIMIT_BYTES", 250)
         u2 = backup_service.storage_usage()
-        assert u2["warn"] is True and u2["percent"] == 120.0
+        assert u2["warn5"] is True and u2["warn4"] is True and u2["percent"] == 120.0
 
     def test_storage_usage_empty_dir(self, env):
         from app.service import backup_service

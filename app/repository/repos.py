@@ -323,7 +323,7 @@ class InvoiceRepo:
 class ReimburseRepo:
     INSERT_FIELDS = [
         "batch_id", "template_id", "reimburse_no", "submitter", "reimburse_date",
-        "period_start", "period_end", "expense_type", "amount", "invoice_no",
+        "biz_date", "period_start", "period_end", "expense_type", "amount", "invoice_no",
         "invoice_date", "remark", "extra_data", "source_row", "parent_id",
         "split_type", "raw_row", "row_index", "dup_flag", "dup_source",
     ]
@@ -345,8 +345,16 @@ class ReimburseRepo:
     def list(self, conn: sqlite3.Connection, batch_id: str = None,
              keyword: str = None, limit: int = 500, offset: int = 0,
              since: str = None, date_from: str = None, date_to: str = None) -> List[dict]:
-        """报销单列表。since: 冷热分离下界（按报销日期，无日期行保留）；
-        date_from/date_to: 严格 BETWEEN（无日期行不计入）。两者同时传入时 date_from 优先。"""
+        """报销单列表。时间过滤口径：biz_date → reimburse_date → created_at 逐级回退。
+
+        报销单分三类：
+          - 有 biz_date 的（模板指定/自动识别出的业务发生日期）→ 按实际消费时间过滤
+          - 只有 reimburse_date 的（历史数据/未指定业务日期）→ 按报销日期过滤
+          - 两者都没有的（纯批次/手动导入没填日期）→ 按导入时间 created_at 过滤
+
+        since / date_from / date_to 三者互斥：since 是下界语义（冷热分离）；
+        date_from + date_to 是显式区间（自定义时间）。同时传时 since 优先。
+        """
         sql, params = "SELECT * FROM reimburse WHERE 1=1 AND deleted_at IS NULL", []
         if batch_id:
             sql += " AND batch_id = ?"
@@ -355,17 +363,19 @@ class ReimburseRepo:
             sql += " AND (reimburse_no LIKE ? OR submitter LIKE ? OR expense_type LIKE ? OR remark LIKE ?)"
             kw = f"%{keyword}%"
             params += [kw, kw, kw, kw]
-        if date_from or date_to:
+        # 时间过滤字段：biz_date 优先，空则回退 reimburse_date，再回退导入日期
+        time_field = ("COALESCE(NULLIF(biz_date, ''), NULLIF(reimburse_date, ''), "
+                      "substr(created_at, 1, 10))")
+        if since:
+            sql += f" AND {time_field} >= ?"
+            params.append(since)
+        elif date_from or date_to:
             if date_from:
-                sql += " AND reimburse_date IS NOT NULL AND reimburse_date >= ?"
+                sql += f" AND {time_field} >= ?"
                 params.append(date_from)
             if date_to:
-                sql += " AND reimburse_date IS NOT NULL AND reimburse_date <= ?"
+                sql += f" AND {time_field} <= ?"
                 params.append(date_to)
-        elif since:
-            sql += (" AND (reimburse_date IS NULL OR reimburse_date = ''"
-                    " OR reimburse_date >= ?)")
-            params.append(since)
         sql += " ORDER BY id DESC LIMIT ? OFFSET ?"
         params += [limit, offset]
         return [self._to_dict(r) for r in conn.execute(sql, params)]
@@ -455,6 +465,9 @@ class ReimburseRepo:
                 d["extra_data"] = json.loads(d.get("extra_data") or "{}")
             except (json.JSONDecodeError, TypeError):
                 d["extra_data"] = {}
+            # 展示层平滑降级：biz_date 为空时用报销日期/导入日期替代展示
+            d["biz_date"] = (d.get("biz_date") or d.get("reimburse_date")
+                             or (d.get("created_at") or "")[:10] or None)
         return d
 
     def aggregate_by_expense_type(

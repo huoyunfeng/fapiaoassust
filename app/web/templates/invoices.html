@@ -663,6 +663,8 @@ function removeFilter(which){
       .forEach(k => u.searchParams.delete(k));
   }
   u.searchParams.delete('page');
+  // 跳转前保存筛选条件（sessionStorage 持久化）
+  FilterCache.save('invoices', u.searchParams.toString());
   location.href = u.toString();
 }
 
@@ -674,6 +676,7 @@ function toggleCustomDates(val){
 
 /* ===== 顶部筛选栏：重置（清空搜索词/状态/时间，回到无过滤列表） ===== */
 function resetFilterForm(){
+  FilterCache.clear('invoices');
   location.href = '/invoices';
 }
 
@@ -798,6 +801,22 @@ function closeInvDrawer(){
 document.addEventListener('keydown', e => {
   if(e.key === 'Escape' && document.getElementById('invDrawer').classList.contains('open')){
     closeInvDrawer();
+  }
+});
+
+// ===== 筛选条件持久化初始化 =====
+document.addEventListener('DOMContentLoaded', function(){
+  // 恢复：URL 干净时从 sessionStorage 读缓存，自动 redirect
+  const redirected = FilterCache.load('invoices');
+  if(redirected) return;  // 已触发 redirect，后续 JS 不应再执行
+  // 拦截筛选表单 submit：跳转前把当前 form 值存进 sessionStorage
+  const form = document.getElementById('invFilterForm');
+  if(form){
+    form.addEventListener('submit', function(){
+      const fd = new FormData(form);
+      const qs = new URLSearchParams(fd).toString();
+      FilterCache.save('invoices', qs);
+    });
   }
 });
 </script>

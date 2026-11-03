@@ -435,6 +435,7 @@
   </table>
   <button class="btn btn-outline btn-sm" onclick="addTplField()">+ 添加字段</button>
   <div class="hint">系统会自动在 Excel 前 15 行内定位与「Excel 列名」匹配的表头行。</div>
+  <div class="hint">提示：指定「业务发生日期」后，系统可依据实际消费时间进行精准筛账。未指定时，默认采用「报销日期」。</div>
   <div class="mt" style="text-align:right;">
     <button class="btn btn-outline" onclick="closeTemplateEditor()">取消</button>
     <button class="btn" onclick="saveTemplate()">保存</button>
@@ -449,6 +450,7 @@
 // ============================================================
 const SYSTEM_FIELDS = [
   ['reimburse_no','报销单号'], ['submitter','提交人'], ['reimburse_date','报销日期'],
+  ['biz_date','业务发生日期'],
   ['period_start','期间起'], ['period_end','期间止'], ['expense_type','费用类型'],
   ['amount','金额（锚点·必选）'], ['invoice_no','发票号'], ['invoice_date','发票日期'],
   ['remark','备注'],
@@ -467,6 +469,8 @@ function gotoBatch(bid){
   u.searchParams.set('batch_id', bid);   // 空串 = 全部批次
   u.searchParams.delete('page');          // 切批次回到第 1 页
   u.searchParams.delete('focus_id');
+  // 批次切换也是筛选变化，保存当前条件
+  FilterCache.save('reimburses', u.searchParams.toString());
   location.href = u.toString();
 }
 function showTableLoading(){
@@ -490,6 +494,8 @@ function removeFilter(which){
       .forEach(k => u.searchParams.delete(k));
   }
   u.searchParams.delete('page');
+  // 跳转前保存筛选条件（sessionStorage 持久化）
+  FilterCache.save('reimburses', u.searchParams.toString());
   location.href = u.toString();
 }
 
@@ -501,6 +507,7 @@ function toggleCustomDates(val){
 
 /* ===== 重置筛选 ===== */
 function resetFilterForm(){
+  FilterCache.clear('reimburses');
   location.href = '/reimburses';
 }
 
@@ -664,6 +671,8 @@ function renderMappingArea(){
     </tr>`;
   });
   html += '</table>';
+  html += '<div class="hint">提示：指定「业务发生日期」后，系统可依据实际消费时间进行精准筛账。'
+        + '未指定时，默认采用「报销日期」。</div>';
   el.innerHTML = html;
 }
 
@@ -1059,6 +1068,22 @@ async function delBatch(bid){
 // 点击遮罩关闭面板（不干扰 base.html 的 closeModal）
 document.getElementById('modalBg').addEventListener('click', () => {
   ['importWizard','dupConfirm','manualEntry','templateManager','templateEditor'].forEach(hideEl);
+});
+
+// ===== 筛选条件持久化初始化 =====
+document.addEventListener('DOMContentLoaded', function(){
+  // 恢复：URL 干净时从 sessionStorage 读缓存，自动 redirect
+  const redirected = FilterCache.load('reimburses');
+  if(redirected) return;  // 已触发 redirect，后续 JS 不应再执行
+  // 拦截筛选表单 submit：跳转前把当前 form 值存进 sessionStorage
+  const form = document.getElementById('rebFilterForm');
+  if(form){
+    form.addEventListener('submit', function(){
+      const fd = new FormData(form);
+      const qs = new URLSearchParams(fd).toString();
+      FilterCache.save('reimburses', qs);
+    });
+  }
 });
 </script>
 {% endblock %}

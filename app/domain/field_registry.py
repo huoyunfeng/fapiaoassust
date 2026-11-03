@@ -16,6 +16,7 @@ SYSTEM_FIELDS: List[dict] = [
     {"key": "reimburse_no",   "label": "报销单号", "type": "string",  "anchor": False, "required": True},
     {"key": "submitter",      "label": "提交人",   "type": "string",  "anchor": False, "required": False},
     {"key": "reimburse_date", "label": "报销日期", "type": "date",    "anchor": False, "required": False},
+    {"key": "biz_date",       "label": "业务发生日期", "type": "date", "anchor": False, "required": False},
     {"key": "period_start",   "label": "期间起",   "type": "date",    "anchor": False, "required": False},
     {"key": "period_end",     "label": "期间止",   "type": "date",    "anchor": False, "required": False},
     {"key": "expense_type",   "label": "费用类型", "type": "string",  "anchor": False, "required": False},
@@ -55,6 +56,10 @@ FIELD_ALIASES: Dict[str, List[str]] = {
                        # 行程明细表常用「时间」列（外出工作交通费明细表等）
                        "用车时间", "乘车时间", "打车时间", "行程时间", "出发时间", "时间"],
     "period_start":   ["期间起", "开始日期", "费用起始", "起始日期"],
+    # 核心业务日期：模板各写各的「实际用餐日期 / 乘车日期 / 用车日期」等，
+    # 手动指定时由此别名自动命中（auto_map 会优先匹配前面的 reimburse_date，仅当未被占用才落到 biz_date）
+    "biz_date":       ["业务发生日期", "业务日期", "消费日期", "实际消费日期",
+                       "用餐日期", "乘车日期", "用车日期", "行程日期", "出差日期"],
     "period_end":     ["期间止", "结束日期", "费用截止", "截止日期"],
     # 「项目名称」是费用归属的工程项目，不是费用类型，不能映射到 expense_type
     "expense_type":   ["费用类型", "费用类别", "科目", "费用科目", "费用归属"],

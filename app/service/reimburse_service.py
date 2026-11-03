@@ -155,12 +155,18 @@ def renumber_legacy_auto_nos() -> int:
 
 def _to_dto(record: dict, batch_id: str, template_id: Optional[int] = None) -> ReimburseDTO:
     extra = record.get("_extra", {}) or {}
+    reimb_date = parse_date(record.get("reimburse_date"))
+    # 核心业务日期：显式映射 > 自定义日期列自动识别 > 报销日期兜底（保证非空）
+    biz_date = (parse_date(record.get("biz_date"))
+                or _infer_biz_date(extra)
+                or reimb_date)
     return ReimburseDTO(
         batch_id=batch_id,
         template_id=template_id,
         reimburse_no=clean(record.get("reimburse_no")),
         submitter=clean(record.get("submitter")),
-        reimburse_date=parse_date(record.get("reimburse_date")),
+        reimburse_date=reimb_date,
+        biz_date=biz_date,
         period_start=parse_date(record.get("period_start")),
         period_end=parse_date(record.get("period_end")),
         expense_type=clean(record.get("expense_type")),
@@ -174,6 +180,29 @@ def _to_dto(record: dict, batch_id: str, template_id: Optional[int] = None) -> R
         split_type=record.get("split_type", "none"),
         parent_id=record.get("parent_id"),
     )
+
+
+# 行政类日期列（报销/申请/提交日期）不作为业务发生日期
+_ADMIN_DATE_WORDS = ("报销", "申请", "提交", "填单", "录入", "制表", "日期戳")
+_DATE_HEADER_WORDS = ("日期", "时间")
+
+
+def _infer_biz_date(extra: dict) -> Optional[str]:
+    """从自定义字段中自动识别业务发生日期。
+
+    规则：表头含「日期 / 时间」字样，且不是报销/申请等行政日期；
+    取第一个能解析成日期的值（如「实际用餐日期」「乘车日期」）。
+    """
+    for raw_key, raw_val in (extra or {}).items():
+        name = str(raw_key)
+        if not any(w in name for w in _DATE_HEADER_WORDS):
+            continue
+        if any(w in name for w in _ADMIN_DATE_WORDS):
+            continue
+        d = parse_date(raw_val)
+        if d:
+            return d
+    return None
 
 
 # ---------------------------------------------------------------- 查重
@@ -370,6 +399,7 @@ def import_excel(file_name: str, content: bytes, batch_id: str = None,
             "reimburse_no": dto.reimburse_no or "",   # 空串占位，事务内统一补
             "submitter": dto.submitter,
             "reimburse_date": dto.reimburse_date,
+            "biz_date": dto.biz_date,
             "period_start": dto.period_start,
             "period_end": dto.period_end,
             "expense_type": dto.expense_type,
@@ -496,12 +526,16 @@ def manual_create(fields: dict, operator: str = None) -> dict:
     if amount is None:
         return {"ok": False, "message": "金额无效"}
     batch_id = f"manual_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+    reimb_date = parse_date(fields.get("reimburse_date"))
+    # 未指定业务日期时兜底用报销日期，保证每条新数据都有 biz_date
+    biz_date = parse_date(fields.get("biz_date")) or reimb_date
     row = {
         "batch_id": batch_id,
         "template_id": None,
         "reimburse_no": reimburse_no or "",
         "submitter": clean(fields.get("submitter")),
-        "reimburse_date": parse_date(fields.get("reimburse_date")),
+        "reimburse_date": reimb_date,
+        "biz_date": biz_date,
         "period_start": parse_date(fields.get("period_start")),
         "period_end": parse_date(fields.get("period_end")),
         "expense_type": clean(fields.get("expense_type")),

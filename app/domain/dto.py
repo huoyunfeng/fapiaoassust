@@ -55,6 +55,7 @@ class ReimburseDTO:
     reimburse_no: str = ""
     submitter: str = ""
     reimburse_date: Optional[str] = None        # YYYY-MM-DD
+    biz_date: Optional[str] = None              # 核心业务日期（实际消费/发生日期）
     period_start: Optional[str] = None          # YYYY-MM-DD
     period_end: Optional[str] = None            # YYYY-MM-DD
     expense_type: str = ""

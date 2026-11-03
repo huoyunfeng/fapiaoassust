@@ -123,6 +123,9 @@ CREATE TABLE IF NOT EXISTS reimburse (
     reimburse_no   TEXT NOT NULL,
     submitter      TEXT NOT NULL DEFAULT '',
     reimburse_date TEXT,
+    -- 核心业务日期（实际消费/发生日期）：多模板时间筛选的统一口径。
+    -- 为空时查询层自动回退 reimburse_date（历史数据零影响）
+    biz_date       TEXT,
     period_start   TEXT,
     period_end     TEXT,
     expense_type   TEXT NOT NULL DEFAULT '',
@@ -402,10 +405,19 @@ def _migrate(conn: sqlite3.Connection) -> None:
         ("split_type",  "ALTER TABLE reimburse ADD COLUMN split_type TEXT NOT NULL DEFAULT 'none'"),
         ("dup_flag",    "ALTER TABLE reimburse ADD COLUMN dup_flag INTEGER NOT NULL DEFAULT 0"),
         ("dup_source",  "ALTER TABLE reimburse ADD COLUMN dup_source TEXT NOT NULL DEFAULT ''"),
+        # 核心业务日期：只增不改，历史行留空（查询层自动回退 reimburse_date）
+        ("biz_date",    "ALTER TABLE reimburse ADD COLUMN biz_date TEXT"),
     ]:
         if col not in cols:
             conn.execute(ddl)
             logger.info("迁移: reimburse 表新增列 %s", col)
+
+    # 1a00. biz_date 历史回填：有报销日期的行复制一份，避免筛选口径摇摆
+    #      （仅回填空值，不覆盖导入时已识别的业务日期；幂等可重复执行）
+    conn.execute(
+        "UPDATE reimburse SET biz_date = reimburse_date "
+        "WHERE biz_date IS NULL AND reimburse_date IS NOT NULL AND reimburse_date != ''"
+    )
 
     # 1a0. 软删除：invoice / reimburse 增加 deleted_at（常规删除禁止物理删除）
     inv_cols = {r[1] for r in conn.execute("PRAGMA table_info(invoice)").fetchall()}
@@ -415,6 +427,10 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if "deleted_at" not in cols:
         conn.execute("ALTER TABLE reimburse ADD COLUMN deleted_at TEXT")
         logger.info("迁移: reimburse 表新增列 deleted_at")
+    # 1a1. 仅清理原件标记：保留台账数据但原件已按需物理删除
+    if "is_attachment_deleted" not in inv_cols:
+        conn.execute("ALTER TABLE invoice ADD COLUMN is_attachment_deleted INTEGER NOT NULL DEFAULT 0")
+        logger.info("迁移: invoice 表新增列 is_attachment_deleted")
     # 唯一约束排除软删除数据：删除后可重新导入同一文件/同号发票
     conn.execute("DROP INDEX IF EXISTS uq_invoice_file_hash")
     conn.execute("DROP INDEX IF EXISTS uq_invoice_code_no")

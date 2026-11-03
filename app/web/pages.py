@@ -122,13 +122,29 @@ def dashboard(request: Request):
 
 
 def _range_since(range_: str) -> Optional[str]:
-    """列表冷热分离下界：默认近 1 年（业务日期口径），range=all 时取全部历史。
+    """列表冷热分离下界（业务日期口径）。
 
-    只用于列表查询，绝不按系统导入时间过滤——补录的历史发票/报销单必须仍可见。
+    用于报销单侧：所有快捷选项都走下界过滤，保留无 reimburse_date 的行
+    （手动导入/批次的报销单常有空日期，严格 BETWEEN 会静默排除它们）。
+
+    返回 None 表示不限制下界。
     """
-    if (range_ or "").strip().lower() == "all":
+    today = date.today()
+    r = (range_ or "").strip().lower()
+    if r == "all":
         return None
-    return (date.today() - timedelta(days=365)).isoformat()
+    if r == "this_year":
+        return date(today.year, 1, 1).isoformat()
+    if r == "this_month":
+        return date(today.year, today.month, 1).isoformat()
+    if r == "last_month":
+        # 上个月 1 号（上界在上层调用方显式处理；此处只给下界）
+        first = _months_ago(date(today.year, today.month, 1), 1)
+        return first.isoformat()
+    if r == "last_3m":
+        return _months_ago(today, 3).isoformat()
+    # 默认 1y
+    return (today - timedelta(days=365)).isoformat()
 
 
 def _last_day_of_month(y: int, m: int) -> date:
@@ -261,12 +277,13 @@ def reimburses_page(request: Request, batch_id: Optional[str] = None, q: str = "
     if batch_id is None:
         batch_id = batches[0]["batch_id"] if batches else ""
 
-    # ===== 时间范围解析（按报销日期口径，与发票页 options 一致但过滤口径不同）=====
+    # ===== 时间范围解析（按报销日期口径）=====
     # 与 invoices_page 的故意差异：
-    #   1) 发票侧：发票必有开票日期，1y 也走严格 BETWEEN；since 始终传 None。
-    #   2) 报销侧：部分报销单可能没有 reimburse_date（如纯批次/手动录入），
-    #      因此「近 1 年」（显式或默认）走下界 since，保留无日期行；
-    #      而本月/上月/近三月/今年/自定义是用户明确的窗口，走严格 BETWEEN，排除无日期行。
+    #   1) 发票侧：发票必有开票日期，所有快捷选项都走严格 BETWEEN。
+    #   2) 报销侧：大量报销单没有 reimburse_date（纯批次/手动导入），
+    #      严格 BETWEEN 会静默排除它们，用户以为"数据没了"。
+    #      → 所有快捷选项统一走下界 since（保留空日期行）。
+    #      → 只有"自定义时间"是用户显式给了起止日期，才走严格 BETWEEN。
     r = (range_ or "").strip().lower()
     date_from_f, date_to_f = date_from or None, date_to or None
     has_drill_dates = bool(date_from_f or date_to_f)
@@ -276,20 +293,16 @@ def reimburses_page(request: Request, batch_id: Optional[str] = None, q: str = "
         range_mode = "all"
         since_f = None
     elif r == "custom":
+        # 用户显式给了起止日期 → 严格 BETWEEN（可以有空字段：只给 date_from 或只给 date_to）
         range_mode = "custom"
         since_f = None
-    elif r == "1y":
-        # 显式「近 1 年」仍走下界过滤（保留无日期行），与默认未指定 range 的冷热分离口径一致
+    elif r in ("1y", "this_year", "this_month", "last_month", "last_3m"):
+        # 所有快捷选项：下界 since，保留无日期行
         date_from_f = date_to_f = None
-        range_mode = "1y"
-        since_f = _range_since("1y")
-    elif r in ("this_month", "last_month", "last_3m", "this_year"):
-        # 严格时间窗口：用户明确要某个区间，无日期行不计入
-        date_from_f, date_to_f = _range_bounds(r)
         range_mode = r
-        since_f = None
+        since_f = _range_since(r)
     else:
-        # 未指定 range：若有下钻日期则沿用（视为自定义），否则默认近 1 年（冷热分离，保留无日期行）
+        # 未指定 range：若有下钻日期则沿用（视为自定义），否则默认近 1 年（冷热分离）
         if has_drill_dates:
             range_mode = "custom"
             since_f = None

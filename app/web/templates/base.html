@@ -50,6 +50,7 @@ button,input,select,textarea{font-family:inherit;color:inherit;}
 .progress{max-width:420px;height:8px;background:#e5e7eb;border-radius:6px;overflow:hidden;margin-top:10px;}
 .progress-fill{height:100%;background:var(--primary);transition:var(--transition);}
 .progress-fill.warn{background:var(--warning);}
+.progress-fill.critical{background:var(--danger);}
 .warn-text{margin-top:10px;color:var(--warning-text);font-size:13px;}
 /* 页面标题栏 */
 .page-head{display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:var(--space);}
@@ -242,6 +243,75 @@ tr.row-focus td{animation:focusFlash .7s ease-in-out 3;}
   </div>
 </div>
 <script>
+// ===== 列表页筛选条件持久化（sessionStorage，按页面隔离）=====
+// 用法：页面加载时 FilterCache.load('invoices')；筛选跳转前 FilterCache.save('invoices')；重置时 FilterCache.clear('invoices')
+const FilterCache = {
+  KEY_PREFIX: 'filters:',
+  // 有效筛选参数名（列表页关心的 query 键，不含 page/focus_id 这类视图参数）
+  FILTER_KEYS: ['q', 'status', 'range', 'date_from', 'date_to', 'category', 'batch_id'],
+
+  // 判断当前 URL 是否已有有效筛选参数（true=用户显式带了参数进来，无需自动恢复）
+  _hasActiveFilters(){
+    const sp = new URLSearchParams(location.search);
+    return this.FILTER_KEYS.some(k => sp.has(k));
+  },
+
+  // 保存：把当前 URL 的 query string 存一份
+  // 可选 qs 参数：直接存入该 query string（用于 form submit 拦截场景，
+  //   此时 location.search 还是旧值，需要用 form 的当前值构建新 query）
+  save(pageKey, qs){
+    let queryStr = qs !== undefined ? qs : location.search.slice(1);
+    // 如果没传 qs 且 location.search 为空，什么都不存
+    if(!queryStr) return;
+    // 从 query string 中只保留有效筛选参数，剔除 page/focus_id 这类视图参数
+    const sp = new URLSearchParams(queryStr);
+    const parts = [];
+    this.FILTER_KEYS.forEach(k => {
+      const v = sp.get(k);
+      if(v !== null && v !== undefined && v !== '') parts.push(k + '=' + encodeURIComponent(v));
+    });
+    const filtered = parts.join('&');
+    if(filtered){
+      sessionStorage.setItem(this.KEY_PREFIX + pageKey, filtered);
+    }else{
+      sessionStorage.removeItem(this.KEY_PREFIX + pageKey);
+    }
+  },
+
+  // 恢复：如果 URL 完全没带筛选参数，且 sessionStorage 有缓存，自动 redirect
+  // 返回 true 表示已触发 redirect（当前页面后续 JS 不应再执行）
+  load(pageKey){
+    // 如果 URL 已有参数（用户显式带了筛选条件），不恢复缓存，仅保存当前参数
+    if(this._hasActiveFilters()){
+      this.save(pageKey);
+      return false;
+    }
+    const cached = sessionStorage.getItem(this.KEY_PREFIX + pageKey);
+    if(!cached) return false;
+    // 有缓存但 URL 干净 → redirect 带上缓存参数
+    const sep = location.search ? '&' : '?';
+    const target = location.pathname + sep + cached + location.hash;
+    // 用 replace 避免产生多余历史记录
+    history.replaceState(null, '', target);
+    // 让服务端用带参数的 URL 重新渲染
+    location.replace(target);
+    return true;
+  },
+
+  // 清除缓存（用户手动重置时调用）
+  clear(pageKey){
+    sessionStorage.removeItem(this.KEY_PREFIX + pageKey);
+  },
+
+  // 退出登录/全局退出时清所有缓存
+  clearAll(){
+    for(let i = sessionStorage.length - 1; i >= 0; i--){
+      const k = sessionStorage.key(i);
+      if(k && k.startsWith(this.KEY_PREFIX)) sessionStorage.removeItem(k);
+    }
+  }
+};
+
 function toast(msg, ok=true){
   const t=document.getElementById('toast');
   t.textContent=msg;t.style.display='block';
