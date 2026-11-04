@@ -11,6 +11,7 @@
 - 恢复路径穿越防护：zip-slip 拦截 + Windows 路径重试 + 完整回滚。
 """
 import io
+import json
 import os
 import shutil
 import sqlite3
@@ -22,7 +23,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
-from app.config import settings
+from app.config import APP_VERSION, SCHEMA_VERSION, settings
 from app.infra.logger import get_logger
 from app.repository import db as db_repo
 
@@ -153,21 +154,50 @@ def _scan_recycle_attachments() -> tuple:
     return n, total
 
 
+def _known_attachment_paths(include_deleted: bool = True) -> tuple:
+    """返回 (数据库已引用的附件绝对路径集合, 文件名→Path 索引)。
+
+    先用一次目录遍历建文件名索引，再解析数据库引用，避免逐行 rglob
+    造成 O(发票数 × 文件数) 的重复扫描。
+    include_deleted=False 时只统计未删除发票的引用（清理回收站前用于避让）。
+    """
+    index: dict = {}
+    if settings.upload_dir.exists():
+        for p in settings.upload_dir.rglob("*"):
+            try:
+                if p.is_file():
+                    index.setdefault(p.name, p)
+            except OSError:
+                continue
+    known = set()
+    try:
+        sql = ("SELECT source_path FROM invoice "
+               "WHERE source_path IS NOT NULL AND source_path != ''")
+        if not include_deleted:
+            sql += " AND deleted_at IS NULL"
+        with db_repo.read() as conn:
+            rows = conn.execute(sql).fetchall()
+        for (sp,) in rows:
+            try:
+                p = Path(sp)
+                if p.is_absolute() and p.exists():
+                    known.add(str(p.resolve()))
+                    continue
+                hit = index.get(p.name)
+                if hit is not None:
+                    known.add(str(hit.resolve()))
+            except OSError:
+                continue
+    except Exception as e:
+        logger.warning("读取附件引用失败: %s", e)
+    return known, index
+
+
 def _scan_orphan_files() -> tuple:
     """扫描 uploads/ 目录中数据库无记录引用的孤儿文件。"""
     n, total = 0, 0
     try:
-        # 数据库里所有被引用的附件绝对路径
-        known = set()
-        with db_repo.read() as conn:
-            for (sp,) in conn.execute(
-                "SELECT source_path FROM invoice WHERE source_path IS NOT NULL AND source_path != ''"
-            ).fetchall():
-                fp = _resolve_source_path(sp)
-                if fp:
-                    known.add(str(fp.resolve()))
-            # 报销单无附件字段，reimburse.source_path 可能不存在；跳过
-        # 遍历 uploads/ 目录所有文件，排除 known
+        known, _ = _known_attachment_paths()
         if settings.upload_dir.exists():
             for p in settings.upload_dir.rglob("*"):
                 if not p.is_file():
@@ -183,21 +213,40 @@ def _scan_orphan_files() -> tuple:
     return n, total
 
 
+def _inside_upload(p: Path) -> bool:
+    """安全约束：文件必须位于当前附件目录内（防止脏数据导致误删/误打包外部文件）。"""
+    try:
+        rp = p.resolve()
+        root = settings.upload_dir.resolve()
+        return rp == root or root in rp.parents
+    except OSError:
+        return False
+
+
 def _resolve_source_path(sp: str) -> Optional[Path]:
-    """把 source_path 解析为真实 Path（兼容绝对/相对路径）。"""
+    """把 source_path 解析为真实 Path（兼容绝对/相对路径/跨机器迁移后的旧绝对路径）。
+
+    一律限制在 settings.upload_dir 内：绝对路径越界（含迁移前的旧目录）按文件名
+    在当前附件目录兜底，兜底失败返回 None —— 调用方（清理/打包）拿到 None 即跳过，
+    绝不对外部路径执行 unlink / 写入压缩包。
+    """
     if not sp:
         return None
     try:
         p = Path(sp)
-        if p.is_absolute():
-            return p
-        cand = settings.upload_dir / p
-        if cand.exists():
-            return cand
-        # 再按文件名匹配一次（数据库里只存了文件名）
-        for f in settings.upload_dir.rglob(p.name):
-            return f
-        return cand
+        if p.is_absolute() and p.exists():
+            if _inside_upload(p):
+                return p
+        elif not p.is_absolute():
+            cand = settings.upload_dir / p
+            if cand.exists() and _inside_upload(cand):
+                return cand
+        # 换机 / 迁移目录后：按文件名在当前附件目录内查找
+        if p.name:
+            for f in settings.upload_dir.rglob(p.name):
+                if _inside_upload(f):
+                    return f
+        return None
     except OSError:
         return None
 
@@ -218,7 +267,6 @@ def cleanup_attachments(recycle: bool = False, orphan: bool = False,
     try:
         # 1. 清理孤儿文件（uploads/ 目录里但数据库无任何引用）
         if orphan:
-            _, _ = (None, None)  # 先做一次新鲜扫描
             n, b = _delete_orphans()
             orphan_del, bytes_freed = n, bytes_freed + b
             files_deleted += n
@@ -239,9 +287,10 @@ def cleanup_attachments(recycle: bool = False, orphan: bool = False,
         try:
             with db_repo.tx() as conn:
                 audit_service.log(
-                    conn, "attachment_cleanup", "system", "",
-                    f"recycle={recycle_del}, orphan={orphan_del}, detached={detached}, "
-                    f"files={files_deleted}, bytes={bytes_freed}"
+                    conn, "attachment_cleanup", "system",
+                    detail=(f"recycle={recycle_del}, orphan={orphan_del}, "
+                            f"detached={detached}, files={files_deleted}, "
+                            f"bytes={bytes_freed}")
                 )
         except Exception as e:
             logger.warning("审计日志写入失败（清理动作本身已完成）: %s", e)
@@ -263,14 +312,7 @@ def _delete_orphans() -> tuple:
     """物理删除孤儿文件。返回 (删除文件数, 释放字节)。"""
     n, total = 0, 0
     try:
-        with db_repo.read() as conn:
-            known = set()
-            for (sp,) in conn.execute(
-                "SELECT source_path FROM invoice WHERE source_path IS NOT NULL AND source_path != ''"
-            ).fetchall():
-                fp = _resolve_source_path(sp)
-                if fp:
-                    known.add(str(fp.resolve()))
+        known, _ = _known_attachment_paths()
         if settings.upload_dir.exists():
             for p in list(settings.upload_dir.rglob("*")):
                 if not p.is_file():
@@ -289,10 +331,15 @@ def _delete_orphans() -> tuple:
 
 
 def _delete_recycle_attachments() -> tuple:
-    """物理删除回收站中的发票附件（invoice.deleted_at IS NOT NULL 的 source_path）。"""
+    """物理删除回收站中的发票附件（invoice.deleted_at IS NOT NULL 的 source_path）。
+
+    安全约束：若同一文件仍被未删除发票引用（例如交接包导入的同名文件被复用），
+    绝不删除，避免"清理回收站"误删在册发票的原件。
+    """
     n, total = 0, 0
     try:
         files_to_delete = []  # 先收集再删，避免并发问题
+        live_known, _ = _known_attachment_paths(include_deleted=False)
         with db_repo.read() as conn:
             rows = conn.execute(
                 "SELECT id, source_path FROM invoice "
@@ -300,8 +347,12 @@ def _delete_recycle_attachments() -> tuple:
             ).fetchall()
         for inv_id, sp in rows:
             fp = _resolve_source_path(sp)
-            if fp and fp.exists() and fp.is_file():
-                files_to_delete.append((inv_id, fp))
+            if not (fp and fp.exists() and fp.is_file()):
+                continue
+            if str(fp.resolve()) in live_known:
+                logger.info("跳过仍被在册发票引用的附件: %s", fp.name)
+                continue
+            files_to_delete.append((inv_id, fp))
         for inv_id, fp in files_to_delete:
             try:
                 sz = fp.stat().st_size
@@ -329,20 +380,22 @@ def _detach_invoice_originals() -> tuple:
             fp = _resolve_source_path(sp)
             if fp and fp.exists() and fp.is_file():
                 files_to_delete.append((inv_id, fp))
-        # 先删文件，再批量 UPDATE（事务中）
+        # 先提交标记再删文件：若标记写入失败则一个文件也不删（避免"文件没了但状态没记"）。
+        # 反之若删文件失败，标记已置 1 也只是"已清理"状态，不影响台账。
         with db_repo.tx() as conn:
-            for inv_id, fp in files_to_delete:
-                try:
-                    sz = fp.stat().st_size
-                    fp.unlink()
-                    conn.execute(
-                        "UPDATE invoice SET is_attachment_deleted = 1 WHERE id = ?",
-                        (inv_id,)
-                    )
-                    total += sz
-                    n += 1
-                except OSError:
-                    continue
+            for inv_id, _fp in files_to_delete:
+                conn.execute(
+                    "UPDATE invoice SET is_attachment_deleted = 1 WHERE id = ?",
+                    (inv_id,)
+                )
+        for inv_id, fp in files_to_delete:
+            try:
+                sz = fp.stat().st_size
+                fp.unlink()
+                total += sz
+                n += 1
+            except OSError:
+                continue
     except Exception as e:
         logger.warning("清理原件异常: %s", e)
     return n, total
@@ -362,6 +415,150 @@ def _rename_with_retry(src: Path, dst: Path, attempts: int = _RENAME_ATTEMPTS,
     raise last
 
 
+# ==============================================================
+# P2-4：附件存储路径自定义与安全迁移
+# ==============================================================
+
+def storage_path_info() -> dict:
+    """当前附件路径信息。"""
+    return {"current": str(settings.upload_dir),
+            "default": str(settings.data_dir / "uploads")}
+
+
+def migrate_upload_dir(new_path: str) -> dict:
+    """把 uploads/ 整体迁移到新路径：复制 → 校验 → 更新配置 → 旧目录保底改名。
+
+    失败任何一步自动回滚（删除不完整新目录、恢复旧目录名、配置不写入）。
+    返回 {"ok": bool, "message": str, "new_path": str, "old_backup": str}。
+    """
+    from app.config import load_persisted_config, save_persisted_config
+
+    if is_backing_up():
+        return {"ok": False, "message": "系统正在备份/恢复中，请稍候再迁移"}
+
+    target = Path((new_path or "").strip())
+    if not str(target):
+        return {"ok": False, "message": "请输入新的存储路径"}
+    if not target.is_absolute():
+        return {"ok": False, "message": "请输入绝对路径，如 D:\\fapiao\\uploads"}
+
+    src = settings.upload_dir
+    if target.resolve() == src.resolve():
+        return {"ok": False, "message": "新路径与当前路径相同，无需迁移"}
+    try:
+        target.resolve().relative_to(src.resolve())
+        return {"ok": False, "message": "新路径不能位于当前附件目录内部"}
+    except ValueError:
+        pass
+    if target.exists():
+        return {"ok": False,
+                "message": "目标目录已存在，请选择一个尚未创建的目录（避免覆盖已有文件）"}
+
+    # 磁盘空间预检：目标盘剩余空间须大于当前附件体积
+    usage = storage_usage()
+    try:
+        probe = target
+        while not probe.exists():
+            probe = probe.parent
+        free = shutil.disk_usage(str(probe)).free
+        if free < usage["bytes"]:
+            return {"ok": False,
+                    "message": f"目标磁盘剩余空间不足（可用 {_human_size(free)}，"
+                               f"需要 {usage['human']}）"}
+    except OSError as e:
+        return {"ok": False, "message": f"目标路径不可访问：{e}"}
+
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    old_backup = src.with_name(f"uploads_pre_migrate_{stamp}")
+    orig_cfg = load_persisted_config()
+    n_rewritten = 0
+
+    try:
+        # ① 复制到新目录（不删源，先保证新位置完整）
+        target.mkdir(parents=True, exist_ok=False)
+        n_copied = 0
+        if src.exists():
+            for p in src.rglob("*"):
+                if not p.is_file():
+                    continue
+                rel = p.relative_to(src)
+                dst = target / rel
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(p, dst)
+                n_copied += 1
+        # ② 校验：新目录文件数必须等于源目录
+        n_src = usage["files"]
+        if n_copied != n_src:
+            raise RuntimeError(f"复制不完整：源 {n_src} 个，目标 {n_copied} 个")
+        # ③ 改写数据库中的附件绝对路径（source_path 是绝对路径，不随配置切换而变；
+        #    不改写会导致历史发票预览、附件清理、孤儿扫描全部指向已改名旧目录）
+        n_rewritten = _rewrite_source_paths(src, target)
+        # ④ 旧目录改名保底（确认无误后用户可手动删除）
+        if src.exists():
+            _rename_with_retry(src, old_backup)
+        # ⑤ 配置落盘 + 热切换（最后一步，成功才算迁移完成）
+        cfg = load_persisted_config()
+        cfg["upload_dir"] = str(target)
+        save_persisted_config(cfg)
+        settings.upload_dir = target
+        logger.info("附件路径迁移成功: %s -> %s（旧目录保底 %s，改写 %d 条路径）",
+                    src, target, old_backup.name, n_rewritten)
+        return {"ok": True,
+                "message": f"迁移成功！共迁移 {n_copied} 个附件。"
+                           f"旧目录已保底为 {old_backup.name}，确认无误后可手动删除。",
+                "new_path": str(target), "old_backup": old_backup.name,
+                "files": n_copied, "paths_rewritten": n_rewritten}
+    except Exception as e:
+        # 回滚：路径改回旧前缀 → 删不完整新目录 → 恢复旧目录名 → 配置还原
+        logger.exception("附件路径迁移失败，执行回滚")
+        try:
+            if n_rewritten:
+                _rewrite_source_paths(target, src)
+            if target.exists():
+                shutil.rmtree(target, ignore_errors=True)
+            if old_backup.exists() and not src.exists():
+                _rename_with_retry(old_backup, src)
+            cfg = load_persisted_config()
+            if orig_cfg.get("upload_dir"):
+                cfg["upload_dir"] = orig_cfg["upload_dir"]
+            else:
+                cfg.pop("upload_dir", None)
+            save_persisted_config(cfg)
+            settings.upload_dir = src
+        except Exception:
+            logger.exception("迁移回滚异常")
+        return {"ok": False, "message": f"迁移失败，原附件目录未受影响：{e}"}
+
+
+def _rewrite_source_paths(old_root: Path, new_root: Path) -> int:
+    """把 invoice.source_path 的目录前缀从 old_root 改写为 new_root，返回改写条数。
+
+    历史行的 source_path 存的是绝对路径；附件目录迁移后必须同步改写，
+    否则预览/清理/孤儿扫描会全部失效（新上传又写入新目录，数据被割裂）。
+    """
+    old_str = str(old_root)
+    new_str = str(new_root)
+    n = 0
+    with db_repo.tx() as conn:
+        # 同时兼容反斜杠与正斜杠两种历史写法。
+        # 用 substr 精确前缀比较而非 LIKE：路径中的 _ 和 % 在 LIKE 里是通配符，会误伤。
+        for old in {old_str, old_str.replace("\\", "/")}:
+            rows = conn.execute(
+                "SELECT id, source_path FROM invoice WHERE substr(source_path, 1, ?) = ?",
+                (len(old), old)).fetchall()
+            for row in rows:
+                sp = row["source_path"] or ""
+                tail = sp[len(old):]
+                # 防止把 "uploads_old" 之类同前缀兄弟目录误判为子路径
+                if tail and tail[0] not in ("/", "\\"):
+                    continue
+                prefix = new_str.replace("\\", "/") if "\\" not in old else new_str
+                conn.execute("UPDATE invoice SET source_path = ? WHERE id = ?",
+                             (prefix + tail, row["id"]))
+                n += 1
+    return n
+
+
 def _safe_members(zf: zipfile.ZipFile) -> tuple:
     """返回 (根目录 .db 成员名, uploads/ 下成员名列表, 其他文件成员列表)，拦截路径穿越。"""
     db_members, upload_members, extra_members = [], [], []
@@ -369,7 +566,8 @@ def _safe_members(zf: zipfile.ZipFile) -> tuple:
         name = info.filename.replace("\\", "/")
         if info.is_dir() or name.endswith("/"):
             continue
-        if name.startswith("/") or ".." in Path(name).parts:
+        if name.startswith("/") or ".." in Path(name).parts or ":" in name:
+            # 拦截绝对路径、../ 回退与 Windows 盘符/UNC（"C:/evil" 会被 Path 视为绝对路径）
             logger.warning("备份包内含可疑路径，已跳过: %s", name)
             continue
         if "/" not in name and name.lower().endswith(".db"):
@@ -418,14 +616,16 @@ def _do_backup() -> dict:
         # 1. WAL checkpoint（模块二·2：确保所有内存数据已落盘）
         _wal_checkpoint()
 
-        # 2. 复制 db 到 temp/ 作为打包副本（模块二·3：绝不能直接打正在使用的文件）
+        # 2. 生成一致性数据库快照（模块二·3：绝不能直接打正在使用的文件）。
+        #    直接复制文件在并发写入时可能拿到撕裂页；用 SQLite 在线备份 API
+        #    由引擎保证快照完整（无需再打包 WAL/SHM，恢复端也不用重放）。
         temp_dir.mkdir(parents=True, exist_ok=True)
+        # 清理上次异常退出的残留副本，避免旧 -wal/-shm 混入新备份包
+        for stale in temp_dir.iterdir():
+            if stale.is_file():
+                stale.unlink(missing_ok=True)
         temp_db = temp_dir / settings.db_path.name
-        shutil.copy2(settings.db_path, temp_db)
-        for suffix in ("-wal", "-shm"):
-            side = settings.db_path.with_name(settings.db_path.name + suffix)
-            if side.exists():
-                shutil.copy2(side, temp_dir / side.name)
+        _snapshot_db(temp_db)
 
         # 3. 打包副本 + uploads + config + 日志
         n_att = 0
@@ -434,6 +634,13 @@ def _do_backup() -> dict:
             for f in sorted(temp_dir.iterdir()):
                 if f.is_file() and f.name.startswith(settings.db_path.name):
                     zf.write(f, arcname=f.name)
+            # 3a2. 版本标识（P4-1：恢复时强校验，高版本包拒绝恢复/低版本自动迁移）
+            zf.writestr("manifest.json", json.dumps({
+                "kind": "full-backup",
+                "app_version": APP_VERSION,
+                "schema_version": SCHEMA_VERSION,
+                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            }, ensure_ascii=False, indent=2))
             # 3b. 附件目录（原样保留 YYYYMM 子目录层级）
             if settings.upload_dir.exists():
                 for p in sorted(settings.upload_dir.rglob("*")):
@@ -469,6 +676,20 @@ def _do_backup() -> dict:
                 shutil.rmtree(temp_dir, ignore_errors=True)
         except Exception:
             logger.warning("清理备份临时目录失败（可忽略）: %s", temp_dir)
+
+
+def _snapshot_db(target: Path) -> None:
+    """用 SQLite 在线备份 API 生成一致性数据库快照。
+
+    与直接 shutil.copy2 相比：即使备份期间有并发写入，快照也保证是某个
+    已提交事务的完整状态，不会出现撕裂页（备份可用性优先）。
+    """
+    with db_repo.read() as src:
+        dst = sqlite3.connect(str(target))
+        try:
+            src.backup(dst)
+        finally:
+            dst.close()
 
 
 def _wal_checkpoint() -> None:
@@ -512,6 +733,23 @@ def _add_recent_logs(zf: zipfile.ZipFile) -> None:
 # 模块三·四：恢复（沙盒校验 + 原子替换 + 失败回滚）
 # ==============================================================
 
+def _ver_tuple(v: str) -> tuple:
+    """'1.2.0' → (1,2,0)，非法版本号按 (0,0,0) 处理。"""
+    try:
+        return tuple(int(x) for x in str(v).split(".")[:3])
+    except (ValueError, AttributeError):
+        return (0, 0, 0)
+
+
+def _read_manifest(zf: zipfile.ZipFile) -> dict:
+    """读取备份包内的 manifest.json；旧版备份无此文件时按 0.0.0 处理。"""
+    try:
+        with zf.open("manifest.json") as f:
+            return json.loads(f.read().decode("utf-8"))
+    except (KeyError, json.JSONDecodeError, UnicodeDecodeError):
+        return {"app_version": "0.0.0", "schema_version": 0}
+
+
 def restore_backup(content: bytes) -> dict:
     """从 zip 备份覆盖恢复全部数据。
 
@@ -538,6 +776,13 @@ def _do_restore(content: bytes) -> dict:
 
     try:
         with zipfile.ZipFile(io.BytesIO(content)) as zf:
+            # ⓪ 版本强校验（P4-1）：包版本高于当前软件 → 拒绝恢复并提示升级
+            manifest = _read_manifest(zf)
+            pack_ver = manifest.get("app_version", "0.0.0")
+            if _ver_tuple(pack_ver) > _ver_tuple(APP_VERSION):
+                return {"ok": False,
+                        "message": f"该备份由更高版本的软件（v{pack_ver}）生成，"
+                                   f"当前版本 v{APP_VERSION} 无法恢复。请先升级软件后再试。"}
             db_members, upload_members, _ = _safe_members(zf)
             if not db_members:
                 return {"ok": False,
@@ -634,14 +879,20 @@ def _do_restore(content: bytes) -> dict:
 
         logger.info("恢复成功（旧库 %s, 旧附件 %s；inv=%d, reb=%d, att=%d）",
                     bak_db.name, bak_uploads.name, inv_n, reb_n, att_n)
+        migrated = _ver_tuple(pack_ver) < _ver_tuple(APP_VERSION)
+        msg = "数据恢复成功！请刷新页面或重启软件以加载最新数据。"
+        if migrated:
+            msg += f"（备份版本 v{pack_ver} 低于当前 v{APP_VERSION}，已自动完成数据库结构迁移）"
         return {
             "ok": True,
-            "message": "数据恢复成功！请刷新页面或重启软件以加载最新数据。",
+            "message": msg,
             "invoices": inv_n,
             "reimburses": reb_n,
             "attachments": att_n,
             "backup_db": bak_db.name,
             "backup_uploads": bak_uploads.name,
+            "pack_version": pack_ver,
+            "migrated": migrated,
         }
 
     finally:

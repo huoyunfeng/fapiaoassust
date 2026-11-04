@@ -9,8 +9,9 @@ from fastapi.responses import (FileResponse, JSONResponse, Response,
 from starlette.background import BackgroundTask
 
 from app.service import (audit_service, backup_service, category_service,
-                         invoice_service, match_service, recycle_service,
-                         reimburse_service, report_service)
+                         handover_service, invoice_service, license_service,
+                         match_service, recycle_service, reimburse_service,
+                         report_service)
 from app.service.mapping_service import mapping_service
 from app.service.template_service import template_service
 from app.infra.logger import get_logger
@@ -18,6 +19,9 @@ from app.infra.logger import get_logger
 logger = get_logger(__name__)
 
 api = APIRouter(prefix="/api", tags=["api"])
+
+# 交接包上传上限（2GB）：超过此大小内存无法安全读入，直接拒绝
+MAX_ZIP_BYTES = 2 * 1024 ** 3
 
 
 def _j(data):
@@ -33,13 +37,25 @@ def _stale(err) -> JSONResponse:
 # ---------------------------------------------------------------- 发票
 @api.post("/invoices/upload")
 async def upload_invoices(files: List[UploadFile] = File(...), no_match: int = Form(0)):
+    # P2-2 免费版额度：导入前拦截（按文件数预估）
+    block = await run_in_threadpool(license_service.check_quota, len(files))
+    if block:
+        return JSONResponse(status_code=403,
+                            content={"ok": False, "code": "QUOTA_EXCEEDED",
+                                     "message": block})
     payload = []
     for f in files:
         payload.append((f.filename, f.content_type or "", await f.read()))
     # no_match=1: 前端逐文件上传以显示进度，导入完成后由前端统一触发一次匹配
     # 解析（尤其 OCR）耗时数秒，放线程池执行：事件循环保持畅通，删除等请求不被卡住
-    return _j(await run_in_threadpool(
-        invoice_service.import_files, payload, None, bool(no_match)))
+    result = await run_in_threadpool(
+        invoice_service.import_files, payload, None, bool(no_match))
+    # 仅按实际成功导入且非重复跳过的张数扣额度（result 为 list[dict]）
+    n_ok = sum(1 for r in (result or [])
+               if isinstance(r, dict) and r.get("ok") and not r.get("skipped"))
+    if n_ok:
+        await run_in_threadpool(license_service.consume_quota, n_ok)
+    return _j(result)
 
 
 @api.post("/invoices/manual")
@@ -59,7 +75,15 @@ async def manual_invoice(
         "tax_amount": tax_amount, "total_amount": total_amount,
         "tax_rate": tax_rate, "item_summary": item_summary,
     }
-    return _j(invoice_service.manual_create(fields))
+    block = license_service.check_quota(1)
+    if block:
+        return JSONResponse(status_code=403,
+                            content={"ok": False, "code": "QUOTA_EXCEEDED",
+                                     "message": block})
+    result = invoice_service.manual_create(fields)
+    if result.get("ok") and not result.get("skipped"):
+        license_service.consume_quota(1)
+    return _j(result)
 
 
 @api.post("/invoices/{invoice_id}/fix")
@@ -894,3 +918,73 @@ async def storage_clean(body: dict):
     except Exception as e:
         logger.exception("storage_clean 失败")
         return _j({"ok": False, "message": str(e)})
+
+
+# ---------------------------------------------------------------- 授权与额度
+@api.get("/license")
+async def license_status():
+    """当前授权 + 机器码 + 本月额度。"""
+    from app.service import license_service
+    lic = await run_in_threadpool(license_service.current_license)
+    quota = await run_in_threadpool(license_service.quota_status)
+    return _j({"ok": True, "dev_mode": license_service.dev_mode(),
+               **lic, "quota": quota})
+
+
+@api.post("/license/activate")
+async def license_activate(body: dict):
+    """离线授权码激活（机器码强绑定）。云端核销就绪后走 verify_order_online。"""
+    from app.service import license_service
+    code = (body or {}).get("code", "")
+    result = await run_in_threadpool(license_service.activate, code)
+    return _j(result)
+
+
+# ---------------------------------------------------------------- 附件存储路径迁移（P2-4）
+@api.get("/storage/path")
+async def storage_path_get():
+    return _j({"ok": True, **backup_service.storage_path_info()})
+
+
+@api.post("/storage/path")
+async def storage_path_migrate(body: dict):
+    """迁移附件目录：复制 → 校验 → 配置落盘 → 旧目录保底改名，失败自动回滚。"""
+    result = await run_in_threadpool(
+        backup_service.migrate_upload_dir, (body or {}).get("new_path", ""))
+    return _j(result)
+
+
+# ---------------------------------------------------------------- 数据交接包（P2-3）
+@api.get("/handover/export")
+async def handover_export():
+    """导出数据交接包（发票 + 报销单 + 附件），供主设备合并。"""
+    try:
+        result = await run_in_threadpool(handover_service.export_handover)
+        zip_path = result["zip_path"]
+        return FileResponse(
+            path=str(zip_path),
+            filename=zip_path.name,
+            media_type="application/zip",
+        )
+    except backup_service.BackingUpError as e:
+        return JSONResponse(status_code=409, content={"ok": False, "message": str(e)})
+    except Exception as e:
+        logger.exception("handover_export 失败")
+        return _j({"ok": False, "message": str(e)})
+
+
+@api.post("/handover/import")
+async def handover_import(file: UploadFile = File(...)):
+    """导入交接包：按发票号/单号去重合并，绝不覆盖本机已有账目。"""
+    filename = (file.filename or "").lower()
+    if not filename.endswith(".zip"):
+        return _j({"ok": False, "message": "请上传 .zip 格式的数据交接包"})
+    content = await file.read()
+    if len(content) > MAX_ZIP_BYTES:
+        return _j({"ok": False, "message": "交接包过大（超过 2GB 上限）"})
+    try:
+        result = await run_in_threadpool(handover_service.import_handover, content)
+    except Exception as e:
+        logger.exception("handover_import 失败")
+        return _j({"ok": False, "message": f"导入失败：{e}"})
+    return _j(result)

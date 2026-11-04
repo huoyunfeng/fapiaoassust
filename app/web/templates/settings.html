@@ -376,6 +376,62 @@
             <span class="muted">备份内容：fapiao.db 数据库 + uploads/ 全部发票附件 + config/.env + 近 30 天日志</span>
           </div>
         </div>
+
+        <!-- ===== 软件授权（P2-1/P3 预留） ===== -->
+        <div class="card" id="licenseCard">
+          <h2>软件授权 <span class="badge badge-purple" id="licDevBadge" style="display:none;">开发者模式</span></h2>
+          <p class="muted mb">授权码与本机机器码强绑定，一码一机。购买后请将下方机器码发给商家获取授权码；免费版每月限导入 20 张发票。</p>
+          <p id="licDevHint" class="muted" style="display:none;color:var(--warning-text);background:var(--warning-bg);
+             border:1px solid var(--warning-border);border-radius:4px;padding:8px 12px;margin:0 0 12px;font-size:12px;">
+            开发者调试模式已开启：授权与免费版额度校验均已跳过（不扣额度、不限张数）。发布前请删除环境变量 FAPIAO_DEV_MODE 或 config.json 中的 dev_mode，并重启软件。
+          </p>
+          <div id="licenseInfo" style="display:flex;flex-direction:column;gap:10px;">
+            <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+              <span class="muted">当前版本：</span>
+              <b id="licPlanName">读取中…</b>
+              <span class="muted" id="licQuota"></span>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+              <span class="muted">机器码：</span>
+              <code id="licMachineCode" style="font-size:15px;letter-spacing:1px;background:var(--primary-light);padding:4px 10px;border-radius:4px;">—</code>
+              <button class="btn btn-outline btn-sm" onclick="copyMachineCode()">复制</button>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+              <input id="licCodeInput" placeholder="FPAS-XXXX-XXXX-XXXX-XXXX-XXXX"
+                     style="width:300px;font-family:monospace;">
+              <button class="btn" onclick="activateLicense()">激活授权</button>
+              <span class="muted" style="font-size:12px;">无授权码？联系商家购买（个人版 99 元/年 · 企业版 499 元/年）</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- ===== 数据交接包（P2-3） ===== -->
+        <div class="card">
+          <h2>数据交接包（多设备合并）</h2>
+          <p class="muted mb">子设备导出交接包（发票 + 报销单 + 附件），主设备导入时按发票号/单号自动去重合并，绝不覆盖本机已有账目。导入的数据需重新执行匹配。</p>
+          <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+            <button class="btn btn-outline" onclick="exportHandover()">导出交接包</button>
+            <button class="btn btn-outline" onclick="document.getElementById('handoverFile').click()">导入交接包</button>
+            <input type="file" id="handoverFile" accept=".zip" style="display:none" onchange="importHandover(this)">
+            <span class="muted">与「一键备份」的区别：备份是全量覆盖恢复，交接包是增量合并去重。</span>
+          </div>
+        </div>
+
+        <!-- ===== 附件存储路径（P2-4） ===== -->
+        <div class="card">
+          <h2>附件存储路径</h2>
+          <p class="muted mb">发票原始附件（PDF/图片）的存放目录。迁移时系统会复制 → 校验 → 切换配置 → 旧目录改名保底，任何一步失败自动回滚。</p>
+          <div style="display:flex;flex-direction:column;gap:10px;">
+            <div style="display:flex;align-items:center;gap:8px;">
+              <span class="muted">当前路径：</span>
+              <code id="uploadPathNow" style="background:#f5f7fa;padding:4px 10px;border-radius:4px;">读取中…</code>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+              <input id="uploadPathNew" placeholder="新路径（绝对路径，如 D:\fapiao\uploads）" style="width:360px;">
+              <button class="btn btn-outline" onclick="migrateUploadPath()">迁移到新路径</button>
+            </div>
+          </div>
+        </div>
       </div>
 
       <!-- ---- Tab: 审计日志 ---- -->
@@ -1212,8 +1268,12 @@ async function downloadBackup(){
     const s = await fetch('/api/backup/status').then(r=>r.json());
     if(s.backing_up){ toast('系统正在生成备份，请稍候再操作', false); return; }
   }catch(e){ /* 网络异常不阻断，后端自己会加锁 */ }
-  toast('正在生成备份压缩包，请稍候…');
-  window.location.href = '/api/backup';
+  // P4-2 任务锁：打包期间锁定界面
+  await TaskLock.run('正在生成备份压缩包…', async ()=>{
+    // 备份是浏览器下载（location 跳转），用最小等待保证遮罩可见
+    window.location.href = '/api/backup';
+    await new Promise(r=>setTimeout(r, 1500));
+  });
 }
 
 async function askRestore(){
@@ -1520,5 +1580,92 @@ async function refreshStorageCard(){
   const rEl = document.getElementById('cleanRecycle'); if(rEl) rEl.textContent = d.recycle.human;
   const oEl = document.getElementById('cleanOrphan'); if(oEl) oEl.textContent = d.orphan.human;
 }
+
+// ===== 软件授权（P2-1 机器码绑定 + P3 云端预留） =====
+async function loadLicense(){
+  try{
+    const r = await fetch('/api/license').then(x=>x.json());
+    const d = r.data || r;
+    if(!d.ok) return;
+    document.getElementById('licPlanName').textContent = d.plan_name + (d.years ? `（${d.years}年）` : (d.plan!=='free'?'（永久）':''));
+    const q = d.quota || {};
+    document.getElementById('licQuota').textContent = q.unlimited ? '' : `本月已导入 ${q.used}/${q.quota} 张`;
+    document.getElementById('licMachineCode').textContent = d.machine_code || '—';
+    // 开发者模式标识（仅调试用，醒目提示避免误发布）
+    document.getElementById('licDevBadge').style.display = d.dev_mode ? '' : 'none';
+    document.getElementById('licDevHint').style.display = d.dev_mode ? '' : 'none';
+  }catch(e){ /* 静默：授权读取失败不影响设置页其它功能 */ }
+}
+async function copyMachineCode(){
+  const code = document.getElementById('licMachineCode').textContent;
+  try{ await navigator.clipboard.writeText(code); toast('机器码已复制'); }
+  catch(e){ prompt('请手动复制机器码：', code); }
+}
+async function activateLicense(){
+  const code = document.getElementById('licCodeInput').value.trim();
+  if(!code){ toast('请输入授权码', false); return; }
+  const d = await TaskLock.run('正在验证授权码…', async ()=>{
+    const r = await fetch('/api/license/activate', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({code})
+    });
+    return (await r.json()).data ?? await Promise.resolve(null) ?? {};
+  });
+  if(d && d.ok){ toast('✅ ' + d.message); document.getElementById('licCodeInput').value=''; loadLicense(); }
+  else toast((d && d.message) || '激活失败', false);
+}
+
+// ===== 数据交接包（P2-3） =====
+async function exportHandover(){
+  await TaskLock.run('正在生成数据交接包…', async ()=>{
+    window.location.href = '/api/handover/export';
+    await new Promise(r=>setTimeout(r, 1500));
+  });
+}
+async function importHandover(input){
+  const f = input.files[0]; input.value = '';
+  if(!f) return;
+  if(!f.name.toLowerCase().endsWith('.zip')){ toast('仅支持 .zip 格式的交接包', false); return; }
+  const ok = await confirmDlg('导入交接包将把包内发票/报销单按单号去重合并进本机，已有账目不会被覆盖。继续吗？');
+  if(!ok) return;
+  const fd = new FormData(); fd.append('file', f);
+  const d = await TaskLock.run('正在导入交接包…', async ()=>{
+    const r = await fetch('/api/handover/import', {method:'POST', body:fd});
+    return (await r.json()).data;
+  });
+  if(d && d.ok){ toast('✅ ' + d.message); }
+  else toast((d && d.message) || '导入失败', false);
+}
+
+// ===== 附件存储路径迁移（P2-4） =====
+async function loadUploadPath(){
+  try{
+    const r = await fetch('/api/storage/path').then(x=>x.json());
+    const d = r.data || r;
+    document.getElementById('uploadPathNow').textContent = d.current || '—';
+  }catch(e){}
+}
+async function migrateUploadPath(){
+  const np = document.getElementById('uploadPathNew').value.trim();
+  if(!np){ toast('请输入新路径', false); return; }
+  const ok = await confirmDlg(`确认把全部附件迁移到：\n${np}\n\n迁移过程会复制并校验所有附件，旧目录将改名保底。`);
+  if(!ok) return;
+  const d = await TaskLock.run('正在迁移附件目录…', async ()=>{
+    const r = await fetch('/api/storage/path', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({new_path: np})
+    });
+    return (await r.json()).data;
+  });
+  if(d && d.ok){
+    toast('✅ ' + d.message);
+    document.getElementById('uploadPathNew').value='';
+    loadUploadPath(); refreshStorageCard();
+  }else toast((d && d.message) || '迁移失败', false);
+}
+
+// 页面加载时读取授权与附件路径
+loadLicense();
+loadUploadPath();
 </script>
 {% endblock %}

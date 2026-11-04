@@ -17,7 +17,16 @@ class FileStore:
     """上传文件落盘 + 指纹。目录结构：uploads/YYYYMM/<uuid>_<安全文件名>。"""
 
     def __init__(self, root: Path = None) -> None:
-        self.root = root or settings.upload_dir
+        self._root = root
+
+    @property
+    def root(self) -> Path:
+        """动态读取 settings.upload_dir：支持运行期迁移附件目录（P2-4）。
+
+        不能在 __init__ 里缓存，否则迁移后仍写入旧目录（旧目录已改名保底），
+        导致附件分裂到两个目录。
+        """
+        return self._root or settings.upload_dir
 
     def detect_type(self, filename: str) -> str:
         ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""

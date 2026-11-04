@@ -649,20 +649,41 @@ def invoice_preview(invoice_id: int) -> Optional[dict]:
         dec = _resolve_rows(exp_rows, category_repo.memory_all(conn),
                             alias_repo.all(conn)).get(invoice_id) or {}
     # 就地判断原件存在性（复用安全约束：仅上传目录内），不再开第二个连接查库
-    has_file = False
+    file_path = _safe_upload_path(src)
+    has_file = file_path is not None
     pdf_pages = 0
-    if src:
-        try:
-            p = Path(src).resolve()
-            root = Path(settings.upload_dir).resolve()
-            has_file = p != root and root in p.parents and p.is_file()
-            if has_file and (row.get("file_type") or "").lower() == "pdf":
-                pdf_pages = _pdf_page_count(p)
-        except OSError:
-            pass
+    if has_file and (row.get("file_type") or "").lower() == "pdf":
+        pdf_pages = _pdf_page_count(file_path)
     return {"invoice": row, "match": match, "category": dec,
             "file_type": (row.get("file_type") or "").lower(),
             "has_file": has_file, "pdf_pages": pdf_pages}
+
+
+def _safe_upload_path(src: str) -> Optional[Path]:
+    """把 source_path 解析为上传目录内的真实文件（含 basename 兜底）。
+
+    安全约束：结果必须位于 settings.upload_dir 内；否则返回 None。
+    basename 兜底用于附件目录迁移 / 换机后旧绝对路径失效的场景，
+    保证历史发票仍能预览、下载与清理。
+    """
+    if not src:
+        return None
+    try:
+        root = Path(settings.upload_dir).resolve()
+        raw = Path(src)
+        cand = raw if raw.is_absolute() else (root / raw)
+        p = cand.resolve()
+        if p.is_file() and (p == root or root in p.parents):
+            return p
+        name = raw.name
+        if name:
+            for f in root.rglob(name):
+                rf = f.resolve()
+                if rf.is_file() and (rf == root or root in rf.parents):
+                    return rf
+        return None
+    except OSError:
+        return None
 
 
 def invoice_file_path(invoice_id: int) -> Optional[Path]:
@@ -671,17 +692,7 @@ def invoice_file_path(invoice_id: int) -> Optional[Path]:
         row = invoice_repo.get(conn, invoice_id)
     if row is None:
         return None
-    src = row.get("source_path") or ""
-    if not src:
-        return None
-    try:
-        p = Path(src).resolve()
-        root = Path(settings.upload_dir).resolve()
-        if p != root and root not in p.parents:
-            return None
-        return p if p.is_file() else None
-    except OSError:
-        return None
+    return _safe_upload_path(row.get("source_path") or "")
 
 
 def _pdf_page_count(path: Path) -> int:
