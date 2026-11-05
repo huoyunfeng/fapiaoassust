@@ -23,11 +23,6 @@ class StorageError(Exception):
     """目录不可用 / 迁移失败（message 可直接展示）。"""
 
 
-def _file_store():
-    from app.service import invoice_service
-    return invoice_service._file_store
-
-
 def apply_saved_upload_dir() -> None:
     """启动时应用上次迁移后的目录（幂等）。"""
     try:
@@ -37,7 +32,7 @@ def apply_saved_upload_dir() -> None:
             settings.upload_dir = Path(saved)
     except Exception as e:
         logger.warning("读取附件目录配置失败: %s", e)
-    _file_store().root = settings.upload_dir
+    # FileStore.root 是动态读取 settings.upload_dir 的只读属性，无需另行赋值
 
 
 def current_upload_dir() -> str:
@@ -110,7 +105,6 @@ def migrate(new_path: str) -> dict:
         raise StorageError(f"迁移失败，已回滚原路径：{e}")
 
     settings.upload_dir = new_dir
-    _file_store().root = new_dir
     logger.info("附件目录已迁移: %s -> %s（%d 项）", old_dir, new_dir, len(moved))
     return {"old": str(old_dir), "new": str(new_dir), "moved": len(moved),
             "message": "附件目录迁移完成，数据库连接已重新建立"}

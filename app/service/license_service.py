@@ -211,7 +211,19 @@ def _effective() -> tuple:
     return payload, "", int(payload.get("exp", 0)) < int(time.time())
 
 
+def dev_mode() -> bool:
+    """开发者调试模式：跳过授权与企业版判定，仅本地开发/自测使用。
+
+    由 app.config 在导入时根据 FAPIAO_DEV_MODE 环境变量或 config.json 计算，
+    打包后的 exe 只认环境变量，避免把调试开关带到用户机器上。
+    """
+    return bool(settings.dev_mode)
+
+
 def plan_key() -> str:
+    if dev_mode():
+        # 调试模式等价于企业版：权益全开、额度不限、不写额度计数
+        return "enterprise"
     payload, error, expired = _effective()
     if not payload or error or expired:
         return "free"
@@ -225,10 +237,15 @@ def features() -> dict:
 
 def status() -> dict:
     payload, error, expired = _effective()
-    active = bool(payload) and not expired and not error
+    dev = dev_mode()
+    if dev:
+        # 调试模式：始终展示企业版且永久有效，前端据此显示「开发者模式」徽标
+        active, required, expired, error = True, 0, False, ""
+    else:
+        active = bool(payload) and not expired and not error
+        # 只要数据部分可解析就给出到期时间：过期页同样需要展示「已于 X 过期」
+        required = int((payload or {}).get("exp", 0))
     current_plan = plan_key()
-    # 只要数据部分可解析就给出到期时间：过期页同样需要展示「已于 X 过期」
-    required = int((payload or {}).get("exp", 0))
     return {
         "activated": active,
         "plan": current_plan,
@@ -238,6 +255,7 @@ def status() -> dict:
         "exp_date": time.strftime("%Y-%m-%d", time.localtime(required)) if required else "",
         "expired": expired,
         "error": error,
+        "dev_mode": dev,
         "machine_code": machine_mod.machine_code(),
         "role": (payload or {}).get("role", "master") if active else "master",
         "sub_limit": int((payload or {}).get("sub_limit", 0) or 0) if active else 0,

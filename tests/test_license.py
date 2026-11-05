@@ -208,6 +208,30 @@ def test_expired_status_keeps_exp_date(env):
                                            time.localtime(int(time.time()) - 10))
 
 
+def test_dev_mode_grants_enterprise_and_unlimited_quota(env, monkeypatch):
+    """开发者模式：企业版权益全开、额度不限、导入不写额度计数。"""
+    monkeypatch.setattr(settings, "dev_mode", True)
+    lic = env["lic"]
+    st = lic.status()
+    assert st["dev_mode"] is True and st["activated"] is True
+    assert st["plan"] == "enterprise" and st["expired"] is False
+    assert lic.feature_allowed("team") and lic.feature_allowed("export")
+    assert lic.quota_status()["unlimited"] is True
+    lic.consume_invoice_quota(50)                      # 不扣额度
+    assert lic.quota_status()["used"] == 0
+
+
+def test_dev_mode_off_keeps_free_limits(env, monkeypatch):
+    """关闭开发者模式后恢复免费版额度拦截。"""
+    monkeypatch.setattr(settings, "dev_mode", False)
+    lic = env["lic"]
+    assert lic.status()["dev_mode"] is False
+    assert lic.status()["plan"] == "free"
+    assert lic.feature_allowed("export") is False
+    with pytest.raises(lic.QuotaExceeded):
+        lic.consume_invoice_quota(21)
+
+
 def test_invoice_status_counts_owner_scope(env):
     """员工统计只计算自己的发票。"""
     from app.service import invoice_service
