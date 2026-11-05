@@ -1,0 +1,22 @@
+[Unit]
+Description=FapiaoAssist License Server
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/fapiao-license
+Environment=CLOUD_PORT=8000
+Environment=CLOUD_ADMIN_TOKEN=fapiao-admin-2026
+# 数据文件（orders/devices/blacklist）所在目录，默认即 WorkingDirectory
+# Environment=CLOUD_DATA_DIR=/opt/fapiao-license
+ExecStart=/usr/bin/python3 /opt/fapiao-license/license_server.py
+# 私钥读取顺序：环境变量 CLOUD_PRIVATE_KEY_PEM > 文件 CLOUD_PRIVATE_KEY_FILE
+# 默认读取 /opt/fapiao-license/private_key.pem（权限建议 600，属主为运行用户）
+# Environment=CLOUD_PRIVATE_KEY_FILE=/opt/fapiao-license/private_key.pem
+Restart=always
+RestartSec=3
+KillMode=process
+
+[Install]
+WantedBy=multi-user.target

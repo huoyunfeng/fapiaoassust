@@ -28,7 +28,7 @@ class InvoiceRepo:
         "invoice_date", "buyer_name", "buyer_tax_no", "seller_name", "seller_tax_no",
         "amount", "tax_amount", "total_amount", "tax_rate", "item_summary",
         "check_code", "raw_json", "parse_engine", "parse_confidence", "status",
-        "is_red_flush",
+        "is_red_flush", "owner_user_id",
     ]
 
     def insert(self, conn: sqlite3.Connection, data: dict) -> int:
@@ -67,7 +67,7 @@ class InvoiceRepo:
     def _filter_sql(status: str = None, keyword: str = None,
                     date_from: str = None, date_to: str = None,
                     exclude_status: tuple = None, since: str = None,
-                    alias: str = "") -> tuple:
+                    alias: str = "", owner_user_id: int = None) -> tuple:
         """发票列表筛选条件片段（list/count/position_of 共用，保证口径一致）。
 
         since: 冷热分离的业务时间下界（开票日期，YYYY-MM-DD）。
@@ -104,6 +104,10 @@ class InvoiceRepo:
             sql += (f" AND ({p}invoice_date IS NULL OR {p}invoice_date = ''"
                     f" OR {p}invoice_date >= ?)")
             params.append(since)
+        # 数据隔离：员工只能看到自己上传的发票（财务/管理员不传此参数）
+        if owner_user_id is not None:
+            sql += f" AND {p}owner_user_id = ?"
+            params.append(owner_user_id)
         return sql, params
 
     # 费用归类所需的发票 + 报销单 + 人工决策联表（一次查询，避免逐票 N+1）
@@ -136,14 +140,16 @@ class InvoiceRepo:
     def expense_rows(self, conn: sqlite3.Connection, date_from: str = None,
                      date_to: str = None, status: str = None, keyword: str = None,
                      ids: List[int] = None, exclude_status: tuple = None,
-                     light: bool = False, since: str = None) -> List[dict]:
+                     light: bool = False, since: str = None,
+                     owner_user_id: int = None) -> List[dict]:
         """费用归类数据源：发票 + 生效匹配的报销单 + 人工分类决策。
 
         light=True 时只取归类必需的少量列（分类过滤用，10 万条量级省内存）。
         since: 冷热分离下界（按开票日期，无日期行保留）。
         """
         f_sql, params = self._filter_sql(status, keyword, date_from, date_to,
-                                         exclude_status, since, alias="i.")
+                                         exclude_status, since, alias="i.",
+                                         owner_user_id=owner_user_id)
         if light:
             sql = ("SELECT i.id AS id, i.item_summary AS item_summary, "
                    "i.seller_name AS seller_name, "
@@ -169,10 +175,11 @@ class InvoiceRepo:
              keyword: str = None, limit: int = 500, offset: int = 0,
              ids: List[int] = None, date_from: str = None,
              date_to: str = None, exclude_status: tuple = None,
-             since: str = None) -> List[dict]:
+             since: str = None, owner_user_id: int = None) -> List[dict]:
         sql, params = "SELECT * FROM invoice WHERE 1=1", []
         f_sql, f_params = self._filter_sql(status, keyword, date_from, date_to,
-                                          exclude_status, since)
+                                          exclude_status, since,
+                                          owner_user_id=owner_user_id)
         sql += f_sql
         params += f_params
         if ids:
@@ -187,14 +194,16 @@ class InvoiceRepo:
                           keyword: str = None, date_from: str = None,
                           date_to: str = None,
                           exclude_status: tuple = None,
-                          since: str = None) -> List[tuple]:
+                          since: str = None,
+                          owner_user_id: int = None) -> List[tuple]:
         """只取 [(id, item_summary)]（id 升序），供分类这类派生条件在内存过滤。
 
         分类 = 用户词典 + 智能归类，无法用 SQL 表达；只取两列可避免全字段全量加载。
         """
         sql, params = "SELECT id, item_summary FROM invoice WHERE 1=1", []
         f_sql, f_params = self._filter_sql(status, keyword, date_from, date_to,
-                                          exclude_status, since)
+                                          exclude_status, since,
+                                          owner_user_id=owner_user_id)
         sql += f_sql + " ORDER BY id ASC"
         params += f_params
         return [(r["id"], r["item_summary"]) for r in conn.execute(sql, params)]
@@ -202,11 +211,12 @@ class InvoiceRepo:
     def count(self, conn: sqlite3.Connection, status: str = None,
               keyword: str = None, date_from: str = None,
               date_to: str = None, exclude_status: tuple = None,
-              since: str = None) -> int:
+              since: str = None, owner_user_id: int = None) -> int:
         """发票总数（与 list 同筛选口径，分页用）。"""
         sql, params = "SELECT COUNT(*) AS n FROM invoice WHERE 1=1", []
         f_sql, f_params = self._filter_sql(status, keyword, date_from, date_to,
-                                          exclude_status, since)
+                                          exclude_status, since,
+                                          owner_user_id=owner_user_id)
         sql += f_sql
         params += f_params
         return conn.execute(sql, params).fetchone()["n"]
@@ -214,11 +224,13 @@ class InvoiceRepo:
     def position_of(self, conn: sqlite3.Connection, invoice_id: int,
                     status: str = None, keyword: str = None,
                     date_from: str = None, date_to: str = None,
-                    exclude_status: tuple = None, since: str = None) -> Optional[int]:
+                    exclude_status: tuple = None, since: str = None,
+                    owner_user_id: int = None) -> Optional[int]:
         """按 id ASC 排序时 invoice_id 之前的行数（用于计算 focus 行所在页码）。"""
         sql, params = "SELECT COUNT(*) AS n FROM invoice WHERE id < ?", [invoice_id]
         f_sql, f_params = self._filter_sql(status, keyword, date_from, date_to,
-                                          exclude_status, since)
+                                          exclude_status, since,
+                                          owner_user_id=owner_user_id)
         sql += f_sql
         params += f_params
         return conn.execute(sql, params).fetchone()["n"]
@@ -276,10 +288,14 @@ class InvoiceRepo:
             "UPDATE invoice SET item_summary = ? WHERE item_summary = ?", (new, old))
         return cur.rowcount
 
-    def count_by_status(self, conn: sqlite3.Connection) -> Dict[str, int]:
-        rows = conn.execute(
-            "SELECT status, COUNT(*) AS n FROM invoice "
-            "WHERE deleted_at IS NULL GROUP BY status")
+    def count_by_status(self, conn: sqlite3.Connection,
+                        owner_user_id: int = None) -> Dict[str, int]:
+        sql = "SELECT status, COUNT(*) AS n FROM invoice WHERE deleted_at IS NULL"
+        params: list = []
+        if owner_user_id is not None:
+            sql += " AND owner_user_id = ?"
+            params.append(owner_user_id)
+        rows = conn.execute(sql + " GROUP BY status", params)
         return {r["status"]: r["n"] for r in rows}
 
     def aggregate_by_item_summary(
@@ -326,6 +342,7 @@ class ReimburseRepo:
         "biz_date", "period_start", "period_end", "expense_type", "amount", "invoice_no",
         "invoice_date", "remark", "extra_data", "source_row", "parent_id",
         "split_type", "raw_row", "row_index", "dup_flag", "dup_source",
+        "owner_user_id",
     ]
 
     def insert(self, conn: sqlite3.Connection, data: dict) -> int:
@@ -344,7 +361,8 @@ class ReimburseRepo:
 
     def list(self, conn: sqlite3.Connection, batch_id: str = None,
              keyword: str = None, limit: int = 500, offset: int = 0,
-             since: str = None, date_from: str = None, date_to: str = None) -> List[dict]:
+             since: str = None, date_from: str = None, date_to: str = None,
+             owner_user_id: int = None) -> List[dict]:
         """报销单列表。时间过滤口径：biz_date → reimburse_date → created_at 逐级回退。
 
         报销单分三类：
@@ -359,6 +377,10 @@ class ReimburseRepo:
         if batch_id:
             sql += " AND batch_id = ?"
             params.append(batch_id)
+        # 数据隔离：员工只能看到自己提交的报销单
+        if owner_user_id is not None:
+            sql += " AND owner_user_id = ?"
+            params.append(owner_user_id)
         if keyword:
             sql += " AND (reimburse_no LIKE ? OR submitter LIKE ? OR expense_type LIKE ? OR remark LIKE ?)"
             kw = f"%{keyword}%"
@@ -1330,5 +1352,76 @@ class MappingCacheRepo:
         )
 
 
+# =====================================================================
+# 本地账号
+# =====================================================================
+class UserRepo:
+    def insert(self, conn, data: dict) -> int:
+        cur = conn.execute(
+            """INSERT INTO app_user
+               (username, display_name, role, password_hash, recovery_hash, is_active)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (data["username"], data.get("display_name", ""), data.get("role", "employee"),
+             data["password_hash"], data.get("recovery_hash", ""),
+             int(data.get("is_active", 1))),
+        )
+        return cur.lastrowid
+
+    def get(self, conn, user_id: int) -> Optional[dict]:
+        row = conn.execute("SELECT * FROM app_user WHERE id = ?", (user_id,)).fetchone()
+        return _row_to_dict(row)
+
+    def get_by_username(self, conn, username: str) -> Optional[dict]:
+        row = conn.execute("SELECT * FROM app_user WHERE username = ?", (username,)).fetchone()
+        return _row_to_dict(row)
+
+    def list(self, conn) -> List[dict]:
+        return _rows_to_dicts(conn.execute(
+            "SELECT * FROM app_user ORDER BY id ASC"))
+
+    def count(self, conn) -> int:
+        return conn.execute("SELECT COUNT(*) AS n FROM app_user").fetchone()["n"]
+
+    def count_admins(self, conn) -> int:
+        return conn.execute(
+            "SELECT COUNT(*) AS n FROM app_user WHERE role = 'admin' AND is_active = 1"
+        ).fetchone()["n"]
+
+    def update_fields(self, conn, user_id: int, data: dict) -> None:
+        fields = [k for k in ("display_name", "role", "password_hash",
+                              "recovery_hash", "is_active", "last_login_at",
+                              "must_change_pwd") if k in data]
+        if not fields:
+            return
+        sets = ", ".join(f"{f} = ?" for f in fields)
+        conn.execute(f"UPDATE app_user SET {sets} WHERE id = ?",
+                     [data[f] for f in fields] + [user_id])
+
+    def delete(self, conn, user_id: int) -> None:
+        conn.execute("DELETE FROM app_user WHERE id = ?", (user_id,))
+
+
+# =====================================================================
+# 轻量 KV（授权状态 / 登录密钥 / 月度额度）
+# =====================================================================
+class KVRepo:
+    def get(self, conn, key: str, default: str = None) -> Optional[str]:
+        row = conn.execute("SELECT v FROM kv WHERE k = ?", (key,)).fetchone()
+        return row["v"] if row else default
+
+    def set(self, conn, key: str, value: str) -> None:
+        conn.execute(
+            "INSERT INTO kv (k, v) VALUES (?, ?) "
+            "ON CONFLICT(k) DO UPDATE SET v = excluded.v, "
+            "updated_at = datetime('now','localtime')",
+            (key, str(value)),
+        )
+
+    def delete(self, conn, key: str) -> None:
+        conn.execute("DELETE FROM kv WHERE k = ?", (key,))
+
+
 template_repo = TemplateRepo()
 mapping_cache_repo = MappingCacheRepo()
+user_repo = UserRepo()
+kv_repo = KVRepo()

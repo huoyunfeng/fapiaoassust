@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block content %}
+<style>
+.rc-page{max-width:660px;margin:40px auto;background:#fff;border-radius:14px;padding:30px 34px;
+  box-shadow:0 12px 40px rgba(15,23,42,.08);}
+.rc-page h1{font-size:19px;margin-bottom:10px;}
+.rc-page p{font-size:13px;color:var(--text-2);line-height:1.9;}
+.rc-code{margin:20px 0;padding:16px;border-radius:10px;background:#f8fafc;border:1px dashed #cbd5e1;
+  text-align:center;font-size:22px;letter-spacing:2px;font-weight:700;color:#0f172a;
+  font-family:ui-monospace,Consolas,monospace;user-select:all;}
+.rc-actions{display:flex;gap:10px;align-items:center;margin-top:8px;}
+.rc-check{display:flex;gap:8px;font-size:13px;color:var(--text-2);line-height:1.6;margin-top:16px;}
+.rc-warn{margin-top:16px;padding:10px 12px;border-radius:8px;background:#fffbeb;color:#92400e;
+  font-size:12px;border:1px solid #fde68a;}
+.rc-btn{padding:10px 18px;border:none;border-radius:8px;background:var(--primary);color:#fff;
+  font-size:13px;font-weight:600;cursor:pointer;}
+.rc-btn:disabled{background:#cbd5e1;cursor:not-allowed;}
+.rc-copy{background:#fff;border:1px solid var(--border);border-radius:8px;padding:9px 14px;
+  font-size:13px;cursor:pointer;color:var(--text-2);}
+</style>
+<div class="rc-page">
+  <h1>确认应急恢复码</h1>
+  <p>系统要求管理员在首次进入前确认已保存应急恢复码。如果您刚才未保存（或刷新丢失了展示），
+     请点击下方按钮重新生成。<strong>生成后旧恢复码立即失效。</strong></p>
+  <div class="rc-code" id="rcCode" style="color:#94a3b8;font-size:14px;letter-spacing:0;">尚未生成</div>
+  <div class="rc-actions">
+    <button class="rc-btn" id="genBtn" type="button" onclick="genCode()">重新生成恢复码</button>
+    <button class="rc-copy" type="button" onclick="copyCode()">复制</button>
+  </div>
+  <label class="rc-check">
+    <input type="checkbox" id="rcChecked" onchange="document.getElementById('ackBtn').disabled = !this.checked;">
+    <span>我确认已妥善保存恢复码，理解丢失后需通过客服解锁码恢复管理员账号。</span>
+  </label>
+  <button class="rc-btn" id="ackBtn" type="button" style="margin-top:16px;" disabled onclick="ackAndEnter()">完成并进入系统</button>
+  <div class="rc-warn">安全提示：恢复码不要与登录密码存放在同一处，也不要发送到公共群聊。</div>
+</div>
+<script>
+async function genCode(){
+  const btn = document.getElementById('genBtn');
+  btn.disabled = true; btn.textContent = '生成中…';
+  try{
+    const r = await fetch('/api/auth/recovery-regenerate', {method:'POST'});
+    const d = await r.json();
+    if(!d.ok){ toast(d.message || '生成失败', false); return; }
+    window.__recoveryCode = d.recovery_code;
+    const box = document.getElementById('rcCode');
+    box.textContent = d.recovery_code;
+    box.style.color = '#0f172a'; box.style.fontSize = '22px'; box.style.letterSpacing = '2px';
+  }finally{
+    btn.disabled = false; btn.textContent = '重新生成恢复码';
+  }
+}
+function copyCode(){
+  if(!window.__recoveryCode){ toast('请先生成恢复码', false); return; }
+  navigator.clipboard.writeText(window.__recoveryCode).then(()=>toast('恢复码已复制'));
+}
+async function ackAndEnter(){
+  await fetch('/api/auth/recovery-ack', {method:'POST'});
+  location.href = '/';
+}
+</script>
+{% endblock %}

@@ -8,8 +8,9 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from app.config import RESOURCE_DIR
-from app.service import (audit_service, category_service, invoice_service,
-                         match_service, reimburse_service, report_service)
+from app.service import (audit_service, auth_service, category_service,
+                         invoice_service, license_service, match_service,
+                         reimburse_service, report_service)
 
 pages = APIRouter(tags=["pages"])
 # frozen 时模板在 PyInstaller 解压目录下的 app/web/templates
@@ -38,6 +39,8 @@ MATCH_TYPE_CN = {
     "many_to_one": "多对一", "manual": "人工指定",
 }
 templates.env.filters["match_type_cn"] = lambda s: MATCH_TYPE_CN.get(s, s)
+# 模板内可直接读取当前授权状态（左侧导航的套餐标识 / 升级入口）
+templates.env.globals["license_status"] = license_service.status
 templates.env.filters["fromjson"] = lambda s: (json.loads(s) if isinstance(s, str) and s else (s if isinstance(s, dict) else {}))
 # 业务规则中文展示（设置页规则列表）
 RULE_TYPE_CN = {
@@ -104,9 +107,12 @@ def _paginate(items: list, page: int, page_size: int) -> tuple:
 
 @pages.get("/", response_class=HTMLResponse)
 def dashboard(request: Request):
-    inv_counts = invoice_service.invoice_status_counts()
-    mc = match_service.match_counts()
-    report = report_service.build_report()
+    # 数据隔离：员工仪表盘只统计自己上传的发票
+    user = getattr(request.state, "user", None)
+    owner = None if auth_service.is_staff(user) else (user or {}).get("id")
+    inv_counts = invoice_service.invoice_status_counts(owner_user_id=owner)
+    mc = {} if owner else match_service.match_counts()
+    report = report_service.build_report(owner_user_id=owner)
     return templates.TemplateResponse(request, "dashboard.html", {
         "request": request,
         "inv_counts": inv_counts, "match_counts": mc,
@@ -226,31 +232,35 @@ def invoices_page(request: Request, status: str = "", q: str = "",
             date_from_f, date_to_f = _range_bounds("1y")
             range_mode = "1y"
 
+    # 数据隔离：员工强制只看自己上传的发票
+    user = getattr(request.state, "user", None)
+    owner = None if auth_service.is_staff(user) else (user or {}).get("id")
     total = invoice_service.count_invoices(status=status_f, keyword=kw,
                                            category=category_f,
                                            date_from=date_from_f, date_to=date_to_f,
-                                           since=None)
+                                           since=None, owner_user_id=owner)
     # focus 定位：目标行可能不在第 1 页，先算它所在的页码
     if focus_id:
         page = invoice_service.page_of_invoice(focus_id, status_f, kw, page_size,
                                                category=category_f,
                                                date_from=date_from_f,
                                                date_to=date_to_f,
-                                               since=None) or page
+                                               since=None,
+                                               owner_user_id=owner) or page
     pages_n = max(1, (total + page_size - 1) // page_size)
     page = min(max(1, page), pages_n)
     rows = invoice_service.list_invoices(status=status_f, keyword=kw,
                                          category=category_f,
                                          date_from=date_from_f, date_to=date_to_f,
                                          limit=page_size, offset=(page - 1) * page_size,
-                                         since=None)
+                                         since=None, owner_user_id=owner)
     return templates.TemplateResponse(request, "invoices.html", {
         "request": request, "rows": rows,
         "status": status, "q": q,
         "category": category, "date_from": date_from_f or "", "date_to": date_to_f or "",
         "range_mode": range_mode,
         "categories": category_service.enabled_names(),
-        "counts": invoice_service.invoice_status_counts(),
+        "counts": invoice_service.invoice_status_counts(owner_user_id=owner),
         "pager": {"total": total, "page": page, "pages": pages_n,
                   "page_size": page_size},
     })
@@ -260,6 +270,10 @@ def invoices_page(request: Request, status: str = "", q: str = "",
 def invoice_detail_page(request: Request, invoice_id: int):
     row = invoice_service.invoice_detail(invoice_id)
     if row is None:
+        return RedirectResponse("/invoices", status_code=302)
+    # 数据隔离：员工不能查看他人的发票详情
+    user = getattr(request.state, "user", None)
+    if not auth_service.is_staff(user) and row.get("owner_user_id") != user["id"]:
         return RedirectResponse("/invoices", status_code=302)
     return templates.TemplateResponse(request, "invoice_detail.html", {
         "request": request, "inv": row,

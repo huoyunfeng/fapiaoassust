@@ -1,0 +1,233 @@
+{% extends "base.html" %}
+{% block content %}
+<style>
+.pl-wrap{max-width:1080px;margin:26px auto 60px;}
+.pl-head{background:#fff;border-radius:14px;padding:22px 26px;box-shadow:0 10px 30px rgba(15,23,42,.06);
+  display:flex;justify-content:space-between;gap:20px;align-items:flex-start;flex-wrap:wrap;}
+.pl-head h1{font-size:20px;margin-bottom:6px;}
+.pl-head .sub{font-size:13px;color:var(--text-2);}
+.pl-mc{font-family:ui-monospace,Consolas,monospace;font-size:13px;background:#f8fafc;
+  border:1px dashed #cbd5e1;border-radius:8px;padding:8px 12px;color:#0f172a;}
+.pl-badge{display:inline-block;padding:3px 10px;border-radius:999px;font-size:12px;
+  background:#f1f5f9;color:#64748b;margin-left:8px;}
+.pl-badge.on{background:#ecfdf5;color:#047857;}
+.pl-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:18px;margin-top:20px;}
+.pl-card{background:#fff;border:1px solid var(--border);border-radius:14px;padding:24px 22px;
+  position:relative;display:flex;flex-direction:column;}
+.pl-card.hl{border-color:var(--primary);box-shadow:0 12px 36px rgba(37,99,235,.14);}
+.pl-card .tag{position:absolute;top:-11px;left:20px;background:var(--primary);color:#fff;
+  font-size:11px;padding:3px 10px;border-radius:999px;}
+.pl-name{font-size:17px;font-weight:700;}
+.pl-price{font-size:24px;font-weight:800;color:var(--primary);margin:10px 0 4px;}
+.pl-price small{font-size:12px;color:#94a3b8;font-weight:500;}
+.pl-desc{font-size:12px;color:#94a3b8;margin-bottom:14px;min-height:34px;line-height:1.6;}
+.pl-feat{font-size:13px;color:var(--text-2);line-height:2.1;flex:1;}
+.pl-feat li{list-style:none;}
+.pl-now{margin-top:16px;text-align:center;padding:9px;border-radius:8px;background:#f1f5f9;color:#64748b;font-size:13px;}
+.pl-buy{margin-top:16px;text-align:center;padding:9px;border-radius:8px;border:1px solid var(--primary);
+  color:var(--primary);font-size:13px;cursor:pointer;background:#fff;text-decoration:none;display:block;}
+.pl-buy:hover{background:var(--primary-light);}
+.pl-sec{background:#fff;border-radius:14px;padding:22px 26px;box-shadow:0 10px 30px rgba(15,23,42,.06);margin-top:20px;}
+.pl-sec h2{font-size:15px;margin-bottom:4px;}
+.pl-sec .hint{font-size:12px;color:#94a3b8;margin-bottom:14px;line-height:1.8;}
+.pl-row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;}
+.pl-row input{flex:1;min-width:240px;padding:10px 12px;border:1px solid var(--border);border-radius:8px;font-size:14px;}
+.pl-btn{padding:10px 18px;border:none;border-radius:8px;background:var(--primary);color:#fff;
+  font-size:13px;font-weight:600;cursor:pointer;}
+.pl-btn:disabled{opacity:.6;cursor:not-allowed;}
+.pl-btn.ghost{background:#fff;border:1px solid var(--border);color:var(--text-2);}
+.pl-msg{display:none;margin-top:12px;padding:10px 12px;border-radius:8px;font-size:13px;line-height:1.8;}
+.pl-qr{display:flex;gap:18px;align-items:center;padding:16px;border-radius:10px;
+  background:#f8fafc;border:1px dashed #cbd5e1;margin-top:8px;}
+.pl-qr .box{width:120px;height:120px;border-radius:10px;background:#fff;border:1px solid var(--border);
+  display:flex;align-items:center;justify-content:center;font-size:12px;color:#94a3b8;text-align:center;padding:8px;}
+.pl-qr .box img{width:100%;height:100%;object-fit:contain;}
+.pl-invite{font-family:ui-monospace,Consolas,monospace;font-size:11px;word-break:break-all;
+  background:#f8fafc;border:1px dashed #cbd5e1;border-radius:8px;padding:10px;color:#334155;
+  max-height:120px;overflow:auto;margin-top:10px;display:none;}
+</style>
+
+<div class="pl-wrap">
+  <div class="pl-head">
+    <div>
+      <h1>升级 / 授权中心
+        <span class="pl-badge {{ 'on' if license.activated else '' }}">{{ license.plan_name }}</span>
+      </h1>
+      <div class="sub">
+        {% if license.activated %}
+          授权有效期至 {{ license.exp_date }}；{% if license.role == 'sub' %}子设备{% else %}主设备{% endif %}
+        {% elif license.expired %}
+          授权已于 {{ license.exp_date }} 过期，已降级为免费版
+        {% elif license.error %}
+          本机授权无效：{{ license.error }}
+        {% else %}
+          当前为免费版{% if license.quota.limit %}，本月额度 {{ license.quota.used }}/{{ license.quota.limit }} 张{% endif %}
+        {% endif %}
+      </div>
+    </div>
+    <div style="text-align:right;">
+      <div style="font-size:12px;color:#94a3b8;margin-bottom:6px;">本机机器码（只读）</div>
+      <div class="pl-mc" id="mc">{{ license.machine_code }}</div>
+    </div>
+  </div>
+
+  {% if feature %}
+  <div class="pl-sec" style="border-left:4px solid #f59e0b;">
+    <h2>该功能需要升级</h2>
+    <div class="hint">
+      免费版仅支持基础台账（每月 {{ license.quota.limit or 20 }} 张发票）。
+      {% if feature == 'matching' %}智能匹配{% elif feature == 'export' %}数据导出{% elif feature == 'team' %}多账号团队管理{% endif %}
+      属于付费能力，升级后立即解锁，数据不受影响。
+    </div>
+    <div class="pl-qr">
+      <div class="box">
+        {% if license.payment_qr_url %}
+        <img src="{{ license.payment_qr_url }}" alt="收款二维码">
+        {% else %}收款码<br>请联系客服{% endif %}
+      </div>
+      <div style="font-size:13px;color:var(--text-2);line-height:2;">
+        扫码支付后，客服会发送<strong>订单号</strong>；<br>
+        在下方「立即激活」输入订单号即可自动开通。<br>
+        机器码：<strong>{{ license.machine_code }}</strong>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  <div class="pl-grid">
+    {% for p in license.plans %}
+    <div class="pl-card {% if p.key == 'enterprise' %}hl{% endif %}">
+      {% if p.key == 'enterprise' %}<span class="tag">推荐 · 多设备 / 多账号</span>{% endif %}
+      <div class="pl-name">{{ p.name }}</div>
+      <div class="pl-price">{{ p.price }}</div>
+      <div class="pl-desc">{{ p.desc }}</div>
+      <ul class="pl-feat">
+        <li>✓ 每月发票额度：{{ '不限' if p.monthly_invoice_quota is none else p.monthly_invoice_quota ~ ' 张' }}</li>
+        <li>✓ 智能匹配：{{ '支持' if p.matching else '不支持' }}</li>
+        <li>✓ 数据导出：{{ '支持' if p.export else '不支持' }}</li>
+        <li>✓ 多账号团队：{{ '支持' if p.team else '不支持' }}</li>
+        <li>✓ 可绑定设备：{{ p.devices }} 台</li>
+      </ul>
+      {% if p.current %}
+      <div class="pl-now">当前套餐</div>
+      {% else %}
+      <a class="pl-buy" href="#activate">选择此套餐</a>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+
+  {% if request.state.user and request.state.user.role == 'admin' %}
+  <div class="pl-sec" id="activate">
+    <h2>立即激活</h2>
+    <div class="hint">输入客服提供的订单号，系统会加密上报本机机器码并自动换取授权码（全程约 1~3 秒）。</div>
+    <div class="pl-row">
+      <input id="orderId" placeholder="请输入订单号，如 ORD-20261105-001" autocomplete="off">
+      <button class="pl-btn" id="actBtn" type="button" onclick="activate()">验证并立即激活</button>
+    </div>
+    <div class="pl-msg" id="actMsg"></div>
+    <div class="hint" style="margin-top:14px;">
+      激活失败？请先确认订单号无误、网络可访问授权服务器；
+      若仍失败，可点击<a href="/recover">这里</a>使用客服解锁码，或把机器码发给客服人工处理。
+    </div>
+  </div>
+
+  <div class="pl-sec">
+    <h2>多设备授权</h2>
+    <div class="hint">
+      企业版主设备可生成「企业邀请码」，子设备输入邀请码 + 本机机器码即可绑定（云端签发独立子授权）。
+    </div>
+    <div class="pl-row">
+      <button class="pl-btn ghost" type="button" onclick="getInvite()">生成企业邀请码</button>
+      <button class="pl-btn ghost" type="button" onclick="syncLicense()">同步授权状态</button>
+    </div>
+    <div class="pl-invite" id="inviteBox"></div>
+    <div class="pl-row" style="margin-top:14px;">
+      <input id="inviteInput" placeholder="粘贴企业邀请码（子设备绑定用）">
+      <button class="pl-btn" id="bindBtn" type="button" onclick="bindSub()">绑定本机为子设备</button>
+    </div>
+    <div class="pl-msg" id="bindMsg"></div>
+  </div>
+  {% else %}
+  <div class="pl-sec">
+    <h2>如何升级</h2>
+    <div class="hint">
+      授权激活与设备绑定为管理员专属操作。如需升级套餐，请联系管理员使用订单号开通；
+      机器码：<strong>{{ license.machine_code }}</strong>
+    </div>
+  </div>
+  {% endif %}
+</div>
+
+<script>
+function show(el, msg, ok){
+  el.textContent = msg; el.style.display = 'block';
+  el.style.background = ok ? '#f0fdf4' : '#fef2f2';
+  el.style.color = ok ? '#15803d' : '#dc2626';
+  el.style.border = ok ? '1px solid #bbf7d0' : '1px solid #fecaca';
+}
+async function activate(){
+  const order = document.getElementById('orderId').value.trim();
+  const btn = document.getElementById('actBtn');
+  const msg = document.getElementById('actMsg');
+  if(!order){ show(msg, '请输入订单号', false); return; }
+  btn.disabled = true; btn.textContent = '正在校验并激活…';
+  msg.style.display = 'none';
+  try{
+    const r = await fetch('/api/license/activate', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({order_id: order})
+    });
+    const d = await r.json();
+    if(!r.ok || !d.ok){
+      show(msg, (d.message || '激活失败') + '　如订单号无误仍失败，请联系客服获取解锁码。', false);
+      return;
+    }
+    show(msg, d.message + '，正在刷新…', true);
+    setTimeout(()=>location.reload(), 1200);
+  }catch(e){
+    show(msg, '网络异常：无法连接授权服务器，请检查网络后重试，或联系客服获取解锁码。', false);
+  }finally{
+    btn.disabled = false; btn.textContent = '验证并立即激活';
+  }
+}
+async function getInvite(){
+  const box = document.getElementById('inviteBox');
+  try{
+    const r = await fetch('/api/license/invite');
+    const d = await r.json();
+    if(!d.ok){ toast(d.message || '无法生成邀请码', false); return; }
+    box.textContent = d.invite_code;
+    box.style.display = 'block';
+    navigator.clipboard.writeText(d.invite_code).then(()=>toast('企业邀请码已复制'));
+  }catch(e){ toast('网络异常', false); }
+}
+async function bindSub(){
+  const code = document.getElementById('inviteInput').value.trim();
+  const btn = document.getElementById('bindBtn');
+  const msg = document.getElementById('bindMsg');
+  if(!code){ show(msg, '请粘贴企业邀请码', false); return; }
+  btn.disabled = true; btn.textContent = '绑定中…';
+  try{
+    const r = await fetch('/api/license/bind-sub', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({invite_code: code})
+    });
+    const d = await r.json();
+    if(!r.ok || !d.ok){ show(msg, d.message || '绑定失败', false); return; }
+    show(msg, d.message + '，正在刷新…', true);
+    setTimeout(()=>location.reload(), 1200);
+  }catch(e){ show(msg, '网络异常，请稍后重试', false); }
+  finally{ btn.disabled = false; btn.textContent = '绑定本机为子设备'; }
+}
+async function syncLicense(){
+  try{
+    const r = await fetch('/api/license/sync', {method:'POST'});
+    const d = await r.json();
+    if(!d.ok){ toast(d.message || '同步失败', false); return; }
+    toast('授权状态已同步');
+    setTimeout(()=>location.reload(), 800);
+  }catch(e){ toast('网络异常', false); }
+}
+</script>
+{% endblock %}

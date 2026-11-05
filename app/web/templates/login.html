@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+{% block content %}
+<style>
+.auth-wrap{min-height:calc(100vh - 140px);display:flex;align-items:center;justify-content:center;}
+.auth-card{width:400px;max-width:94vw;background:#fff;border-radius:14px;
+  box-shadow:0 18px 50px rgba(15,23,42,.10);padding:34px 34px 28px;}
+.auth-logo{text-align:center;font-size:13px;color:var(--primary);font-weight:600;letter-spacing:.5px;}
+.auth-title{margin:10px 0 4px;text-align:center;font-size:20px;font-weight:700;color:var(--text);}
+.auth-sub{text-align:center;font-size:13px;color:#94a3b8;margin-bottom:24px;}
+.auth-field{margin-bottom:16px;}
+.auth-field label{display:block;font-size:13px;color:var(--text-2);margin-bottom:6px;}
+.auth-field input{width:100%;box-sizing:border-box;padding:10px 12px;border:1px solid var(--border);
+  border-radius:8px;font-size:14px;outline:none;transition:.15s;}
+.auth-field input:focus{border-color:var(--primary);box-shadow:0 0 0 3px rgba(37,99,235,.10);}
+.auth-remember{display:flex;align-items:center;gap:7px;font-size:13px;color:var(--text-2);margin:4px 0 20px;}
+.auth-actions{display:flex;align-items:center;justify-content:space-between;}
+.auth-actions a{font-size:13px;color:var(--primary);text-decoration:none;}
+.auth-btn{width:100%;padding:11px;border:none;border-radius:8px;background:var(--primary);color:#fff;
+  font-size:14px;font-weight:600;cursor:pointer;margin-top:18px;}
+.auth-btn:disabled{opacity:.6;cursor:not-allowed;}
+.auth-err{display:none;margin-top:14px;padding:9px 12px;border-radius:8px;background:#fef2f2;
+  color:#dc2626;font-size:13px;border:1px solid #fecaca;}
+</style>
+<div class="auth-wrap">
+  <div class="auth-card">
+    <div class="auth-logo">发票报销核对助手</div>
+    <div class="auth-title">账号登录</div>
+    <div class="auth-sub">登录后按角色查看业务数据</div>
+    <form id="loginForm" onsubmit="return doLogin(event)">
+      <div class="auth-field">
+        <label>账号</label>
+        <input id="username" autocomplete="username" placeholder="请输入用户名" required autofocus>
+      </div>
+      <div class="auth-field">
+        <label>密码</label>
+        <input id="password" type="password" autocomplete="current-password" placeholder="请输入密码" required>
+      </div>
+      <label class="auth-remember"><input type="checkbox" id="remember"> 30 天内免登录</label>
+      <div class="auth-actions">
+        <a href="/forgot-password">忘记密码？</a>
+        <span class="muted" style="font-size:12px;">首次使用请联系管理员开通账号</span>
+      </div>
+      <button class="auth-btn" id="loginBtn" type="submit">登录</button>
+      <div class="auth-err" id="loginErr"></div>
+    </form>
+  </div>
+</div>
+<script>
+function showErr(msg){
+  const box = document.getElementById('loginErr');
+  box.textContent = msg; box.style.display = 'block';
+}
+async function doLogin(ev){
+  ev.preventDefault();
+  const btn = document.getElementById('loginBtn');
+  document.getElementById('loginErr').style.display = 'none';
+  btn.disabled = true; btn.textContent = '登录中…';
+  try{
+    const r = await fetch('/api/auth/login', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        username: document.getElementById('username').value.trim(),
+        password: document.getElementById('password').value,
+        remember: document.getElementById('remember').checked
+      })
+    });
+    const d = await r.json();
+    if(!r.ok || !d.ok){ showErr(d.message || '登录失败'); return false; }
+    // 仅允许站内相对路径，拒绝 //evil.com、http(s)://、反斜杠等开放重定向
+    const raw = new URLSearchParams(location.search).get('next') || d.redirect || '/';
+    const next = (typeof raw === 'string' && raw.startsWith('/')
+                  && !raw.startsWith('//') && !raw.includes('\\')) ? raw : '/';
+    location.href = next;
+  }catch(e){
+    showErr('网络异常，请稍后重试');
+  }finally{
+    btn.disabled = false; btn.textContent = '登录';
+  }
+  return false;
+}
+</script>
+{% endblock %}

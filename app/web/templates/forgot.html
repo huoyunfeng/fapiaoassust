@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% block content %}
+<style>
+.fp-wrap{max-width:520px;margin:44px auto;}
+.fp-card{background:#fff;border-radius:14px;padding:30px 32px;box-shadow:0 14px 44px rgba(15,23,42,.08);}
+.fp-title{font-size:19px;font-weight:700;margin-bottom:6px;}
+.fp-sub{font-size:13px;color:#94a3b8;margin-bottom:18px;}
+.fp-tabs{display:flex;gap:8px;margin-bottom:20px;}
+.fp-tab{flex:1;text-align:center;padding:9px;border-radius:8px;border:1px solid var(--border);
+  background:#fff;font-size:13px;color:var(--text-2);cursor:pointer;}
+.fp-tab.on{background:var(--primary-light);border-color:var(--primary);color:var(--primary);font-weight:600;}
+.fp-field{margin-bottom:13px;}
+.fp-field label{display:block;font-size:13px;color:var(--text-2);margin-bottom:6px;}
+.fp-field input{width:100%;box-sizing:border-box;padding:10px 12px;border:1px solid var(--border);border-radius:8px;font-size:14px;}
+.fp-btn{width:100%;padding:11px;border:none;border-radius:8px;background:var(--primary);color:#fff;
+  font-size:14px;font-weight:600;cursor:pointer;margin-top:8px;}
+.fp-msg{display:none;margin-top:14px;padding:10px 12px;border-radius:8px;font-size:13px;}
+.fp-help{margin-top:16px;font-size:12px;color:var(--text-2);line-height:1.8;}
+.fp-help a{color:var(--primary);text-decoration:none;}
+</style>
+<div class="fp-wrap">
+  <div class="fp-card">
+    <div class="fp-title">找回密码</div>
+    <div class="fp-sub">管理员可通过应急恢复码自助重置；普通员工请联系管理员。</div>
+    <div class="fp-tabs">
+      <div class="fp-tab on" id="tabAdmin" onclick="switchTab('admin')">管理员找回</div>
+      <div class="fp-tab" id="tabEmployee" onclick="switchTab('employee')">员工找回</div>
+    </div>
+
+    <div id="paneAdmin">
+      <form onsubmit="return doForgot(event)">
+        <div class="fp-field"><label>管理员账号</label><input id="fpUser" required autofocus></div>
+        <div class="fp-field"><label>16 位应急恢复码</label>
+          <input id="fpCode" placeholder="XXXX-XXXX-XXXX-XXXX" required></div>
+        <div class="fp-field"><label>新密码（至少 8 位）</label><input id="fpPwd" type="password" required></div>
+        <div class="fp-field"><label>确认新密码</label><input id="fpPwd2" type="password" required></div>
+        <button class="fp-btn" id="fpBtn" type="submit">重置密码</button>
+        <div class="fp-msg" id="fpMsg"></div>
+      </form>
+      <div class="fp-help">恢复码也丢失了？可使用<a href="/recover">超管解锁码</a>恢复，
+        解锁码需联系客服获取（绑定本机机器码）。</div>
+    </div>
+
+    <div id="paneEmployee" style="display:none;">
+      <div class="fp-help" style="margin-top:0;font-size:13px;">
+        员工账号不支持自助找回密码。<br>
+        请联系本单位管理员，在「团队管理 → 重置密码」中为您设置新密码。<br><br>
+        管理员重置后，请使用新密码登录，并建议立即修改为自己的常用密码。
+      </div>
+      <a class="fp-btn" style="display:block;text-align:center;text-decoration:none;margin-top:18px;"
+         href="/login">返回登录</a>
+    </div>
+  </div>
+</div>
+<script>
+function switchTab(which){
+  document.getElementById('tabAdmin').classList.toggle('on', which==='admin');
+  document.getElementById('tabEmployee').classList.toggle('on', which==='employee');
+  document.getElementById('paneAdmin').style.display = which==='admin' ? '' : 'none';
+  document.getElementById('paneEmployee').style.display = which==='employee' ? '' : 'none';
+}
+function showMsg(msg, ok){
+  const m = document.getElementById('fpMsg');
+  m.textContent = msg; m.style.display = 'block';
+  m.style.background = ok ? '#f0fdf4' : '#fef2f2';
+  m.style.color = ok ? '#15803d' : '#dc2626';
+}
+async function doForgot(ev){
+  ev.preventDefault();
+  const pwd = document.getElementById('fpPwd').value;
+  if(pwd.length < 8){ showMsg('新密码至少 8 位', false); return false; }
+  if(pwd !== document.getElementById('fpPwd2').value){ showMsg('两次输入的新密码不一致', false); return false; }
+  const btn = document.getElementById('fpBtn');
+  btn.disabled = true; btn.textContent = '提交中…';
+  try{
+    const r = await fetch('/api/auth/forgot', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        channel:'admin',
+        username: document.getElementById('fpUser').value.trim(),
+        recovery_code: document.getElementById('fpCode').value.trim(),
+        new_password: pwd
+      })
+    });
+    const d = await r.json();
+    showMsg(d.message || '操作完成', !!d.ok);
+    if(d.ok){ setTimeout(()=>location.href='/login', 1200); }
+  }catch(e){ showMsg('网络异常，请稍后重试', false); }
+  finally{ btn.disabled = false; btn.textContent = '重置密码'; }
+  return false;
+}
+</script>
+{% endblock %}

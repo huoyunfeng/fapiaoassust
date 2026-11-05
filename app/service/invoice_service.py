@@ -164,6 +164,19 @@ def import_files(files: List[tuple[str, str, bytes]], operator: str = None,
     return results
 
 
+def assign_owner(invoice_ids: List[int], user_id: int) -> None:
+    """把新导入的发票归属到当前登录员工（数据隔离用）。"""
+    ids = [int(i) for i in invoice_ids if i]
+    if not ids or not user_id:
+        return
+    with db.tx() as conn:
+        conn.execute(
+            "UPDATE invoice SET owner_user_id = ? WHERE owner_user_id IS NULL AND id IN ("
+            + ", ".join("?" for _ in ids) + ")",
+            [user_id] + ids,
+        )
+
+
 def _import_one(file_name: str, content: bytes, operator: str) -> dict:
     file_type = _file_store.detect_type(file_name)
     if not _file_store.is_supported(file_name):
@@ -798,19 +811,22 @@ def _attach_categories(conn, rows: List[dict]) -> None:
 def list_invoices(status: str = None, keyword: str = None,
                   category: str = None, date_from: str = None, date_to: str = None,
                   limit: int = 500, offset: int = 0,
-                  since: str = None) -> List[dict]:
-    """since: 冷热分离下界（按开票日期，None = 取全部历史）。"""
+                  since: str = None, owner_user_id: int = None) -> List[dict]:
+    """since: 冷热分离下界（按开票日期，None = 取全部历史）。
+    owner_user_id: 数据隔离（员工只能取自己的发票；财务/管理员传 None）。
+    """
     with db.read() as conn:
         if category:
             ids = _category_ids(conn, category, status, keyword, date_from, date_to,
-                                since=since)
+                                since=since, owner_user_id=owner_user_id)
             page_ids = ids[offset:offset + limit]
             rows = (invoice_repo.list(conn, ids=page_ids, limit=len(page_ids))
                     if page_ids else [])
         else:
             rows = invoice_repo.list(conn, status=status, keyword=keyword,
                                      date_from=date_from, date_to=date_to,
-                                     limit=limit, offset=offset, since=since)
+                                     limit=limit, offset=offset, since=since,
+                                     owner_user_id=owner_user_id)
         _attach_categories(conn, rows)
     # 给每条补上 item_summary_raw（优先用户编辑值，其次解析原始值，最后清洗后值兜底）
     for r in rows:
@@ -833,52 +849,56 @@ def _drill_exclude(status: str, category: str) -> Optional[tuple]:
 
 def _category_ids(conn, category: str, status: str = None, keyword: str = None,
                   date_from: str = None, date_to: str = None,
-                  since: str = None) -> List[int]:
+                  since: str = None, owner_user_id: int = None) -> List[int]:
     """分类过滤后的发票 id 列表（id 升序）。分类是派生值，只能取摘要列内存过滤。"""
     rows = invoice_repo.expense_rows(
         conn, status=status, keyword=keyword, date_from=date_from, date_to=date_to,
-        exclude_status=_drill_exclude(status, category), light=True, since=since)
+        exclude_status=_drill_exclude(status, category), light=True, since=since,
+        owner_user_id=owner_user_id)
     decisions = _resolve_rows(rows, category_repo.memory_all(conn), alias_repo.all(conn))
     return sorted(i for i, d in decisions.items() if d["category"] == category)
 
 
 def count_invoices(status: str = None, keyword: str = None, category: str = None,
                    date_from: str = None, date_to: str = None,
-                   since: str = None) -> int:
+                   since: str = None, owner_user_id: int = None) -> int:
     """发票总数（与 list_invoices 同筛选口径，分页用）。"""
     with db.read() as conn:
         if category:
             return len(_category_ids(conn, category, status, keyword, date_from, date_to,
-                                     since=since))
+                                     since=since, owner_user_id=owner_user_id))
         return invoice_repo.count(conn, status=status, keyword=keyword,
-                                  date_from=date_from, date_to=date_to, since=since)
+                                  date_from=date_from, date_to=date_to, since=since,
+                                  owner_user_id=owner_user_id)
 
 
 def page_of_invoice(invoice_id: int, status: str = None, keyword: str = None,
                     page_size: int = 20, category: str = None,
                     date_from: str = None, date_to: str = None,
-                    since: str = None) -> Optional[int]:
+                    since: str = None, owner_user_id: int = None) -> Optional[int]:
     """focus 定位：发票在筛选结果（id 升序）中所在的页码（1 起），不存在返回 None。"""
     with db.read() as conn:
         if invoice_repo.get(conn, invoice_id) is None:
             return None
         if category:
             ids = _category_ids(conn, category, status, keyword, date_from, date_to,
-                                since=since)
+                                since=since, owner_user_id=owner_user_id)
             pos = ids.index(invoice_id) if invoice_id in ids else None
             return (pos // page_size + 1) if pos is not None else None
         pos = invoice_repo.position_of(conn, invoice_id, status=status, keyword=keyword,
                                        date_from=date_from, date_to=date_to,
-                                       since=since)
+                                       since=since, owner_user_id=owner_user_id)
     return pos // page_size + 1
 
 
-def invoice_status_counts() -> Dict[str, int]:
+def invoice_status_counts(owner_user_id: int = None) -> Dict[str, int]:
+    """各状态发票数量；owner_user_id 非空时只统计该员工自己的发票。"""
     with db.read() as conn:
-        return invoice_repo.count_by_status(conn)
+        return invoice_repo.count_by_status(conn, owner_user_id=owner_user_id)
 
 
-def expense_breakdown(date_from: str = None, date_to: str = None, top_n: int = 5) -> dict:
+def expense_breakdown(date_from: str = None, date_to: str = None, top_n: int = 5,
+                      owner_user_id: int = None) -> dict:
     """费用构成统计：报销单（业务实质）> 模板 > 发票（税务凭证）。
 
     分类优先级（见 domain/categorize.resolve_category）：
@@ -899,7 +919,8 @@ def expense_breakdown(date_from: str = None, date_to: str = None, top_n: int = 5
     """
     with db.read() as conn:
         rows = invoice_repo.expense_rows(conn, date_from=date_from, date_to=date_to,
-                                        exclude_status=_STATS_EXCLUDED)
+                                        exclude_status=_STATS_EXCLUDED,
+                                        owner_user_id=owner_user_id)
         memory = category_repo.memory_all(conn)
         alias_map = alias_repo.all(conn)
         dict_names = category_dict_repo.names(conn, enabled_only=False)
@@ -1403,12 +1424,14 @@ def set_reimburse_category(reimburse_id: int, category: str,
             "matched": True, "mode": "sync", "invoice_count": len(ids)}
 
 
-def export_excel(status: str = None, keyword: str = None, ids: list = None) -> bytes:
+def export_excel(status: str = None, keyword: str = None, ids: list = None,
+                 owner_user_id: int = None) -> bytes:
     """导出发票清单 Excel（支持按当前筛选条件或指定 ids 导出，上限 10 万条）。"""
     import io
     from openpyxl import Workbook
     with db.read() as conn:
-        rows = invoice_repo.list(conn, status=status, keyword=keyword, limit=100000, ids=ids)
+        rows = invoice_repo.list(conn, status=status, keyword=keyword, limit=100000,
+                                 ids=ids, owner_user_id=owner_user_id)
     wb = Workbook()
     ws = wb.active
     ws.title = "发票清单"

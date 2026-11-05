@@ -6,9 +6,11 @@
     {% if inv.is_red_flush %}<span class="badge badge-red">红冲</span>{% endif %}
   </h1>
   <div class="page-head-actions">
+    {% if request.state.user.role != 'employee' %}
     {% if inv.status == 'ABNORMAL' %}<button class="btn" onclick="openFix()">人工修正</button>{% endif %}
     {% if inv.status == 'DUPLICATE' %}<button class="btn btn-green" onclick="confirmDup()">确认非重复</button>{% endif %}
     <button class="btn btn-danger" onclick="delInv()">删除</button>
+    {% endif %}
     <a class="btn btn-outline" href="/invoices">返回列表</a>
   </div>
 </div>

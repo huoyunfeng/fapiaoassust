@@ -34,8 +34,22 @@ class Settings:
     many_to_one_max_invoices: int = 5
     many_to_one_pool_size: int = 20
 
-    # 默认操作人（本系统为单机工具，无登录体系）
+    # 默认操作人（未登录场景/系统自动任务使用）
     default_operator: str = "admin"
+
+    # ---------------------------------------------------------------- 商业化与授权
+    # 云端发码服务（私钥仅存在于云端，本机只内置公钥）
+    cloud_base_url: str = field(
+        default_factory=lambda: os.getenv("FAPIAO_CLOUD_URL", "http://182.92.198.99:8000"))
+    cloud_timeout: float = 8.0          # 激活请求 8 秒超时（设计要求）
+    # 本机内置公钥（可公开）；私钥绝不下发到客户端，只存在于云端 license_server.py
+    license_public_key_pem: bytes = b"""-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEArOfm+QkZvj269aiCTKdzJ6KJWfsvwl0wJySXO54qp2Y=
+-----END PUBLIC KEY-----"""
+    initial_password: str = "Admin@123"  # 超管解锁码重置后的初始密码
+    free_monthly_invoice_quota: int = 20  # 免费版每月发票额度
+    # 收款二维码图片地址（留空则前端展示"联系客服获取收款码"占位说明）
+    payment_qr_url: str = field(default_factory=lambda: os.getenv("FAPIAO_PAY_QR_URL", ""))
 
     # SQLite 同步级别（FULL/NORMAL/OFF）：默认 FULL 保证断电安全。
     # FAPIAO_SYNC=OFF 供特定受限环境（工具沙箱内 E: 盘 fsync 一次 400ms+）启动时降级，

@@ -14,26 +14,41 @@ from app.repository.repos import (category_dict_repo, invoice_repo,
 from app.service.invoice_service import _raw_json, resolve_categories  # 复用解析与统一分类口径
 
 
-def build_report() -> dict:
-    """汇聚差异报告数据：汇总统计 + 匹配明细 + 异常清单。"""
+def build_report(owner_user_id: int = None) -> dict:
+    """汇聚差异报告数据：汇总统计 + 匹配明细 + 异常清单。
+
+    owner_user_id 非空时只统计该员工自己的发票（员工数据隔离）。
+    """
     with db.read() as conn:
-        inv_counts = invoice_repo.count_by_status(conn)
+        inv_counts = invoice_repo.count_by_status(conn, owner_user_id=owner_user_id)
         match_counts = match_repo.count_by_status(conn)
-        reb_total = reimburse_repo.count(conn)
         matches = match_repo.list(conn)
         pairs = match_repo.pairs_of(conn, [m["id"] for m in matches])
         occupied = match_repo.active_reimburse_ids(conn)
 
-        all_reimburses = reimburse_repo.list(conn, limit=100000)
+        all_reimburses = reimburse_repo.list(conn, limit=100000,
+                                            owner_user_id=owner_user_id)
+        reb_total = (len(all_reimburses) if owner_user_id is not None
+                     else reimburse_repo.count(conn))
         reb_map = {r["id"]: r for r in all_reimburses}
         reb_no_map = {}
         for m in matches:
             for p in pairs.get(m["id"], []):
                 reb_no_map[m["id"]] = reb_map.get(p["reimburse_id"])
 
-        abnormal = [r for r in invoice_repo.list(conn, status="ABNORMAL", limit=10000)]
-        duplicates = [r for r in invoice_repo.list(conn, status="DUPLICATE", limit=10000)]
-        normal_invoices = invoice_repo.list(conn, status="NORMAL", limit=100000)
+        # 员工隔离：匹配记录按发票归属过滤（报表不再看到他人数据）
+        if owner_user_id is not None:
+            owned_ids = {i["id"] for i in invoice_repo.list(
+                conn, limit=100000, owner_user_id=owner_user_id)}
+            matches = [m for m in matches if m["invoice_id"] in owned_ids]
+            match_counts = {}
+
+        abnormal = [r for r in invoice_repo.list(conn, status="ABNORMAL", limit=10000,
+                                                 owner_user_id=owner_user_id)]
+        duplicates = [r for r in invoice_repo.list(conn, status="DUPLICATE", limit=10000,
+                                                   owner_user_id=owner_user_id)]
+        normal_invoices = invoice_repo.list(conn, status="NORMAL", limit=100000,
+                                            owner_user_id=owner_user_id)
         matched_invoice_ids = {m["invoice_id"] for m in matches if m["status"] in ("MATCHED", "CONFIRMED")}
 
     # 附带 raw_json（解析错误/重复原因），供页面展示

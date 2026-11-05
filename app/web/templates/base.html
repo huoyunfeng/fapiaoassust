@@ -36,6 +36,17 @@ button,input,select,textarea{font-family:inherit;color:inherit;}
 .nav .brand{font-weight:700;font-size:16px;margin-right:24px;color:var(--primary);}
 .nav a{padding:8px 14px;border-radius:var(--radius);color:var(--text-2);text-decoration:none;transition:var(--transition);}
 .nav a:hover,.nav a.active{background:var(--primary-light);color:var(--primary);}
+.nav-plan{margin-left:12px;font-size:12px;padding:4px 10px;border-radius:999px;
+  background:#f1f5f9;color:#64748b;white-space:nowrap;}
+.nav-plan.personal{background:#ecfdf5;color:#047857;}
+.nav-plan.enterprise{background:#eff6ff;color:#1d4ed8;}
+.nav-user{margin-left:auto;display:flex;align-items:center;gap:10px;font-size:13px;color:var(--text-2);}
+.nav-user .who{max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.nav-user .who b{color:var(--text);font-weight:600;}
+.nav-user .role{font-size:11px;padding:2px 8px;border-radius:999px;background:#f1f5f9;color:#64748b;}
+.nav-user button{border:1px solid var(--border);background:#fff;color:var(--text-2);
+  border-radius:6px;padding:5px 10px;font-size:12px;cursor:pointer;}
+.nav-user button:hover{color:var(--primary);border-color:var(--primary);}
 .container{max-width:1560px;margin:var(--space) auto;padding:0 var(--space);}
 /* 卡片：8px 圆角 + 极浅阴影，去掉生硬边框（保留透明边框位，便于风险卡片着色） */
 .card{background:var(--card);border:1px solid transparent;border-radius:var(--radius-card);padding:var(--space);margin-bottom:var(--space);box-shadow:var(--shadow-card);transition:var(--transition);}
@@ -238,14 +249,31 @@ tr.row-focus td{animation:focusFlash .7s ease-in-out 3;}
 </style>
 </head>
 <body>
+{% set u = request.state.user %}
+{% set lic = license_status() %}
 <div class="nav">
   <span class="brand">发票报销核对助手</span>
+  {% if u %}
   <a href="/" {% if request.url.path=='/' %}class="active"{% endif %}>仪表盘</a>
-  <a href="/invoices" {% if request.url.path.startswith('/invoices') %}class="active"{% endif %}>发票</a>
+  <a href="/invoices" {% if request.url.path.startswith('/invoices') %}class="active"{% endif %}>{% if u.role=='employee' %}我的发票{% else %}发票{% endif %}</a>
+  {% if u.role != 'employee' %}
   <a href="/reimburses" {% if request.url.path.startswith('/reimburses') %}class="active"{% endif %}>报销单</a>
   <a href="/matches" {% if request.url.path.startswith('/matches') %}class="active"{% endif %}>匹配中心</a>
   <a href="/report" {% if request.url.path.startswith('/report') %}class="active"{% endif %}>差异报告</a>
   <a href="/settings" {% if request.url.path.startswith('/settings') %}class="active"{% endif %}>设置</a>
+  {% endif %}
+  {% if u.role == 'admin' %}
+  <a href="/team" {% if request.url.path.startswith('/team') %}class="active"{% endif %}>团队管理</a>
+  <a href="/advanced" {% if request.url.path.startswith('/advanced') %}class="active"{% endif %}>高级设置</a>
+  {% endif %}
+  <a href="/plans" {% if request.url.path.startswith('/plans') %}class="active"{% endif %}>升级 / 授权</a>
+  <span class="nav-plan {{ lic.plan }}">{{ lic.plan_name }}{% if lic.exp_date %} · 至 {{ lic.exp_date }}{% endif %}</span>
+  <div class="nav-user">
+    <span class="who"><b>{{ u.display_name or u.username }}</b></span>
+    <span class="role">{{ u.role_cn }}</span>
+    <button type="button" onclick="App.logout()">退出</button>
+  </div>
+  {% endif %}
 </div>
 <div class="container">{% block content %}{% endblock %}</div>
 <div class="modal-bg" id="modalBg" onclick="closeModal()"></div>
@@ -350,6 +378,14 @@ const FilterCache = {
       const k = sessionStorage.key(i);
       if(k && k.startsWith(this.KEY_PREFIX)) sessionStorage.removeItem(k);
     }
+  }
+};
+
+// 全局账号操作（顶部导航「退出」）
+const App = {
+  async logout(){
+    try{ await fetch('/api/auth/logout', {method:'POST'}); }catch(e){}
+    location.href = '/login';
   }
 };
 

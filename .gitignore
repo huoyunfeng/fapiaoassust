@@ -17,3 +17,10 @@ data/backups/
 
 # 虚拟环境
 venv/
+
+# 云端授权服务：私钥与业务数据，永不提交
+cloud/private_key.pem
+cloud/*.pem
+cloud/orders.json
+cloud/devices.json
+cloud/blacklist.json

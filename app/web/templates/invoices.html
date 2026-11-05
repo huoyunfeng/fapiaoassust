@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% from "_pager.html" import render_pager %}
 {% block content %}
+{% set is_emp = request.state.user and request.state.user.role == 'employee' %}
 <style>
 /* ===== 与报销单页一致的 PRD 视觉规范 ===== */
 /* ===== 全局设计规范：卡片 / 表格视觉统一 ===== */
@@ -201,7 +202,9 @@
         <button class="btn btn-outline btn-sm" type="button" onclick="toggleColPanel(event)" title="列设置">⚙ 列设置</button>
         <div class="col-settings-panel" id="colSettingsPanel" onclick="event.stopPropagation()"></div>
       </div>
+      {% if request.state.user.role != 'employee' %}
       <button class="btn btn-danger btn-sm" id="btnBatchDel" onclick="batchDelete()" disabled>批量删除</button>
+      {% endif %}
     </div>
   </div>
   {% if rows %}
@@ -223,7 +226,7 @@
     </colgroup>
     <thead>
     <tr>
-      <th class="col-check fixed-left"><input type="checkbox" id="chkAll" onchange="toggleAll(this)"></th>
+      <th class="col-check fixed-left">{% if request.state.user.role != 'employee' %}<input type="checkbox" id="chkAll" onchange="toggleAll(this)">{% endif %}</th>
       <th class="col-invoice_no fixed-left">发票号</th>
       <th class="col-invoice_date">开票日期</th>
       <th class="col-buyer">购买方</th>
@@ -240,7 +243,7 @@
     <tbody>
     {% for i in rows %}
     <tr id="row-{{ i.id }}"{% if i.status == 'NORMAL' %} class="row-unmatched"{% endif %} onclick="openInvDrawer({{ i.id }})">
-      <td class="col-check fixed-left" onclick="event.stopPropagation()"><input type="checkbox" class="chk-inv" value="{{ i.id }}" onchange="refreshSel()"></td>
+      <td class="col-check fixed-left" onclick="event.stopPropagation()">{% if request.state.user.role != 'employee' %}<input type="checkbox" class="chk-inv" value="{{ i.id }}" onchange="refreshSel()">{% endif %}</td>
       <td class="col-invoice_no fixed-left" title="{{ i.invoice_no or '' }}">{{ i.invoice_no or '—' }}</td>
       <td class="col-invoice_date">{{ i.invoice_date or '—' }}</td>
       <td class="col-buyer">
@@ -255,7 +258,7 @@
           <div class="c-tax">{{ i.seller_tax_no or '—' }}</div>
         </div>
       </td>
-      <td class="col-item-summary editable" title="{{ i.item_summary_raw or i.item_summary or '' }}（双击编辑）" data-inv-id="{{ i.id }}" onclick="event.stopPropagation()" ondblclick="editItemSummary(this)">{{ i.item_summary or '—' }}</td>
+      <td class="col-item-summary{% if not is_emp %} editable{% endif %}" title="{{ i.item_summary_raw or i.item_summary or '' }}{% if not is_emp %}（双击编辑）{% endif %}" data-inv-id="{{ i.id }}" onclick="event.stopPropagation()"{% if not is_emp %} ondblclick="editItemSummary(this)"{% endif %}>{{ i.item_summary or '—' }}</td>
       <td class="col-category" onclick="event.stopPropagation()">
         {% if i.category %}
         {%- set _tip -%}
@@ -275,11 +278,13 @@
               data-matched="{{ '1' if i.category_matched else '0' }}"
               data-suggest="{{ i.category_suggest }}" data-status="{{ i.category_status }}"
               data-source="{{ i.category_source }}" data-hint="{{ i.category_hint or '' }}"
-              title="{{ _tip }}" onclick="openCatMenu(event, this)">{{ i.category }}{% if i.category_status == 'PENDING' %}<span class="cat-q">?</span>{% endif %}{% if i.category_hint %}<span class="cat-warn">!</span>{% endif %}{% if i.category_conflict %}<span class="cat-warn-y" title="{{ i.category_conflict_detail }}">⚠</span>{% endif %}</span>
+              title="{{ _tip }}"{% if not is_emp %} onclick="openCatMenu(event, this)"{% endif %}>{{ i.category }}{% if i.category_status == 'PENDING' %}<span class="cat-q">?</span>{% endif %}{% if i.category_hint %}<span class="cat-warn">!</span>{% endif %}{% if i.category_conflict %}<span class="cat-warn-y" title="{{ i.category_conflict_detail }}">⚠</span>{% endif %}</span>
         {% elif not i.category_matched %}
-        <span class="cat-tag orphan" data-kind="inv" data-id="{{ i.id }}" data-cat=""
+        {% if is_emp %}—
+        {% else %}<span class="cat-tag orphan" data-kind="inv" data-id="{{ i.id }}" data-cat=""
               data-matched="0" data-status="" title="该发票尚未匹配且无分类，点击选择"
               onclick="openCatMenu(event, this)">选择分类</span>
+        {% endif %}
         {% else %}—{% endif %}
       </td>
       <td class="col-amount col-number cell-amount">{% if i.amount %}{{ '%.2f'|format(i.amount|float) }}{% else %}—{% endif %}</td>
@@ -294,7 +299,9 @@
           <button class="btn btn-sm btn-outline action-btn" onclick="toggleDropdown(this)">操作 ▾</button>
           <div class="dropdown-menu">
             <button onclick="closeAllDropdowns();openInvDrawer({{ i.id }})">详情</button>
+            {% if request.state.user.role != 'employee' %}
             <button class="danger" data-id="{{ i.id }}" data-no="{{ i.invoice_no or i.id }}" onclick="closeAllDropdowns();delOne(this)">删除</button>
+            {% endif %}
           </div>
         </div>
       </td>

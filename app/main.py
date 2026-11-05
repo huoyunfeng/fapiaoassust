@@ -8,6 +8,8 @@ from app.config import settings
 from app.infra.logger import setup_logging
 from app.repository.db import init_schema
 from app.web.api import api
+from app.web.auth import auth
+from app.web.middleware import AuthMiddleware
 from app.web.pages import pages
 
 
@@ -16,6 +18,13 @@ async def lifespan(app: FastAPI):
     setup_logging()
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     init_schema()
+    # 应用上次迁移后的附件目录（必须在任何文件读写前完成）
+    from app.service.storage_service import apply_saved_upload_dir
+    try:
+        apply_saved_upload_dir()
+    except Exception as e:  # 配置异常不阻塞启动
+        from app.infra.logger import get_logger
+        get_logger(__name__).warning("应用附件目录失败: %s", e)
     # 旧版本生成的「自动-…」单号一次性迁移为 BX-日期-全局序号（幂等）
     from app.service.reimburse_service import (normalize_bx_padding,
                                                renumber_legacy_auto_nos)
@@ -39,7 +48,9 @@ async def lifespan(app: FastAPI):
 def create_app() -> FastAPI:
     app = FastAPI(title="发票报销核对助手", version="1.0.0", lifespan=lifespan)
     app.include_router(pages)
+    app.include_router(auth)
     app.include_router(api)
+    app.add_middleware(AuthMiddleware)
     return app
 
 

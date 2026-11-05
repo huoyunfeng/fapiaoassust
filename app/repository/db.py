@@ -69,6 +69,8 @@ CREATE TABLE IF NOT EXISTS invoice (
     status           TEXT NOT NULL DEFAULT 'PARSING'
                      CHECK(status IN ('PARSING','PARSED','NORMAL','ABNORMAL','DUPLICATE','MATCHED')),
     is_red_flush     INTEGER NOT NULL DEFAULT 0,
+    -- 归属员工（数据隔离：员工只能看到自己上传的数据；财务/管理员不受限）
+    owner_user_id    INTEGER,
     -- 软删除标记：常规删除只写 deleted_at，物理删除仅在回收站「彻底删除」/自动清理时发生
     deleted_at       TEXT,
     created_at       TEXT NOT NULL DEFAULT (datetime('now','localtime')),
@@ -141,6 +143,8 @@ CREATE TABLE IF NOT EXISTS reimburse (
     row_index      INTEGER NOT NULL,
     dup_flag       INTEGER NOT NULL DEFAULT 0,
     dup_source     TEXT NOT NULL DEFAULT '',
+    -- 归属员工（数据隔离：员工只能看到自己提交的报销单）
+    owner_user_id  INTEGER,
     -- 软删除标记：常规删除只写 deleted_at，物理删除仅在回收站「彻底删除」/自动清理时发生
     deleted_at     TEXT,
     created_at     TEXT NOT NULL DEFAULT (datetime('now','localtime'))
@@ -315,6 +319,25 @@ CREATE TABLE IF NOT EXISTS kv (
     v TEXT NOT NULL DEFAULT '',
     updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
 );
+
+-- 本地账号（多角色：管理员 / 财务 / 普通员工）
+-- recovery_hash：16 位应急恢复码的 PBKDF2 哈希，明文只在生成时展示一次
+CREATE TABLE IF NOT EXISTS app_user (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    username       TEXT NOT NULL,
+    display_name   TEXT NOT NULL DEFAULT '',
+    role           TEXT NOT NULL DEFAULT 'employee'
+                   CHECK(role IN ('admin','finance','employee')),
+    password_hash  TEXT NOT NULL,
+    recovery_hash  TEXT NOT NULL DEFAULT '',
+    is_active      INTEGER NOT NULL DEFAULT 1,
+    -- 强制改密标记：管理员重置密码后置 1，用户改密成功后清零
+    must_change_pwd INTEGER NOT NULL DEFAULT 0,
+    created_at     TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    last_login_at  TEXT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_app_user_username ON app_user(username);
 """
 
 
@@ -431,6 +454,21 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if "is_attachment_deleted" not in inv_cols:
         conn.execute("ALTER TABLE invoice ADD COLUMN is_attachment_deleted INTEGER NOT NULL DEFAULT 0")
         logger.info("迁移: invoice 表新增列 is_attachment_deleted")
+    # 1a1b. 数据隔离：发票/报销单增加归属员工列
+    if "owner_user_id" not in inv_cols:
+        conn.execute("ALTER TABLE invoice ADD COLUMN owner_user_id INTEGER")
+        logger.info("迁移: invoice 表新增列 owner_user_id")
+    if "owner_user_id" not in cols:
+        conn.execute("ALTER TABLE reimburse ADD COLUMN owner_user_id INTEGER")
+        logger.info("迁移: reimburse 表新增列 owner_user_id")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_invoice_owner ON invoice(owner_user_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_reimburse_owner ON reimburse(owner_user_id)")
+
+    # 1a1c. 账号表：强制改密标记（旧库补充列）
+    ucols = {r[1] for r in conn.execute("PRAGMA table_info(app_user)").fetchall()}
+    if "must_change_pwd" not in ucols:
+        conn.execute("ALTER TABLE app_user ADD COLUMN must_change_pwd INTEGER NOT NULL DEFAULT 0")
+        logger.info("迁移: app_user 表新增列 must_change_pwd")
     # 唯一约束排除软删除数据：删除后可重新导入同一文件/同号发票
     conn.execute("DROP INDEX IF EXISTS uq_invoice_file_hash")
     conn.execute("DROP INDEX IF EXISTS uq_invoice_code_no")

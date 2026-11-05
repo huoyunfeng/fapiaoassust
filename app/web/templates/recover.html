@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block content %}
+<style>
+.rv-wrap{max-width:520px;margin:44px auto;}
+.rv-card{background:#fff;border-radius:14px;padding:30px 32px;box-shadow:0 14px 44px rgba(15,23,42,.08);}
+.rv-title{font-size:19px;font-weight:700;margin-bottom:6px;}
+.rv-sub{font-size:13px;color:#94a3b8;margin-bottom:20px;line-height:1.8;}
+.rv-mc{display:flex;gap:8px;align-items:center;margin-bottom:18px;}
+.rv-mc input{flex:1;padding:10px 12px;border:1px solid var(--border);border-radius:8px;background:#f8fafc;
+  font-family:ui-monospace,Consolas,monospace;font-size:14px;color:#0f172a;letter-spacing:1px;}
+.rv-copy{padding:10px 14px;border:1px solid var(--border);border-radius:8px;background:#fff;
+  font-size:13px;cursor:pointer;color:var(--text-2);}
+.rv-field{margin-bottom:13px;}
+.rv-field label{display:block;font-size:13px;color:var(--text-2);margin-bottom:6px;}
+.rv-field textarea{width:100%;box-sizing:border-box;min-height:96px;padding:10px 12px;border:1px solid var(--border);
+  border-radius:8px;font-family:ui-monospace,Consolas,monospace;font-size:12px;resize:vertical;}
+.rv-btn{width:100%;padding:11px;border:none;border-radius:8px;background:var(--primary);color:#fff;
+  font-size:14px;font-weight:600;cursor:pointer;margin-top:8px;}
+.rv-msg{display:none;margin-top:14px;padding:10px 12px;border-radius:8px;font-size:13px;line-height:1.8;}
+.rv-help{margin-top:16px;font-size:12px;color:var(--text-2);line-height:1.9;}
+</style>
+<div class="rv-wrap">
+  <div class="rv-card">
+    <div class="rv-title">超管解锁恢复</div>
+    <div class="rv-sub">账号被锁死或管理员密码全部遗忘时使用。请把下方本机机器码发给客服，
+      客服将签发一次性「解锁码」；验证通过后管理员密码会重置为系统初始密码。</div>
+    <div class="rv-mc">
+      <input id="mc" value="{{ machine_code }}" readonly title="本机机器码（只读）">
+      <button class="rv-copy" type="button" onclick="copyMc()">复制</button>
+    </div>
+    <form onsubmit="return doRecover(event)">
+      <div class="rv-field">
+        <label>客服提供的解锁码</label>
+        <textarea id="unlock" placeholder="粘贴完整解锁码"></textarea>
+      </div>
+      <button class="rv-btn" id="rvBtn" type="submit">验证并重置管理员密码</button>
+      <div class="rv-msg" id="rvMsg"></div>
+    </form>
+    <div class="rv-help">说明：解锁码与机器码、有效期绑定，换机或过期后无效；重置成功后请立即登录并重新生成应急恢复码。</div>
+  </div>
+</div>
+<script>
+function copyMc(){
+  const v = document.getElementById('mc').value;
+  navigator.clipboard.writeText(v).then(()=>toast('机器码已复制'));
+}
+function showMsg(msg, ok){
+  const m = document.getElementById('rvMsg');
+  m.textContent = msg; m.style.display = 'block';
+  m.style.background = ok ? '#f0fdf4' : '#fef2f2';
+  m.style.color = ok ? '#15803d' : '#dc2626';
+}
+async function doRecover(ev){
+  ev.preventDefault();
+  const code = document.getElementById('unlock').value.trim();
+  if(!code){ showMsg('请填写解锁码', false); return false; }
+  const btn = document.getElementById('rvBtn');
+  btn.disabled = true; btn.textContent = '验证中…';
+  try{
+    const r = await fetch('/api/auth/recover', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({unlock_code: code})
+    });
+    const d = await r.json();
+    showMsg(d.message || '操作完成', !!d.ok);
+    if(d.ok){ setTimeout(()=>location.href='/login', 1600); }
+  }catch(e){ showMsg('网络异常，请稍后重试', false); }
+  finally{ btn.disabled = false; btn.textContent = '验证并重置管理员密码'; }
+  return false;
+}
+</script>
+{% endblock %}

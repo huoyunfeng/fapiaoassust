@@ -2,16 +2,16 @@
 import json
 from typing import List, Optional
 
-from fastapi import APIRouter, File, Form, UploadFile
+from fastapi import APIRouter, File, Form, Request, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import (FileResponse, JSONResponse, Response,
                                StreamingResponse)
 from starlette.background import BackgroundTask
 
-from app.service import (audit_service, backup_service, category_service,
-                         invoice_service, match_service, recycle_service,
-                         reimburse_service, rematch_task_service,
-                         report_service)
+from app.service import (audit_service, auth_service, backup_service,
+                         category_service, invoice_service, license_service,
+                         match_service, recycle_service, reimburse_service,
+                         rematch_task_service, report_service)
 from app.service.mapping_service import mapping_service
 from app.service.template_service import template_service
 from app.infra.logger import get_logger
@@ -33,18 +33,32 @@ def _stale(err) -> JSONResponse:
 
 # ---------------------------------------------------------------- 发票
 @api.post("/invoices/upload")
-async def upload_invoices(files: List[UploadFile] = File(...), no_match: int = Form(0)):
+async def upload_invoices(request: Request, files: List[UploadFile] = File(...),
+                          no_match: int = Form(0)):
     payload = []
     for f in files:
         payload.append((f.filename, f.content_type or "", await f.read()))
+    # 免费版月度额度（防刷）：先原子预留整批额度，导入完成后按未入库数退回
+    try:
+        license_service.consume_invoice_quota(len(payload))
+    except license_service.QuotaExceeded as e:
+        return {"ok": False, "message": str(e)}
     # no_match=1: 前端逐文件上传以显示进度，导入完成后由前端统一触发一次匹配
     # 解析（尤其 OCR）耗时数秒，放线程池执行：事件循环保持畅通，删除等请求不被卡住
-    return _j(await run_in_threadpool(
-        invoice_service.import_files, payload, None, bool(no_match)))
+    result = await run_in_threadpool(
+        invoice_service.import_files, payload, None, bool(no_match))
+    imported = [r for r in result if r.get("ok") and not r.get("skipped") and r.get("invoice_id")]
+    license_service.refund_invoice_quota(len(payload) - len(imported))
+    if imported:
+        user = getattr(request.state, "user", None)
+        if not auth_service.is_staff(user):
+            invoice_service.assign_owner([r["invoice_id"] for r in imported], user["id"])
+    return _j(result)
 
 
 @api.post("/invoices/manual")
 async def manual_invoice(
+    request: Request,
     invoice_no: str = Form(""), invoice_code: str = Form(""),
     invoice_date: str = Form(""), buyer_name: str = Form(""),
     buyer_tax_no: str = Form(""), seller_name: str = Form(""),
@@ -52,6 +66,10 @@ async def manual_invoice(
     tax_amount: str = Form(""), total_amount: str = Form(""),
     tax_rate: str = Form(""), item_summary: str = Form(""),
 ):
+    try:
+        license_service.consume_invoice_quota(1)
+    except license_service.QuotaExceeded as e:
+        return {"ok": False, "message": str(e)}
     fields = {
         "invoice_no": invoice_no, "invoice_code": invoice_code,
         "invoice_date": invoice_date, "buyer_name": buyer_name,
@@ -60,7 +78,15 @@ async def manual_invoice(
         "tax_amount": tax_amount, "total_amount": total_amount,
         "tax_rate": tax_rate, "item_summary": item_summary,
     }
-    return _j(invoice_service.manual_create(fields))
+    result = invoice_service.manual_create(fields)
+    if result.get("ok") and result.get("invoice_id"):
+        user = getattr(request.state, "user", None)
+        if not auth_service.is_staff(user):
+            invoice_service.assign_owner([result["invoice_id"]], user["id"])
+    else:
+        # 未实际入库则退回已预留的额度
+        license_service.refund_invoice_quota(1)
+    return _j(result)
 
 
 @api.post("/invoices/{invoice_id}/fix")
@@ -94,8 +120,10 @@ async def set_invoice_category(invoice_id: int, category: str = Form(""),
 
 
 @api.get("/invoices/{invoice_id}/similar")
-def similar_unmatched_invoices(invoice_id: int):
+def similar_unmatched_invoices(request: Request, invoice_id: int):
     """摘要相似且同为未匹配的发票（批量归类确认面板数据）。"""
+    if _invoice_forbidden(request, invoice_id):
+        return JSONResponse({"ok": False, "message": "无权限访问该发票"}, status_code=403)
     return _j(invoice_service.similar_unmatched(invoice_id))
 
 
@@ -131,7 +159,7 @@ async def restore_invoices(ids: str = Form(""), operator: str = Form("admin")):
 
 # ---------------------------------------------------------------- 报销单
 @api.post("/reimburses/import")
-async def import_reimburses(file: UploadFile = File(...),
+async def import_reimburses(request: Request, file: UploadFile = File(...),
                             template_id: int = Form(None),
                             fields_config: str = Form("{}"),
                             remember_mapping: str = Form("1"),
@@ -165,6 +193,9 @@ async def import_reimburses(file: UploadFile = File(...),
     except Exception as e:
         logger.exception("报销单导入异常")
         return {"ok": False, "message": f"导入异常：{e}"}
+    user = getattr(request.state, "user", None)
+    if isinstance(result, dict) and result.get("batch_id") and not auth_service.is_staff(user):
+        reimburse_service.assign_owner_by_batch(result["batch_id"], user["id"])
     return _j(result)
 
 
@@ -528,11 +559,13 @@ async def report_batch_bind(invoice_ids: str = Form(""), reimburse_id: int = For
 
 
 @api.get("/invoices/export")
-def export_invoices(status: str = "", q: str = "", ids: str = ""):
+def export_invoices(request: Request, status: str = "", q: str = "", ids: str = ""):
     from datetime import datetime
     id_list = [int(x) for x in ids.split(",") if x.strip().isdigit()] if ids else None
+    user = getattr(request.state, "user", None)
+    owner = None if auth_service.is_staff(user) else user["id"]
     content = invoice_service.export_excel(
-        status=status or None, keyword=q or None, ids=id_list)
+        status=status or None, keyword=q or None, ids=id_list, owner_user_id=owner)
     fname = f"invoices_{datetime.now():%Y%m%d_%H%M}.xlsx"
     return Response(
         content,
@@ -555,9 +588,20 @@ def export_report(filter: str = "", q: str = "", cols: str = ""):
 
 # ---------------------------------------------------------------- 发票详情抽屉
 # 注意：必须声明在 GET /invoices/export 之后，避免 "export" 被当作 int 路径参数
+def _invoice_forbidden(request: Request, invoice_id: int) -> bool:
+    """员工越权访问他人发票（数据隔离兜底）。"""
+    user = getattr(request.state, "user", None)
+    if auth_service.is_staff(user):
+        return False
+    row = invoice_service.invoice_detail(invoice_id)
+    return bool(row) and row.get("owner_user_id") != user["id"]
+
+
 @api.get("/invoices/{invoice_id}")
-def invoice_preview_api(invoice_id: int):
+def invoice_preview_api(request: Request, invoice_id: int):
     """抽屉详情：结构化字段 + 生效匹配记录 + 原件文件信息。"""
+    if _invoice_forbidden(request, invoice_id):
+        return JSONResponse({"ok": False, "message": "无权限访问该发票"}, status_code=403)
     data = invoice_service.invoice_preview(invoice_id)
     if data is None:
         return {"ok": False, "message": "发票不存在或已删除"}
@@ -574,8 +618,10 @@ _FILE_INLINE_MIME = {
 
 
 @api.get("/invoices/{invoice_id}/file")
-def invoice_file_api(invoice_id: int):
+def invoice_file_api(request: Request, invoice_id: int):
     """发票原件文件流：图片/PDF 内联预览，XML/OFD 走附件下载。"""
+    if _invoice_forbidden(request, invoice_id):
+        return Response("无权限访问该发票", status_code=403)
     p = invoice_service.invoice_file_path(invoice_id)
     if p is None:
         return Response("原件文件不存在", status_code=404)
@@ -589,8 +635,10 @@ def invoice_file_api(invoice_id: int):
 
 
 @api.get("/invoices/{invoice_id}/preview.png")
-def invoice_pdf_preview_api(invoice_id: int, page: int = 0):
+def invoice_pdf_preview_api(request: Request, invoice_id: int, page: int = 0):
     """PDF 原件逐页渲染为 PNG 图片（抽屉预览用，与图片发票共用同一预览组件）。"""
+    if _invoice_forbidden(request, invoice_id):
+        return Response("无权限访问该发票", status_code=403)
     png = invoice_service.render_pdf_page(invoice_id, page)
     if png is None:
         return Response("PDF 渲染失败", status_code=404)
@@ -599,11 +647,16 @@ def invoice_pdf_preview_api(invoice_id: int, page: int = 0):
 
 # ---------------------------------------------------------------- 仪表盘
 @api.get("/dashboard/expense-breakdown")
-def dashboard_expense_breakdown(date_from: str = "", date_to: str = ""):
+def dashboard_expense_breakdown(request: Request, date_from: str = "",
+                                date_to: str = ""):
+    # 数据隔离：员工只看自己上传发票的费用构成
+    user = getattr(request.state, "user", None)
+    owner = None if auth_service.is_staff(user) else user["id"]
     data = invoice_service.expense_breakdown(
         date_from=date_from or None,
         date_to=date_to or None,
         top_n=5,
+        owner_user_id=owner,
     )
     return _j(data)
 

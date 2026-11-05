@@ -679,9 +679,22 @@ def purge_reimburses(ids: List[int], operator: str = None) -> dict:
     return {"ok": True, "purged": purged, "message": f"已彻底删除 {purged} 条报销单"}
 
 
+def assign_owner_by_batch(batch_id: str, user_id: int) -> None:
+    """把本批次报销单归属到提交员工（数据隔离用）。"""
+    if not batch_id or not user_id:
+        return
+    with db.tx() as conn:
+        conn.execute(
+            "UPDATE reimburse SET owner_user_id = ? "
+            "WHERE owner_user_id IS NULL AND batch_id = ?",
+            (user_id, batch_id),
+        )
+
+
 def list_reimburses(batch_id: str = None, keyword: str = None,
                     template_id: int = None, since: str = None,
-                    date_from: str = None, date_to: str = None) -> List[dict]:
+                    date_from: str = None, date_to: str = None,
+                    owner_user_id: int = None) -> List[dict]:
     """报销单列表：分类 = 报销单自身分类（与发票侧隔离），已匹配时附发票侧分类与冲突。
 
     since: 冷热分离下界（按报销日期，None = 取全部历史；无日期行保留）。
@@ -695,7 +708,8 @@ def list_reimburses(batch_id: str = None, keyword: str = None,
 
     with db.read() as conn:
         rows = reimburse_repo.list(conn, batch_id=batch_id, keyword=keyword,
-                                   since=since, date_from=date_from, date_to=date_to)
+                                   since=since, date_from=date_from, date_to=date_to,
+                                   owner_user_id=owner_user_id)
         active_ids = match_repo.active_reimburse_ids(conn)
         manual_ids = match_repo.manual_reimburse_ids(conn, [r["id"] for r in rows])
         invoices = match_repo.matched_invoice_ids(conn, [r["id"] for r in rows])
