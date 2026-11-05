@@ -338,6 +338,25 @@ CREATE TABLE IF NOT EXISTS app_user (
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_app_user_username ON app_user(username);
+
+-- 授权状态（单行，id 固定为 1）：套餐/授权码/激活时间/年限
+-- 保留自旧版离线授权：数据交接与备份恢复时原样搬运，不影响云端授权流程
+CREATE TABLE IF NOT EXISTS license_state (
+    id            INTEGER PRIMARY KEY CHECK (id = 1),
+    plan          TEXT NOT NULL DEFAULT 'free',
+    license_code  TEXT NOT NULL DEFAULT '',
+    activated_at  TEXT,
+    years         INTEGER,
+    extra_json    TEXT NOT NULL DEFAULT '{}'
+);
+
+-- 免费版月度额度（P2-2 防刷：与系统隐藏目录记录双写，校验取最大值）
+CREATE TABLE IF NOT EXISTS quota_usage (
+    month      TEXT PRIMARY KEY,
+    used       INTEGER NOT NULL DEFAULT 0,
+    sig        TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+);
 """
 
 

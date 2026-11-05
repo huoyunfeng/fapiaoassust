@@ -395,6 +395,40 @@ function toast(msg, ok=true){
   t.style.background=ok?'#52c41a':'#ff4d4f';
   setTimeout(()=>t.style.display='none',3500);
 }
+
+// ---- 全局任务锁（P4-2 防假死）：高耗时任务期间锁定界面，防重复点击 ----
+// 用法：await TaskLock.run('正在执行全量匹配…', ()=>fetch(...).then(r=>r.json()))
+const TaskLock = {
+  _el:null, _depth:0,
+  _show(title){
+    if(!this._el){
+      const el=document.createElement('div');
+      el.id='taskLockOverlay';
+      el.style.cssText='position:fixed;inset:0;background:rgba(15,23,42,.42);z-index:9999;'
+        +'display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;'
+        +'backdrop-filter:blur(1px);';
+      el.innerHTML='<div style="width:38px;height:38px;border:4px solid #dbeafe;'
+        +'border-top-color:#2563eb;border-radius:50%;animation:_tlspin .8s linear infinite;"></div>'
+        +'<div id="taskLockText" style="color:#fff;font-size:14px;text-shadow:0 1px 3px rgba(0,0,0,.4);"></div>'
+        +'<style>@keyframes _tlspin{to{transform:rotate(360deg);}}</style>';
+      document.body.appendChild(el);
+      this._el=el;
+    }
+    document.getElementById('taskLockText').textContent=title||'任务执行中，请稍候…';
+    this._el.style.display='flex';
+    this._depth++;
+  },
+  _hide(){
+    this._depth=Math.max(0,this._depth-1);
+    if(this._depth===0&&this._el) this._el.style.display='none';
+  },
+  async run(title,fn){
+    this._show(title);
+    try{ return await fn(); }
+    finally{ this._hide(); }
+  },
+  get locked(){ return this._depth>0; }
+};
 // ---- 高危操作撤销提示（右下角，20 秒倒计时）----
 let _undoTimer=null, _undoFn=null;
 function showUndoToast(msg, undoFn, seconds){
@@ -485,7 +519,16 @@ async function post(url, data, opts){
     return j;
   }finally{ clearTimeout(timer); busyDone(); }
 }
-function submitForm(e,url,after,title){e.preventDefault();post(url,e.target,{title}).then(j=>{if(!j.data||j.data.ok!==false){if(after)after(j);else location.reload();}});return false;}
+function submitForm(e,url,after,title){
+  e.preventDefault();
+  post(url,e.target,{title}).then(j=>{
+    // 失败时不刷新页面，否则错误提示会被立刻刷掉（如额度用尽 / 校验不通过）
+    const failed = (j && j.ok===false) || (j && j.data && j.data.ok===false);
+    if(failed) return;
+    if(after) after(j); else location.reload();
+  });
+  return false;
+}
 
 // ---- 全局防连击 / 防重复提交（所有写操作按钮 + 跨标签页写入锁）----
 // 1) 点击按钮瞬间：按钮进入 Loading（转圈 + disabled），接口返回后恢复；

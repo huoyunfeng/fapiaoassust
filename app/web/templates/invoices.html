@@ -542,6 +542,16 @@ async function uploadFiles(e){
     try{
       const r = await fetch('/api/invoices/upload', {method:'POST', body:fd});
       const j = await r.json();
+      // 额度用尽等业务拒绝是 HTTP 403 + {"ok":false,"code":...}（不在 data 里），
+      // 必须先判这里，否则会被当成“导入成功”并掩盖真实原因。
+      if(j && j.ok === false){
+        fails.push(j.message || '导入失败');
+        if(j.code === 'QUOTA_EXCEEDED'){
+          if(files.length > i + 1) fails.push('剩余 ' + (files.length - i - 1) + ' 张未上传');
+          break;
+        }
+        continue;
+      }
       const item = (j.data && j.data.results ? j.data.results[0] : (Array.isArray(j.data) ? j.data[0] : j.data)) || {};
       if(item.skipped){ skipCount++; }
       else if(item.ok !== false){ okCount++; if(item.status === 'DUPLICATE') dupCount++; }
@@ -724,7 +734,9 @@ function openInvDrawer(id){
     const ft = (d.file_type || '').toLowerCase();
     const url = '/api/invoices/' + id + '/file';
     if(!d.has_file){
-      stage.innerHTML = '<p class="muted" style="padding:40px;">未找到原件文件（可能已清理）</p>';
+      stage.innerHTML = '<p class="muted" style="padding:40px;">' +
+        (inv.is_attachment_deleted ? '原件已按需清理（台账数据仍完整保留）'
+                                  : '未找到原件文件（文件可能已被移动或删除）') + '</p>';
     } else if(ft === 'jpg' || ft === 'jpeg' || ft === 'png'){
       _imgZoom = 1;
       stage.innerHTML = '<img class="previewImg" style="width:100%" src="' + url + '" alt="发票原件">';

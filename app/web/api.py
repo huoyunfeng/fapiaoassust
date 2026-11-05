@@ -9,9 +9,10 @@ from fastapi.responses import (FileResponse, JSONResponse, Response,
 from starlette.background import BackgroundTask
 
 from app.service import (audit_service, auth_service, backup_service,
-                         category_service, invoice_service, license_service,
-                         match_service, recycle_service, reimburse_service,
-                         rematch_task_service, report_service)
+                         category_service, handover_service, invoice_service,
+                         license_service, match_service, recycle_service,
+                         reimburse_service, rematch_task_service,
+                         report_service)
 from app.service.mapping_service import mapping_service
 from app.service.template_service import template_service
 from app.infra.logger import get_logger
@@ -19,6 +20,9 @@ from app.infra.logger import get_logger
 logger = get_logger(__name__)
 
 api = APIRouter(prefix="/api", tags=["api"])
+
+# 交接包上传上限（2GB）：超过此大小内存无法安全读入，直接拒绝
+MAX_ZIP_BYTES = 2 * 1024 ** 3
 
 
 def _j(data):
@@ -971,3 +975,68 @@ async def storage_clean(body: dict):
     except Exception as e:
         logger.exception("storage_clean 失败")
         return _j({"ok": False, "message": str(e)})
+
+
+# ---------------------------------------------------------------- 授权与额度
+@api.get("/license")
+async def license_status():
+    """当前授权 + 机器码 + 本月额度（设置页授权卡片）。"""
+    st = await run_in_threadpool(license_service.status)
+    quota = st.get("quota") or {}
+    data = dict(st)
+    data["ok"] = True
+    # 前端按 quota.quota 展示总量，与 quota_status 的 limit 字段对齐
+    data["quota"] = {"unlimited": bool(quota.get("unlimited")),
+                     "used": int(quota.get("used") or 0),
+                     "quota": quota.get("limit") or 0}
+    return _j(data)
+
+
+# ---------------------------------------------------------------- 附件存储路径迁移（P2-4）
+@api.get("/storage/path")
+async def storage_path_get():
+    return _j({"ok": True, **backup_service.storage_path_info()})
+
+
+@api.post("/storage/path")
+async def storage_path_migrate(body: dict):
+    """迁移附件目录：复制 → 校验 → 配置落盘 → 旧目录保底改名，失败自动回滚。"""
+    result = await run_in_threadpool(
+        backup_service.migrate_upload_dir, (body or {}).get("new_path", ""))
+    return _j(result)
+
+
+# ---------------------------------------------------------------- 数据交接包（P2-3）
+@api.get("/handover/export")
+async def handover_export():
+    """导出数据交接包（发票 + 报销单 + 附件），供主设备合并。"""
+    try:
+        result = await run_in_threadpool(handover_service.export_handover)
+        zip_path = result["zip_path"]
+        return FileResponse(
+            path=str(zip_path),
+            filename=zip_path.name,
+            media_type="application/zip",
+        )
+    except backup_service.BackingUpError as e:
+        return JSONResponse(status_code=409, content={"ok": False, "message": str(e)})
+    except Exception as e:
+        logger.exception("handover_export 失败")
+        return _j({"ok": False, "message": str(e)})
+
+
+@api.post("/handover/import")
+async def handover_import(file: UploadFile = File(...)):
+    """导入交接包：按发票号/单号去重合并，绝不覆盖本机已有账目。"""
+    filename = (file.filename or "").lower()
+    if not filename.endswith(".zip"):
+        return _j({"ok": False, "message": "请上传 .zip 格式的数据交接包"})
+    content = await file.read()
+    if len(content) > MAX_ZIP_BYTES:
+        return _j({"ok": False, "message": "交接包过大（超过 2GB 上限）"})
+    try:
+        result = await run_in_threadpool(handover_service.import_handover, content)
+    except Exception as e:
+        logger.exception("handover_import 失败")
+        return _j({"ok": False, "message": f"导入失败：{e}"})
+    return _j(result)
