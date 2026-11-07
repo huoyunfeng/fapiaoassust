@@ -478,13 +478,12 @@ def migrate_upload_dir(new_path: str) -> dict:
         target.mkdir(parents=True, exist_ok=False)
         n_copied = 0
         if src.exists():
-            for p in src.rglob("*"):
-                if not p.is_file():
-                    continue
+            from app.infra.winpath import fs_path, iter_files
+            for p in iter_files(src):
                 rel = p.relative_to(src)
                 dst = target / rel
-                dst.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(p, dst)
+                os.makedirs(fs_path(dst.parent), exist_ok=True)
+                shutil.copy2(fs_path(p), fs_path(dst))
                 n_copied += 1
         # ② 校验：新目录文件数必须等于源目录
         n_src = usage["files"]
@@ -643,12 +642,12 @@ def _do_backup() -> dict:
             }, ensure_ascii=False, indent=2))
             # 3b. 附件目录（原样保留 YYYYMM 子目录层级）
             if settings.upload_dir.exists():
-                for p in sorted(settings.upload_dir.rglob("*")):
-                    if p.is_file():
-                        arc = (_UPLOADS_ARC_PREFIX
-                               + str(p.relative_to(settings.upload_dir)).replace("\\", "/"))
-                        zf.write(p, arcname=arc)
-                        n_att += 1
+                from app.infra.winpath import fs_path, iter_files
+                for p in sorted(iter_files(settings.upload_dir)):
+                    arc = (_UPLOADS_ARC_PREFIX
+                           + str(p.relative_to(settings.upload_dir)).replace("\\", "/"))
+                    zf.write(fs_path(p), arcname=arc)
+                    n_att += 1
             # 3c. 配置文件（若存在）
             for extra_name in ("config.json", ".env"):
                 cand = settings.data_dir.parent / extra_name

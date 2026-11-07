@@ -14,6 +14,7 @@
 """
 import io
 import json
+import os
 import sqlite3
 import zipfile
 from datetime import datetime
@@ -132,19 +133,21 @@ def _attachment_target(blob: bytes, base: str) -> tuple:
     """
     def _same(p: Path) -> bool:
         try:
-            return p.stat().st_size == len(blob) and p.read_bytes() == blob
+            from app.infra.winpath import read_bytes
+            return os.path.getsize(fs_path(p)) == len(blob) and read_bytes(p) == blob
         except OSError:
             return False
 
+    from app.infra.winpath import fs_path
     target = settings.upload_dir / base
-    if not target.exists():
+    if not os.path.exists(fs_path(target)):
         return target, True
     if _same(target):
         return target, False
     i = 1
     while True:
         cand = settings.upload_dir / f"{target.stem}__dupe{i}{target.suffix}"
-        if not cand.exists():
+        if not os.path.exists(fs_path(cand)):
             return cand, True
         if _same(cand):
             return cand, False
@@ -193,7 +196,8 @@ def import_handover(content: bytes) -> dict:
             blob = zf.read(info)
             target, need_write = _attachment_target(blob, base)
             if need_write:
-                target.write_bytes(blob)
+                from app.infra.winpath import write_bytes
+                write_bytes(target, blob)
                 att_added += 1
             name_map[base] = target
 

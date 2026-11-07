@@ -1,9 +1,9 @@
 """云端授权发码服务（部署在公网服务器，本机客户端只持有公钥）。
 
 启动：
-    pip install fastapi uvicorn cryptography
-    python cloud/license_server.py          # 默认 0.0.0.0:8000
-    uvicorn cloud.license_server:app --host 0.0.0.0 --port 8000
+    pip install fastapi uvicorn cryptography requests
+    python cloud/license_server.py          # 默认 0.0.0.0:80
+    uvicorn cloud.license_server:app --host 0.0.0.0 --port 80
 
 数据文件（与脚本同目录，可用 CLOUD_DATA_DIR 覆盖）：
     orders.json    订单：{订单号: {plan, days, status, machine_code, ...}}
@@ -13,15 +13,18 @@
 安全提示：私钥不写进代码，通过环境变量 CLOUD_PRIVATE_KEY_PEM 或文件 private_key.pem
 提供（可用 CLOUD_PRIVATE_KEY_FILE 指定路径）；私钥只保存在服务器本地，禁止提交仓库。
 """
+import hashlib
 import json
 import os
 import threading
 import time
 from pathlib import Path
 
+import requests
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
 # ---------------------------------------------------------------- 密钥（云端绝密，不入库）
@@ -45,6 +48,68 @@ _LOCK = threading.RLock()
 
 PLAN_DEVICES = {"personal": 0, "enterprise": 3}
 PLAN_DAYS = {"personal": 365, "enterprise": 365}
+
+# ---------------------------------------------------------------- 支付配置（虎皮椒聚合支付）
+# TODO 上线前请把 XUNHUPAY_APPSECRET 换成虎皮椒商户后台的真实密钥（不要提交到仓库）
+XUNHUPAY_APPID = "201906189707"
+XUNHUPAY_APPSECRET = "PLACEHOLDER_SECRET"
+NOTIFY_URL = "http://fapiao-assist.xyz/api/payment/callback"
+
+XUNHUPAY_CREATE_URL = "https://api.xunhupay.com/payment/do.html"     # 下单
+XUNHUPAY_QUERY_URL = "https://api.xunhupay.com/payment/query.html"   # 主动查单
+
+# 套餐价格（单位：元）
+PLAN_PRICES = {"personal": 99, "enterprise": 499}
+# 支付标题（展示在收银台）
+PLAN_TITLES = {"personal": "发票助手 个人版（1年）",
+               "enterprise": "发票助手 企业版（1年）"}
+
+
+def xunhupay_hash(params: dict) -> str:
+    """生成虎皮椒签名：剔除空值与 hash 字段，按参数名 ASCII 升序拼成 k1=v1&k2=v2，
+    末尾直接拼接 AppSecret，做 MD5 后返回小写。"""
+    items = [(k, v) for k, v in params.items()
+             if k != "hash" and v is not None and str(v) != ""]
+    items.sort(key=lambda kv: str(kv[0]))
+    raw = "&".join(f"{k}={v}" for k, v in items) + XUNHUPAY_APPSECRET
+    return hashlib.md5(raw.encode("utf-8")).hexdigest()
+
+
+def _nonce() -> str:
+    return os.urandom(8).hex()
+
+
+def _issue_license(order: dict, order_id: str) -> tuple:
+    """复用原有私钥签名逻辑，为已支付订单签发授权码，返回 (license_key, exp)。
+
+    平级续费叠加：同机器同套餐的未到期已支付订单，新授权在其到期时间上叠加，
+    避免提前续费损失剩余天数。
+    """
+    plan = order.get("plan")
+    if plan not in PLAN_DAYS:
+        raise HTTPException(400, "订单套餐类型异常")
+    days = int(order.get("days") or PLAN_DAYS[plan])
+    # 支付成功即为激活起点，后续重复换码沿用该时间，避免反复续期
+    activated_at = int(order.get("activated_at") or 0) or _now()
+    order["activated_at"] = activated_at
+    base = activated_at
+    machine = (order.get("machine_code") or "").strip()
+    if machine:
+        for other in _load("orders.json", "orders").values():
+            if (other.get("status") in ("paid", "used")
+                    and (other.get("machine_code") or "").strip() == machine
+                    and other.get("plan") == plan
+                    and int(other.get("exp", 0) or 0) > base):
+                base = int(other["exp"])          # 叠加到最迟到期的同类授权上
+    payload = {
+        "machine_code": machine,
+        "plan": plan, "role": "master",
+        "exp": base + days * 86400,
+        "sub_limit": PLAN_DEVICES.get(plan, 0),
+        "order_id": order_id,
+        "issued_at": _now(),
+    }
+    return sign_payload(payload), payload["exp"]
 
 
 def _b64e(raw: bytes) -> str:
@@ -168,6 +233,9 @@ def get_license(req: LicenseReq, request: Request):
             raise HTTPException(404, "订单号不存在或已失效")
         if order.get("status") == "refunded":
             raise HTTPException(403, "该订单已退款，无法激活")
+        # 支付订单未到账时不允许换码，避免用未支付订单号白拿授权
+        if order.get("status") == "pending":
+            raise HTTPException(403, "该订单尚未支付，请完成支付后再激活")
         bound = (order.get("machine_code") or "").strip()
         if bound and bound != machine:
             raise HTTPException(409, "该订单已绑定其他设备，请联系客服换机")
@@ -186,9 +254,11 @@ def get_license(req: LicenseReq, request: Request):
         orders[order_id] = order
         _save("orders.json", "orders", orders)
 
+    # 支付流订单的 exp 已含续费叠加，优先沿用；手工导入订单按激活起点计算
+    exp = int(order.get("exp") or 0) or activated_at + days * 86400
     payload = {
         "machine_code": machine, "plan": plan, "role": "master",
-        "exp": activated_at + days * 86400,
+        "exp": exp,
         "sub_limit": PLAN_DEVICES.get(plan, 0),
         "order_id": order_id,
         "issued_at": _now(),
@@ -249,7 +319,8 @@ def status(req: StatusReq):
     machine = (req.machine_code or "").strip()
     hit = _is_blacklisted(machine)
     return {"ok": True, "blacklisted": bool(hit),
-            "reason": hit.get("reason", "") if hit else ""}
+            "reason": hit.get("reason", "") if hit else "",
+            "server_time": _now()}
 
 
 @app.post("/api/unlock_code")
@@ -302,7 +373,213 @@ def reset_order(req: ResetOrderReq, x_admin_token: str = Header(default="")):
     return {"ok": True, "message": "订单已解绑，可在新设备重新激活"}
 
 
+# ---------------------------------------------------------------- 在线支付（虎皮椒）
+class PayCreateReq(BaseModel):
+    plan_type: str
+    machine_code: str
+
+
+class PayCheckReq(BaseModel):
+    trade_order_id: str
+
+
+@app.post("/api/payment/create")
+def payment_create(req: PayCreateReq):
+    """支付下单：校验套餐 → 生成商户订单号 → 请求虎皮椒拿二维码，订单先记为 pending。"""
+    plan = (req.plan_type or "").strip().lower()
+    machine = (req.machine_code or "").strip()
+    if plan not in PLAN_PRICES:
+        raise HTTPException(400, "套餐类型不存在，可选：personal / enterprise")
+    if not machine:
+        raise HTTPException(400, "机器码不能为空")
+    if _is_blacklisted(machine):
+        raise HTTPException(403, "该设备已被列入黑名单")
+
+    price = PLAN_PRICES[plan]
+    total_fee = f"{price:.2f}"
+    # 商户唯一订单号：FP + 时间戳 + 8 位随机数（32bit，防枚举猜测）
+    trade_order_id = f"FP{_now()}{os.urandom(4).hex().upper()}"
+
+    params = {
+        "appid": XUNHUPAY_APPID,
+        "version": "1.1",
+        "trade_order_id": trade_order_id,
+        "total_fee": total_fee,
+        "title": PLAN_TITLES.get(plan, f"发票助手 {plan}"),
+        "time": str(_now()),
+        "notify_url": NOTIFY_URL,
+        "callback_url": NOTIFY_URL,
+        "nonce_str": _nonce(),
+        "type": "WAP",
+        "wap_url": NOTIFY_URL.replace("/api/payment/callback", ""),
+        "wap_name": "发票助手",
+        "plugins": "fapiao",
+        "attach": plan,
+    }
+    params["hash"] = xunhupay_hash(params)
+
+    try:
+        resp = requests.post(XUNHUPAY_CREATE_URL, data=params, timeout=15)
+        data = resp.json()
+    except Exception as exc:  # 网络异常 / 网关返回非 JSON
+        raise HTTPException(502, f"支付网关请求失败：{exc}")
+
+    if int(data.get("errcode", -1)) != 0:
+        raise HTTPException(502, f"下单失败：{data.get('errmsg') or data}")
+    url_qrcode = data.get("url_qrcode") or data.get("url") or ""
+    if not url_qrcode:
+        raise HTTPException(502, f"下单失败：未返回支付二维码 {data}")
+
+    # 先落库为 pending，回调到账后再改为 paid，防止未支付订单直接换码
+    with _LOCK:
+        orders = _load("orders.json", "orders")
+        orders[trade_order_id] = {
+            "plan": plan,
+            "days": PLAN_DAYS.get(plan, 365),
+            "status": "pending",
+            "machine_code": machine,
+            "amount": price * 100,          # 单位：分，便于回调金额比对
+            "trade_order_id": trade_order_id,
+            "trade_no": "",
+            "license_key": "",
+            "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "paid_at": "",
+        }
+        _save("orders.json", "orders", orders)
+
+    return {"ok": True, "trade_order_id": trade_order_id,
+            "url_qrcode": url_qrcode, "url": data.get("url", ""),
+            "plan": plan, "amount": price}
+
+
+def _callback_fail(msg: str) -> PlainTextResponse:
+    """回调处理失败：返回纯文本 fail，让虎皮椒稍后重试。"""
+    return PlainTextResponse(f"fail: {msg}", status_code=400)
+
+
+@app.post("/api/payment/callback")
+async def payment_callback(request: Request):
+    """支付异步回调：验签 → 校验状态与金额 → 发码 → 幂等落库，最后必须回纯文本 success。"""
+    form = await request.form()
+    data = {k: str(v) for k, v in form.items()}
+
+    # 1. 验签（剔除 hash 后按同样规则重算）
+    recv_hash = (data.get("hash") or "").strip().lower()
+    if not recv_hash or xunhupay_hash(data) != recv_hash:
+        return _callback_fail("签名校验失败")
+
+    trade_order_id = (data.get("trade_order_id") or "").strip()
+    pay_status = (data.get("status") or "").strip().upper()
+    if not trade_order_id:
+        return _callback_fail("缺少商户订单号")
+
+    with _LOCK:
+        orders = _load("orders.json", "orders")
+        order = orders.get(trade_order_id)
+        if not order:
+            return _callback_fail("订单不存在")
+
+        # 已处理过则直接返回 success，保证虎皮椒重复通知不会重复发码
+        if order.get("status") in ("paid", "used") and order.get("license_key"):
+            return PlainTextResponse("success")
+
+        # 2. 只处理已支付（OD）状态
+        if pay_status != "OD":
+            return _callback_fail(f"订单未支付（{pay_status or 'unknown'}）")
+
+        # 3. 金额必须与下单时一致，且原状态必须是 pending（幂等防重）
+        try:
+            paid_cents = int(round(float(data.get("total_fee", "0")) * 100))
+        except (TypeError, ValueError):
+            return _callback_fail("金额格式异常")
+        if paid_cents != int(order.get("amount", -1)):
+            return _callback_fail("支付金额与订单金额不一致")
+        if order.get("status") != "pending":
+            return _callback_fail(f"订单状态异常（{order.get('status')}）")
+
+        # 4. 复用原私钥签名逻辑发码
+        license_key, exp = _issue_license(order, trade_order_id)
+
+        # 5. 更新为已支付并记录授权码
+        order.update({
+            "status": "paid",
+            "license_key": license_key,
+            "trade_no": data.get("transaction_id") or data.get("open_order_id") or "",
+            "paid_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "exp": exp,
+        })
+        orders[trade_order_id] = order
+        _save("orders.json", "orders", orders)
+
+    # 6. 必须返回纯文本 success，否则虎皮椒会持续重发通知
+    return PlainTextResponse("success")
+
+
+@app.post("/api/payment/check_active")
+def payment_check_active(req: PayCheckReq):
+    """主动查单补偿：前端轮询用。查到已支付就立即发码，避免回调丢失导致用户付款不到账。"""
+    trade_order_id = (req.trade_order_id or "").strip()
+    if not trade_order_id:
+        raise HTTPException(400, "商户订单号不能为空")
+
+    with _LOCK:
+        orders = _load("orders.json", "orders")
+        order = orders.get(trade_order_id)
+    if not order:
+        raise HTTPException(404, "订单不存在")
+
+    # 已发过码，直接返回，避免重复签名
+    if order.get("status") in ("paid", "used") and order.get("license_key"):
+        return {"ok": True, "status": order.get("status"),
+                "license_key": order.get("license_key"), "trade_order_id": trade_order_id}
+
+    # 2. 向虎皮椒主动查单
+    params = {
+        "appid": XUNHUPAY_APPID,
+        "trade_order_id": trade_order_id,
+        "time": str(_now()),
+        "nonce_str": _nonce(),
+    }
+    params["hash"] = xunhupay_hash(params)
+    try:
+        resp = requests.post(XUNHUPAY_QUERY_URL, data=params, timeout=15)
+        raw = resp.json()
+    except Exception as exc:
+        raise HTTPException(502, f"查单请求失败：{exc}")
+
+    if int(raw.get("errcode", -1)) != 0:
+        raise HTTPException(502, f"查单失败：{raw.get('errmsg') or raw}")
+    # 兼容网关把结果包在 data 里的返回结构
+    info = raw.get("data") if isinstance(raw.get("data"), dict) else raw
+
+    # 3. 查到已支付则立即发码（与回调相同的校验：金额一致 + 状态 pending）
+    if (info.get("status") or "").strip().upper() == "OD":
+        try:
+            paid_cents = int(round(float(info.get("total_fee") or 0) * 100))
+        except (TypeError, ValueError):
+            paid_cents = -1
+        with _LOCK:
+            orders = _load("orders.json", "orders")
+            order = orders.get(trade_order_id)
+            if order and order.get("status") == "pending" and paid_cents == int(order.get("amount", -1)):
+                license_key, exp = _issue_license(order, trade_order_id)
+                order.update({"status": "paid", "license_key": license_key,
+                              "trade_no": info.get("transaction_id") or "",
+                              "paid_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+                              "exp": exp})
+                orders[trade_order_id] = order
+                _save("orders.json", "orders", orders)
+            if order:
+                return {"ok": True, "status": order.get("status"),
+                        "license_key": order.get("license_key", ""),
+                        "trade_order_id": trade_order_id}
+
+    # 4. 未支付：返回当前状态供前端继续轮询
+    return {"ok": True, "status": "pending", "license_key": "",
+            "trade_order_id": trade_order_id}
+
+
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("CLOUD_PORT", "8000")))
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("CLOUD_PORT", "80")))

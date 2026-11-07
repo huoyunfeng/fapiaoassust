@@ -42,12 +42,63 @@
 .pl-qr .box{width:120px;height:120px;border-radius:10px;background:#fff;border:1px solid var(--border);
   display:flex;align-items:center;justify-content:center;font-size:12px;color:#94a3b8;text-align:center;padding:8px;}
 .pl-qr .box img{width:100%;height:100%;object-fit:contain;}
+.pl-head-right{display:flex;flex-direction:column;align-items:flex-end;gap:6px;}
+.pl-deauth{padding:4px 12px;border-radius:6px;font-size:12px;cursor:pointer;
+  border:1px solid #fecaca;background:#fff;color:#dc2626;}
+.pl-deauth:hover{background:#fef2f2;}
+.pl-deauth:disabled{opacity:.6;cursor:not-allowed;}
+.pl-mc-label{font-size:12px;color:#94a3b8;}
 .pl-invite{font-family:ui-monospace,Consolas,monospace;font-size:11px;word-break:break-all;
   background:#f8fafc;border:1px dashed #cbd5e1;border-radius:8px;padding:10px;color:#334155;
   max-height:120px;overflow:auto;margin-top:10px;display:none;}
+/* ---- 处理中订单横幅 ---- */
+.pl-pending{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;
+  background:#fffbeb;border:1px solid #fde68a;border-radius:12px;padding:14px 18px;margin-top:20px;}
+.pl-pending .txt{font-size:13px;color:#92400e;line-height:1.7;}
+.pl-pending .act{padding:8px 16px;border:none;border-radius:8px;background:#f59e0b;color:#fff;
+  font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap;}
+.pl-pending .act:disabled{opacity:.6;cursor:not-allowed;}
+/* ---- 支付弹窗 ---- */
+.pay-mask{position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:900;
+  display:none;align-items:center;justify-content:center;padding:20px;}
+.pay-mask.show{display:flex;}
+.pay-box{background:#fff;border-radius:16px;width:560px;max-width:96vw;max-height:92vh;
+  overflow:auto;padding:26px 28px;position:relative;}
+.pay-close{position:absolute;top:12px;right:14px;border:none;background:none;font-size:20px;
+  color:#94a3b8;cursor:pointer;line-height:1;}
+.pay-title{font-size:17px;font-weight:700;margin-bottom:16px;}
+.pay-body{display:flex;gap:22px;align-items:flex-start;}
+.pay-qr{width:200px;flex:none;text-align:center;}
+.pay-qr .img{width:200px;height:200px;border:1px solid var(--border);border-radius:12px;
+  display:flex;align-items:center;justify-content:center;overflow:hidden;background:#f8fafc;}
+.pay-qr .img img{width:100%;height:100%;object-fit:contain;}
+.pay-qr .img.expired img{filter:grayscale(1);opacity:.35;}
+.pay-qr .tip{font-size:12px;color:#94a3b8;margin-top:8px;line-height:1.6;}
+.pay-info{flex:1;min-width:0;}
+.pay-plan{font-size:15px;font-weight:700;}
+.pay-amt{font-size:26px;font-weight:800;color:#dc2626;margin:8px 0 2px;}
+.pay-amt small{font-size:13px;color:#94a3b8;font-weight:500;}
+.pay-count{font-size:13px;color:#64748b;margin:6px 0 14px;}
+.pay-count b{color:#dc2626;font-variant-numeric:tabular-nums;}
+.pay-status{font-size:13px;line-height:1.8;padding:10px 12px;border-radius:8px;
+  background:#f8fafc;border:1px solid var(--border);color:#64748b;}
+.pay-refresh{margin-top:12px;width:100%;padding:10px;border:none;border-radius:8px;
+  background:var(--primary);color:#fff;font-size:13px;font-weight:600;cursor:pointer;display:none;}
+.pay-refresh:disabled{opacity:.6;cursor:not-allowed;}
+.pay-cs{margin-top:16px;padding-top:12px;border-top:1px dashed var(--border);
+  font-size:12px;color:#94a3b8;line-height:1.8;}
 </style>
 
 <div class="pl-wrap">
+  {% if license.pending_order %}
+  <div class="pl-pending" id="pendingBar">
+    <div class="txt">
+      <strong>有处理中的订单</strong>（{{ license.plans[license.pending_order.plan].name if license.plans[license.pending_order.plan] is defined else license.pending_order.plan }} · {{ license.pending_order.amount }} 元）<br>
+      若你已完成支付，点此立即获取授权；未支付可忽略或重新下单。
+    </div>
+    <button class="act" id="pendingBtn" type="button" onclick="manualRefresh('{{ license.pending_order.trade_order_id }}')">已付款，获取授权</button>
+  </div>
+  {% endif %}
   <div class="pl-head">
     <div>
       <h1>升级 / 授权中心
@@ -65,8 +116,12 @@
         {% endif %}
       </div>
     </div>
-    <div style="text-align:right;">
-      <div style="font-size:12px;color:#94a3b8;margin-bottom:6px;">本机机器码（只读）</div>
+    <div class="pl-head-right">
+      {% if request.state.user and request.state.user.role == 'admin' %}
+      <button class="pl-deauth" id="deauthBtn" type="button"
+              onclick="deactivateLicense()" title="清空本机授权，恢复免费版，便于重新激活">注销授权</button>
+      {% endif %}
+      <div class="pl-mc-label">本机机器码（只读）</div>
       <div class="pl-mc" id="mc">{{ license.machine_code }}</div>
     </div>
   </div>
@@ -110,8 +165,13 @@
       </ul>
       {% if p.current %}
       <div class="pl-now">当前套餐</div>
+      {% elif p.key == 'free' %}
+      <div class="pl-now">免费使用</div>
+      {% elif request.state.user and request.state.user.role == 'admin' %}
+      <button class="pl-buy" style="border:1px solid var(--primary);width:100%;" type="button"
+              data-plan="{{ p.key }}" data-name="{{ p.name }}" onclick="openPay(this)">立即购买</button>
       {% else %}
-      <a class="pl-buy" href="#activate">选择此套餐</a>
+      <div class="pl-now">请联系管理员购买</div>
       {% endif %}
     </div>
     {% endfor %}
@@ -159,7 +219,139 @@
   {% endif %}
 </div>
 
+<!-- 支付弹窗 -->
+<div class="pay-mask" id="payMask" onclick="if(event.target===this) closePay()">
+  <div class="pay-box">
+    <button class="pay-close" type="button" onclick="closePay()" title="关闭">×</button>
+    <div class="pay-title">扫码支付</div>
+    <div class="pay-body">
+      <div class="pay-qr">
+        <div class="img" id="payQrBox"><span style="font-size:12px;color:#94a3b8;">正在生成二维码…</span></div>
+        <div class="tip">请使用微信/支付宝扫码<br>支付成功后自动开通，无需手动操作</div>
+      </div>
+      <div class="pay-info">
+        <div class="pay-plan" id="payPlan">—</div>
+        <div class="pay-amt"><span id="payAmt">—</span> <small>元 / 年</small></div>
+        <div class="pay-count">支付剩余时间 <b id="payCount">05:00</b></div>
+        <div class="pay-status" id="payStatus">等待支付…</div>
+        <button class="pay-refresh" id="payRefresh" type="button" onclick="manualRefresh()">我已完成支付，点此手动刷新</button>
+        <div class="pay-cs">支付遇到问题？联系客服微信：<strong>fapiao-support</strong>（请附机器码 {{ license.machine_code }}）</div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script>
+/* ============ 支付弹窗：防抖下单 + 3s 轮询 + 5min 倒计时 + 定时器销毁 ============ */
+const PAY_TTL = 300;              // 二维码有效期 5 分钟
+let payTimer = null, payCountTimer = null, payDeadline = 0, payTid = '', payBusy = false;
+
+function _payClearTimers(){
+  if(payTimer){ clearInterval(payTimer); payTimer = null; }
+  if(payCountTimer){ clearInterval(payCountTimer); payCountTimer = null; }
+}
+async function openPay(btn){
+  if(payBusy) return;                       // 防狂点生成多订单
+  payBusy = true;
+  const orig = btn.textContent;
+  btn.disabled = true; btn.textContent = '正在下单…';
+  try{
+    const r = await fetch('/api/payment/create', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({plan_type: btn.dataset.plan})
+    });
+    const d = await r.json();
+    if(!r.ok || !d.ok){ toast(d.message || '下单失败，请稍后重试', false); return; }
+    payTid = d.trade_order_id;
+    document.getElementById('payPlan').textContent = btn.dataset.name;
+    document.getElementById('payAmt').textContent = d.amount;
+    document.getElementById('payQrBox').className = 'img';
+    document.getElementById('payQrBox').innerHTML =
+      '<img src="' + d.url_qrcode + '" alt="支付二维码">';
+    document.getElementById('payStatus').textContent = '等待支付…';
+    document.getElementById('payMask').classList.add('show');
+    payDeadline = Date.now() + PAY_TTL * 1000;
+    payCountTimer = setInterval(tickPayCount, 1000);
+    payTimer = setInterval(pollPay, 3000);  // 每 3 秒查一次
+    setTimeout(()=>{                        // 15 秒后浮现手动刷新按钮
+      const b = document.getElementById('payRefresh');
+      if(document.getElementById('payMask').classList.contains('show')) b.style.display = 'block';
+    }, 15000);
+    pollPay();
+  }catch(e){
+    toast('无法连接授权服务器，请检查网络后重试', false);
+  }finally{
+    payBusy = false; btn.disabled = false; btn.textContent = orig;
+  }
+}
+function tickPayCount(){
+  const left = Math.max(0, Math.floor((payDeadline - Date.now()) / 1000));
+  const m = String(Math.floor(left/60)).padStart(2,'0'), s = String(left%60).padStart(2,'0');
+  document.getElementById('payCount').textContent = m + ':' + s;
+  if(left <= 0){
+    _payClearTimers();                      // 倒计时结束销毁定时器，防后台死循环
+    document.getElementById('payQrBox').classList.add('expired');
+    document.getElementById('payStatus').textContent =
+      '二维码已过期。若你刚刚已完成支付，可点击下方按钮强制查询；否则请关闭后重新下单。';
+    document.getElementById('payRefresh').style.display = 'block';  // 超时仍可手动查
+  }
+}
+async function pollPay(){
+  if(!payTid) return;
+  try{
+    const r = await fetch('/api/payment/check', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({trade_order_id: payTid})
+    });
+    const d = await r.json();
+    if(!r.ok || !d.ok){
+      document.getElementById('payStatus').textContent = d.message || '查询失败，将继续自动重试…';
+      return;
+    }
+    if(d.status === 'paid'){
+      _payClearTimers();
+      document.getElementById('payMask').classList.remove('show');
+      toast('支付成功，授权已激活');
+      setTimeout(()=>location.reload(), 800);
+    }
+  }catch(e){
+    document.getElementById('payStatus').textContent = '网络波动，将继续自动重试…';
+  }
+}
+async function manualRefresh(tid){
+  const btn = document.getElementById('payRefresh');
+  const pBtn = document.getElementById('pendingBtn');
+  if(btn) btn.disabled = true;
+  if(pBtn) pBtn.disabled = true;
+  try{
+    const r = await fetch('/api/payment/check', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({trade_order_id: tid || payTid})
+    });
+    const d = await r.json();
+    if(!r.ok || !d.ok){ toast(d.message || '查询失败，请稍后重试', false); return; }
+    if(d.status === 'paid'){
+      _payClearTimers();
+      document.getElementById('payMask').classList.remove('show');
+      toast('支付成功，授权已激活');
+      setTimeout(()=>location.reload(), 800);
+    }else{
+      toast(d.message || '订单暂未支付，请完成支付后再试', false);
+    }
+  }catch(e){
+    toast('无法连接授权服务器，请检查网络后重试', false);
+  }finally{
+    if(btn) btn.disabled = false;
+    if(pBtn) pBtn.disabled = false;
+  }
+}
+function closePay(){
+  _payClearTimers();                        // 关闭弹窗必须销毁定时器
+  payTid = '';
+  document.getElementById('payMask').classList.remove('show');
+  document.getElementById('payRefresh').style.display = 'none';
+}
+
 function show(el, msg, ok){
   el.textContent = msg; el.style.display = 'block';
   el.style.background = ok ? '#f0fdf4' : '#fef2f2';
@@ -219,6 +411,24 @@ async function bindSub(){
     setTimeout(()=>location.reload(), 1200);
   }catch(e){ show(msg, '网络异常，请稍后重试', false); }
   finally{ btn.disabled = false; btn.textContent = '绑定本机为子设备'; }
+}
+async function deactivateLicense(){
+  const btn = document.getElementById('deauthBtn');
+  btn.disabled = true; btn.textContent = '正在注销…';
+  try{
+    const r = await fetch('/api/license/deactivate', {method:'POST'});
+    const d = await r.json();
+    if(!r.ok || !d.ok){
+      toast(d.message || '注销失败', false);
+      btn.disabled = false; btn.textContent = '注销授权';
+      return;
+    }
+    toast('授权已注销，已恢复免费版');
+    setTimeout(()=>location.reload(), 600);
+  }catch(e){
+    toast('网络异常，请稍后重试', false);
+    btn.disabled = false; btn.textContent = '注销授权';
+  }
 }
 async function syncLicense(){
   try{

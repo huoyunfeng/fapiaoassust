@@ -631,10 +631,11 @@ def invoice_file_api(request: Request, invoice_id: int):
         return Response("原件文件不存在", status_code=404)
     ext = p.suffix.lower()
     mime = _FILE_INLINE_MIME.get(ext)
+    from app.infra.winpath import fs_path
     if mime:
-        return FileResponse(p, media_type=mime,
+        return FileResponse(fs_path(p), media_type=mime,
                             content_disposition_type="inline")
-    return FileResponse(p, media_type="application/octet-stream",
+    return FileResponse(fs_path(p), media_type="application/octet-stream",
                         filename=p.name, content_disposition_type="attachment")
 
 

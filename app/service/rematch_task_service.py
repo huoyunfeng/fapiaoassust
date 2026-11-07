@@ -76,13 +76,15 @@ def get_task(task_id: str) -> Optional[dict]:
 
 def _run(task_id: str, operator: str) -> None:
     try:
-        records = _record_count()
-        _patch(task_id, records=records, phase="准备数据")
-        summary = match_service.run_matching(
-            operator,
-            progress=lambda processed, total, phase: _on_progress(
-                task_id, processed, total, phase),
-        )
+        from app.service.task_lock import HEAVY_TASK_LOCK
+        with HEAVY_TASK_LOCK:
+            records = _record_count()
+            _patch(task_id, records=records, phase="准备数据")
+            summary = match_service.run_matching(
+                operator,
+                progress=lambda processed, total, phase: _on_progress(
+                    task_id, processed, total, phase),
+            )
         stale_count = _stale_invoice_count()
         total = get_task(task_id)["total"] if get_task(task_id) else 0
         _patch(task_id, status=COMPLETED, phase="已完成", percent=100,

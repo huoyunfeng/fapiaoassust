@@ -1440,7 +1440,9 @@ def export_excel(status: str = None, keyword: str = None, ids: list = None,
     """导出发票清单 Excel（支持按当前筛选条件或指定 ids 导出，上限 10 万条）。"""
     import io
     from openpyxl import Workbook
-    with db.read() as conn:
+    # 与全量重算串行：避免导出到重算中途的半成品数据
+    from app.service.task_lock import HEAVY_TASK_LOCK
+    with HEAVY_TASK_LOCK, db.read() as conn:
         rows = invoice_repo.list(conn, status=status, keyword=keyword, limit=100000,
                                  ids=ids, owner_user_id=owner_user_id)
     wb = Workbook()

@@ -6,7 +6,7 @@ After=network.target
 Type=simple
 User=root
 WorkingDirectory=/opt/fapiao-license
-Environment=CLOUD_PORT=8000
+Environment=CLOUD_PORT=80
 Environment=CLOUD_ADMIN_TOKEN=fapiao-admin-2026
 # 数据文件（orders/devices/blacklist）所在目录，默认即 WorkingDirectory
 # Environment=CLOUD_DATA_DIR=/opt/fapiao-license

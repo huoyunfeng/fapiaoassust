@@ -22,7 +22,15 @@ from app.repository import db
 from app.repository.repos import kv_repo
 
 LICENSE_KV_KEY = "license_code"
+PENDING_ORDER_KV = "pay_pending_order"
 CLOUD_TIMEOUT = 8.0
+
+# 套餐等级（防降级比较用）：free < personal < enterprise
+PLAN_RANK = {"free": 0, "personal": 1, "enterprise": 2}
+# 离线宽限期：距最后一次成功联网校验超过该天数即降级免费版
+OFFLINE_GRACE_DAYS = 15
+# 防时间篡改：允许系统时间最多回拨 10 分钟（时区/校时误差），超过视为篡改
+CLOCK_ROLLBACK_TOLERANCE = 600
 
 # 套餐权益（免费版额度按自然月）
 PLANS = {
@@ -111,6 +119,51 @@ def clear_license() -> None:
         kv_repo.delete(conn, LICENSE_KV_KEY)
 
 
+# ---------------------------------------------------------------- 防时间篡改 + 离线宽限
+def _guard_touch_runtime() -> None:
+    """每次状态判定时刷新「最后正常运行时间」（取历史最大值，单调不减）。"""
+    guard = machine_mod.load_guard()
+    now = int(time.time())
+    last = int(guard.get("last_run_at", 0) or 0)
+    if now > last:
+        guard["last_run_at"] = now
+        machine_mod.save_guard(guard)
+
+
+def clock_tampered() -> bool:
+    """当前系统时间比「最后正常运行时间」早超过容忍阈值 → 判定时间被回拨。"""
+    guard = machine_mod.load_guard()
+    last = int(guard.get("last_run_at", 0) or 0)
+    return bool(last) and int(time.time()) < last - CLOCK_ROLLBACK_TOLERANCE
+
+
+def _mark_cloud_sync(server_time: int = 0) -> None:
+    """记录最后一次成功联网校验时间；云端返回了服务器时间则同时校准本机时钟基准。"""
+    now = int(time.time())
+    with db.tx() as conn:
+        kv_repo.set(conn, "last_cloud_sync_at", str(now))
+    if server_time > 0:
+        # 用云端时间修正防回拨基准：以 max(本机, 云端) 作为新的运行时间锚点
+        guard = machine_mod.load_guard()
+        anchor = max(now, int(server_time))
+        if anchor > int(guard.get("last_run_at", 0) or 0):
+            guard["last_run_at"] = anchor
+            machine_mod.save_guard(guard)
+
+
+def _last_cloud_sync() -> int:
+    with db.read() as conn:
+        return int(kv_repo.get(conn, "last_cloud_sync_at", "0") or 0)
+
+
+def offline_grace_exceeded() -> bool:
+    """超过宽限天数未成功联网校验 → True（应降级免费版并提示联网）。"""
+    last = _last_cloud_sync()
+    if not last:
+        return False  # 从未联网过（如新装离线用解锁码激活），不做宽限限制
+    return int(time.time()) - last > OFFLINE_GRACE_DAYS * 86400
+
+
 # ---------------------------------------------------------------- 云端通信
 def _post(path: str, body: dict) -> dict:
     url = settings.cloud_base_url.rstrip("/") + path
@@ -143,7 +196,34 @@ def activate(order_id: str) -> dict:
     if not resp.get("ok"):
         raise CloudError(resp.get("message") or "订单校验失败")
     code = resp.get("license_code") or ""
-    payload = verify_code(code)          # 机器码/过期校验都在这里
+    payload = apply_license_code(code)
+    _mark_cloud_sync()
+    return payload
+
+
+def apply_license_code(code: str) -> dict:
+    """验签 + 业务冲突处理（防降级/续费叠加/版本升级）后落地。
+
+    安全红线：绝不轻信云端返回的"已支付"状态，必须本地验签通过才算数。
+    """
+    payload = verify_code(code)          # 签名/机器码/过期校验都在这里
+    new_plan = payload.get("plan")
+    if new_plan not in PLANS or new_plan == "free":
+        raise LicenseError("授权码套餐类型无效")
+
+    old = current()                       # 已验签且在有效期内的旧授权
+    if old and old.get("plan") in PLAN_RANK:
+        old_plan, old_exp = old["plan"], int(old.get("exp", 0))
+        new_exp = int(payload.get("exp", 0))
+        if PLAN_RANK[new_plan] < PLAN_RANK[old_plan]:
+            raise LicenseError(
+                f"当前已是{PLANS[old_plan]['name']}，不能降级激活{PLANS[new_plan]['name']}。"
+                "如需更换套餐请先联系客服")
+        if new_plan == old_plan and new_exp <= old_exp:
+            raise LicenseError(
+                "该授权到期时间不超过当前授权，无法重复激活。"
+                "若为续费订单，请确认云端已按叠加规则签发")
+
     _save_code(code)
     return payload
 
@@ -180,7 +260,67 @@ def sync_license() -> dict:
         raise CloudError(resp.get("message") or "同步失败")
     if resp.get("blacklisted"):
         clear_license()
+    _mark_cloud_sync(int(resp.get("server_time", 0) or 0))
     return status()
+
+
+# ---------------------------------------------------------------- 在线支付（本地代理云端）
+def payment_create(plan_type: str) -> dict:
+    """向云端下单：套餐 + 本机机器码 → trade_order_id + 支付二维码，并本地登记处理中订单。"""
+    plan = (plan_type or "").strip().lower()
+    if plan not in PLANS or plan == "free":
+        raise CloudError("套餐类型无效")
+    resp = _post("/api/payment/create", {
+        "plan_type": plan,
+        "machine_code": machine_mod.machine_code(),
+    })
+    if not resp.get("ok"):
+        raise CloudError(resp.get("message") or resp.get("detail") or "下单失败，请稍后重试")
+    with db.tx() as conn:
+        kv_repo.set(conn, PENDING_ORDER_KV, json.dumps({
+            "trade_order_id": resp.get("trade_order_id", ""),
+            "plan": plan, "amount": resp.get("amount"),
+            "created_at": int(time.time()),
+        }, ensure_ascii=False))
+    return resp
+
+
+def payment_check(trade_order_id: str = "") -> dict:
+    """主动查单：拿到 license_key 后本地验签（红线）才落地；成功则清除处理中订单。"""
+    tid = (trade_order_id or "").strip()
+    if not tid:
+        pending = pending_order()
+        tid = (pending or {}).get("trade_order_id", "")
+    if not tid:
+        raise CloudError("没有可查询的订单")
+    resp = _post("/api/payment/check_active", {"trade_order_id": tid})
+    if not resp.get("ok"):
+        raise CloudError(resp.get("message") or resp.get("detail") or "查询失败，请稍后重试")
+    _mark_cloud_sync()
+    code = resp.get("license_key") or ""
+    if not code:
+        return {"status": "pending", "message": "订单暂未支付", "trade_order_id": tid}
+    # 状态显示已支付但验签失败 → 立刻拦截（防伪造云端响应）
+    payload = apply_license_code(code)
+    clear_pending_order()
+    return {"status": "paid", "message": "支付成功，授权已激活",
+            "plan": payload.get("plan"), "exp": payload.get("exp"),
+            "trade_order_id": tid}
+
+
+def pending_order() -> Optional[dict]:
+    with db.read() as conn:
+        raw = kv_repo.get(conn, PENDING_ORDER_KV, "") or ""
+    try:
+        data = json.loads(raw)
+        return data if data.get("trade_order_id") else None
+    except Exception:
+        return None
+
+
+def clear_pending_order() -> None:
+    with db.tx() as conn:
+        kv_repo.delete(conn, PENDING_ORDER_KV)
 
 
 # ---------------------------------------------------------------- 本机授权状态
@@ -196,7 +336,13 @@ def current() -> Optional[dict]:
 
 
 def _effective() -> tuple:
-    """(payload, error, expired)：签名合法但过期时不视为生效授权。"""
+    """(payload, error, expired)：签名合法但过期时不视为生效授权。
+
+    附加安全闸：
+    - 系统时间回拨 → 授权异常降级（防改时间白嫖）
+    - 超过离线宽限期未联网校验 → 降级免费版并提示联网
+    """
+    _guard_touch_runtime()
     code = _load_code()
     if not code:
         return None, "", False
@@ -208,6 +354,10 @@ def _effective() -> tuple:
         expired = bool(raw) and exp < int(time.time())
         # 过期属于正常降级，不当作"授权码非法"提示
         return raw, "" if expired else str(e), expired
+    if clock_tampered():
+        return payload, "检测到系统时间异常，授权已暂停使用，请校准时间后重启软件", False
+    if offline_grace_exceeded():
+        return payload, f"已超过 {OFFLINE_GRACE_DAYS} 天未联网校验，请联网同步授权状态", False
     return payload, "", int(payload.get("exp", 0)) < int(time.time())
 
 
@@ -266,6 +416,7 @@ def status() -> dict:
             for k, v in PLANS.items()
         ],
         "payment_qr_url": settings.payment_qr_url,
+        "pending_order": pending_order(),
     }
 
 

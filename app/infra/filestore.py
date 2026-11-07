@@ -1,5 +1,6 @@
 """文件存储基础设施：保存上传文件、计算哈希、识别类型。可替换。"""
 import hashlib
+import os
 import re
 import uuid
 from datetime import datetime
@@ -7,6 +8,7 @@ from pathlib import Path
 
 from app.config import settings
 from app.infra.logger import get_logger
+from app.infra.winpath import fs_path
 
 logger = get_logger(__name__)
 
@@ -40,10 +42,11 @@ class FileStore:
 
     def save(self, filename: str, content: bytes) -> Path:
         month_dir = self.root / datetime.now().strftime("%Y%m")
-        month_dir.mkdir(parents=True, exist_ok=True)
+        os.makedirs(fs_path(month_dir), exist_ok=True)
         safe = re.sub(r"[^\w.\-\u4e00-\u9fff]", "_", filename)[:80] or "file"
         path = month_dir / f"{uuid.uuid4().hex[:8]}_{safe}"
-        path.write_bytes(content)
+        with open(fs_path(path), "wb") as f:
+            f.write(content)
         return path
 
     def delete(self, path: str) -> bool:
@@ -56,12 +59,14 @@ class FileStore:
         if not path:
             return False
         try:
-            p = Path(path).resolve()
-            root = self.root.resolve()
-            if p != root and root not in p.parents:
+            p = Path(path)
+            p_abs = os.path.normcase(os.path.abspath(path))
+            root_abs = os.path.normcase(os.path.abspath(self.root))
+            if p_abs != root_abs and not p_abs.startswith(root_abs + os.sep):
                 logger.warning("拒绝删除上传目录外的文件: %s", path)
                 return False
-            p.unlink(missing_ok=True)
+            if os.path.exists(fs_path(p)):
+                os.unlink(fs_path(p))
             logger.info("物理文件已删除: %s", p)
             return True
         except Exception as e:

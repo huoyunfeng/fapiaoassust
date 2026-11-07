@@ -219,6 +219,46 @@ async def api_bind_sub(request: Request, body: dict):
                          "data": license_service.status()})
 
 
+@auth.post("/api/payment/create")
+async def api_payment_create(request: Request):
+    """支付下单（管理员）：本地代理云端，返回支付二维码与商户订单号。"""
+    user = getattr(request.state, "user", None)
+    if not user or user.get("role") != "admin":
+        return _err("仅管理员可发起购买", 403)
+    body = await request.json()
+    try:
+        return JSONResponse(license_service.payment_create(body.get("plan_type", "")))
+    except license_service.CloudError as e:
+        return _err(str(e), 502)
+
+
+@auth.post("/api/payment/check")
+async def api_payment_check(request: Request):
+    """主动查单（管理员）：验签通过才真正落地授权，绝不轻信云端支付状态。"""
+    user = getattr(request.state, "user", None)
+    if not user or user.get("role") != "admin":
+        return _err("仅管理员可操作", 403)
+    body = await request.json()
+    try:
+        return JSONResponse({"ok": True, **license_service.payment_check(
+            body.get("trade_order_id", ""))})
+    except license_service.LicenseError as e:
+        return _err(f"授权异常：{e}", 400)
+    except license_service.CloudError as e:
+        return _err(str(e), 502)
+
+
+@auth.post("/api/license/deactivate")
+async def api_license_deactivate(request: Request):
+    """注销本机授权：清空本地授权码，恢复免费版（便于重新输入订单号测试）。"""
+    user = getattr(request.state, "user", None)
+    if not user or user.get("role") != "admin":
+        return _err("仅管理员可注销授权", 403)
+    license_service.clear_license()
+    return JSONResponse({"ok": True, "message": "授权已注销，已恢复免费版",
+                         "data": license_service.status()})
+
+
 @auth.post("/api/license/sync")
 async def api_license_sync():
     try:
