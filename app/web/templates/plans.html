@@ -192,6 +192,19 @@
     </div>
   </div>
 
+  <div class="pl-sec" id="recover">
+    <h2>授权找回</h2>
+    <div class="hint">
+      已付款但没拿到授权（关掉了弹窗 / 重装 / 回调延迟）？输入<strong>订单号后 6 位</strong>即可自助找回，
+      如订单号 <code>FP1762…A1B2C3</code> 就填 <code>A1B2C3</code>。
+    </div>
+    <div class="pl-row">
+      <input id="recoverSuffix" placeholder="请输入订单号后 6 位" maxlength="12" autocomplete="off">
+      <button class="pl-btn" id="recBtn" type="button" onclick="recoverLicense()">找回并激活</button>
+    </div>
+    <div class="pl-msg" id="recMsg"></div>
+  </div>
+
   <div class="pl-sec">
     <h2>多设备授权</h2>
     <div class="hint">
@@ -270,7 +283,8 @@ async function openPay(btn){
       '<img src="' + d.url_qrcode + '" alt="支付二维码">';
     document.getElementById('payStatus').textContent = '等待支付…';
     document.getElementById('payMask').classList.add('show');
-    payDeadline = Date.now() + PAY_TTL * 1000;
+    // 二维码有效期由云端决定（复用旧码时剩余时间更短），缺省 5 分钟
+    payDeadline = Date.now() + (d.expire_in || PAY_TTL) * 1000;
     payCountTimer = setInterval(tickPayCount, 1000);
     payTimer = setInterval(pollPay, 3000);  // 每 3 秒查一次
     setTimeout(()=>{                        // 15 秒后浮现手动刷新按钮
@@ -279,7 +293,7 @@ async function openPay(btn){
     }, 15000);
     pollPay();
   }catch(e){
-    toast('无法连接授权服务器，请检查网络后重试', false);
+    toast('网络异常，如您已付款，请保留截图联系客服', false);
   }finally{
     payBusy = false; btn.disabled = false; btn.textContent = orig;
   }
@@ -339,13 +353,19 @@ async function manualRefresh(tid){
       toast(d.message || '订单暂未支付，请完成支付后再试', false);
     }
   }catch(e){
-    toast('无法连接授权服务器，请检查网络后重试', false);
+    toast('网络异常，如您已付款，请保留截图联系客服', false);
   }finally{
     if(btn) btn.disabled = false;
     if(pBtn) pBtn.disabled = false;
   }
 }
 function closePay(){
+  // 支付未完成时二次确认，避免用户误关后以为已经付过款
+  if(payTid && document.getElementById('payMask').classList.contains('show')){
+    const ok = confirm('支付尚未完成，如已付款请等待自动激活，' +
+      '或稍后在「授权找回」输入订单号后 6 位找回。确定关闭？');
+    if(!ok) return;
+  }
   _payClearTimers();                        // 关闭弹窗必须销毁定时器
   payTid = '';
   document.getElementById('payMask').classList.remove('show');
@@ -378,9 +398,34 @@ async function activate(){
     show(msg, d.message + '，正在刷新…', true);
     setTimeout(()=>location.reload(), 1200);
   }catch(e){
-    show(msg, '网络异常：无法连接授权服务器，请检查网络后重试，或联系客服获取解锁码。', false);
+    show(msg, '网络异常，如您已付款，请保留截图联系客服。', false);
   }finally{
     btn.disabled = false; btn.textContent = '验证并立即激活';
+  }
+}
+async function recoverLicense(){
+  const suffix = document.getElementById('recoverSuffix').value.trim();
+  const btn = document.getElementById('recBtn');
+  const msg = document.getElementById('recMsg');
+  if(suffix.length < 6){ show(msg, '请输入订单号后 6 位', false); return; }
+  btn.disabled = true; btn.textContent = '正在找回…';
+  msg.style.display = 'none';
+  try{
+    const r = await fetch('/api/license/recover', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({order_suffix: suffix})
+    });
+    const d = await r.json();
+    if(!r.ok || !d.ok){
+      show(msg, (d.message || '找回失败') + '　如已付款请保留支付截图联系客服。', false);
+      return;
+    }
+    show(msg, (d.message || '授权已找回') + '，正在刷新…', true);
+    setTimeout(()=>location.reload(), 1200);
+  }catch(e){
+    show(msg, '网络异常，如您已付款，请保留截图联系客服。', false);
+  }finally{
+    btn.disabled = false; btn.textContent = '找回并激活';
   }
 }
 async function getInvite(){

@@ -197,6 +197,8 @@ def activate(order_id: str) -> dict:
         raise CloudError(resp.get("message") or "订单校验失败")
     code = resp.get("license_code") or ""
     payload = apply_license_code(code)
+    if _load_code() != code:
+        raise LicenseError("授权码未能写入本地数据库，请重试或联系客服")
     _mark_cloud_sync()
     return payload
 
@@ -302,10 +304,38 @@ def payment_check(trade_order_id: str = "") -> dict:
         return {"status": "pending", "message": "订单暂未支付", "trade_order_id": tid}
     # 状态显示已支付但验签失败 → 立刻拦截（防伪造云端响应）
     payload = apply_license_code(code)
+    if _load_code() != code:
+        raise LicenseError("授权码未能写入本地数据库，请点击「手动刷新」重试")
     clear_pending_order()
     return {"status": "paid", "message": "支付成功，授权已激活",
             "plan": payload.get("plan"), "exp": payload.get("exp"),
             "trade_order_id": tid}
+
+
+def recover_license(order_suffix: str) -> dict:
+    """自助找回：凭订单号后 6 位 + 本机机器码向云端取回授权码，验签后落地。
+
+    用于「关掉支付弹窗 / 换机重装 / 回调延迟」等已付款但没拿到授权的情况。
+    """
+    suffix = (order_suffix or "").strip().upper()
+    if len(suffix) < 6:
+        raise CloudError("请输入订单号后 6 位")
+    resp = _post("/api/payment/recover", {
+        "order_suffix": suffix,
+        "machine_code": machine_mod.machine_code(),
+    })
+    if not resp.get("ok"):
+        raise CloudError(resp.get("message") or "未找到可用授权，请联系客服")
+    code = resp.get("license_key") or ""
+    if not code:
+        raise CloudError("该订单尚未签发授权，请稍后重试")
+    payload = apply_license_code(code)
+    if _load_code() != code:
+        raise LicenseError("授权码未能写入本地数据库，请重试")
+    _mark_cloud_sync()
+    return {"status": "paid", "message": "授权已找回并激活",
+            "plan": payload.get("plan"), "exp": payload.get("exp"),
+            "trade_order_id": resp.get("trade_order_id", "")}
 
 
 def pending_order() -> Optional[dict]:

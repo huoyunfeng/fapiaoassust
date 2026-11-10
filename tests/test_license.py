@@ -299,6 +299,7 @@ def test_cloud_get_license_never_extends_expiry(tmp_path, monkeypatch):
                             serialization.NoEncryption()).decode()
     monkeypatch.setenv("CLOUD_PRIVATE_KEY_PEM", pem)
     monkeypatch.setenv("CLOUD_DATA_DIR", str(tmp_path / "cloud"))
+    monkeypatch.setenv("XUNHUPAY_APPSECRET", "test-secret")
     import cloud.license_server as srv
     importlib.reload(srv)
 
@@ -315,3 +316,166 @@ def test_cloud_get_license_never_extends_expiry(tmp_path, monkeypatch):
     second = srv.get_license(srv.LicenseReq(**body), _req())
     assert first["ok"] and second["ok"]
     assert first["exp"] == second["exp"]
+
+
+# ---------------------------------------------------------------- 云端支付闭环
+def _cloud_srv(tmp_path, monkeypatch, orders: dict):
+    """用临时私钥与临时数据目录重新加载云端服务模块。"""
+    import importlib
+
+    key = Ed25519PrivateKey.generate()
+    monkeypatch.setenv("CLOUD_PRIVATE_KEY_PEM",
+                       key.private_bytes(serialization.Encoding.PEM,
+                                         serialization.PrivateFormat.PKCS8,
+                                         serialization.NoEncryption()).decode())
+    monkeypatch.setenv("CLOUD_DATA_DIR", str(tmp_path / "cloud"))
+    monkeypatch.setenv("XUNHUPAY_APPSECRET", "test-secret")
+    import cloud.license_server as srv
+    importlib.reload(srv)
+    d = tmp_path / "cloud"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "orders.json").write_text(json.dumps({"orders": orders}, ensure_ascii=False),
+                                   encoding="utf-8")
+    return srv
+
+
+def _fake_request(host: str = "1.2.3.4"):
+    return type("R", (), {"client": type("C", (), {"host": host})()})()
+
+
+def test_cloud_recover_by_order_suffix(tmp_path, monkeypatch):
+    """付款后关掉页面也能用订单号后 6 位找回授权；换机则拒绝。"""
+    srv = _cloud_srv(tmp_path, monkeypatch, {
+        "FP1762A1B2C3": {"plan": "personal", "days": 365, "status": "paid",
+                         "machine_code": "M-1", "license_key": "CODE-1", "amount": 1},
+    })
+    r = srv.payment_recover(
+        srv.PayRecoverReq(order_suffix="a1b2c3", machine_code="M-1"), _fake_request())
+    assert r["ok"] and r["license_key"] == "CODE-1"
+
+    with pytest.raises(Exception) as exc:
+        srv.payment_recover(
+            srv.PayRecoverReq(order_suffix="A1B2C3", machine_code="M-2"), _fake_request())
+    assert "其他设备" in str(getattr(exc.value, "detail", exc.value))
+
+
+def test_cloud_reconcile_issues_for_stale_paid_order(tmp_path, monkeypatch):
+    """对账兜底：pending 超时订单主动查单为已支付后静默补发授权码。"""
+    old = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time() - 1200))
+    srv = _cloud_srv(tmp_path, monkeypatch, {
+        "FP1": {"plan": "enterprise", "days": 365, "status": "pending",
+                "machine_code": "M-1", "amount": 49900, "created_at": old},
+    })
+    monkeypatch.setattr(srv, "_query_gateway", lambda oid: {
+        "status": "OD", "total_fee": "499.00", "transaction_id": "T9"})
+    assert srv._reconcile_pending() == 1
+    orders = json.loads((tmp_path / "cloud" / "orders.json").read_text(encoding="utf-8"))["orders"]
+    assert orders["FP1"]["status"] == "paid" and orders["FP1"]["license_key"]
+
+
+def test_cloud_reconcile_skips_fresh_and_unpaid(tmp_path, monkeypatch):
+    """未超时的 pending 与仍未支付的订单都不应被补发。"""
+    now_s = time.strftime("%Y-%m-%d %H:%M:%S")
+    srv = _cloud_srv(tmp_path, monkeypatch, {
+        "FP-NEW": {"plan": "personal", "status": "pending", "amount": 1,
+                   "created_at": now_s},
+        "FP-OLD": {"plan": "personal", "status": "pending", "amount": 1,
+                   "created_at": time.strftime("%Y-%m-%d %H:%M:%S",
+                                               time.localtime(time.time() - 1200))},
+    })
+    monkeypatch.setattr(srv, "_query_gateway",
+                        lambda oid: {"status": "WP", "total_fee": "0.01"})
+    assert srv._reconcile_pending() == 0
+    orders = json.loads((tmp_path / "cloud" / "orders.json").read_text(encoding="utf-8"))["orders"]
+    assert all(o["status"] == "pending" for o in orders.values())
+
+
+def test_cloud_create_reuses_pending_qr(tmp_path, monkeypatch):
+    """同一机器同套餐重复下单：复用旧二维码，不重复请求网关（防刷单）。"""
+    srv = _cloud_srv(tmp_path, monkeypatch, {})
+    calls = []
+
+    def fake_post(url, data):
+        calls.append(url)
+        return {"errcode": 0, "url_qrcode": "https://qr/1.png", "url": "https://pay/1"}
+
+    monkeypatch.setattr(srv, "_http_post_form", fake_post)
+    first = srv.payment_create(srv.PayCreateReq(plan_type="personal", machine_code="M-1"))
+    second = srv.payment_create(srv.PayCreateReq(plan_type="personal", machine_code="M-1"))
+    assert first["trade_order_id"] == second["trade_order_id"]
+    assert second["reused"] is True and len(calls) == 1
+    assert first["amount_fen"] == 1 and first["amount"] == 0.01
+
+    orders = json.loads((tmp_path / "cloud" / "orders.json").read_text(encoding="utf-8"))["orders"]
+    order = orders[first["trade_order_id"]]
+    assert order["status"] == "pending" and order["amount"] == 1
+    assert order["url_qrcode"] == "https://qr/1.png"
+
+
+def test_cloud_create_rolls_back_placeholder_on_gateway_error(tmp_path, monkeypatch):
+    """网关下单失败必须清掉占位单，不能留下永远 pending 的僵尸订单。"""
+    srv = _cloud_srv(tmp_path, monkeypatch, {})
+
+    def boom(url, data):
+        raise RuntimeError("网关不可用")
+
+    monkeypatch.setattr(srv, "_http_post_form", boom)
+    with pytest.raises(Exception):
+        srv.payment_create(srv.PayCreateReq(plan_type="enterprise", machine_code="M-2"))
+    orders = json.loads((tmp_path / "cloud" / "orders.json").read_text(encoding="utf-8"))["orders"]
+    assert orders == {}
+
+
+def test_cloud_create_requires_appsecret(tmp_path, monkeypatch):
+    """未配置商户密钥时必须显式报错，而不是用空密钥静默签名。"""
+    srv = _cloud_srv(tmp_path, monkeypatch, {})
+    monkeypatch.setattr(srv, "XUNHUPAY_APPSECRET", "")
+    monkeypatch.setattr(srv, "_http_post_form",
+                        lambda url, data: {"errcode": 0, "url_qrcode": "https://qr/x"})
+    with pytest.raises(Exception) as exc:
+        srv.payment_create(srv.PayCreateReq(plan_type="personal", machine_code="M-3"))
+    assert "XUNHUPAY_APPSECRET" in str(exc.value)
+
+
+def test_cloud_query_uses_out_trade_order(tmp_path, monkeypatch):
+    """查单必须用 out_trade_order 字段，否则虎皮椒返回 Invalid open_order_id。"""
+    srv = _cloud_srv(tmp_path, monkeypatch, {})
+    seen = {}
+
+    def fake_post(url, data):
+        seen.update(data)
+        return {"errcode": 0, "data": {"status": "WP"}}
+
+    monkeypatch.setattr(srv, "_http_post_form", fake_post)
+    info = srv._query_gateway("FP20260101ABCD")
+    assert seen["out_trade_order"] == "FP20260101ABCD"
+    assert "trade_order_id" not in seen
+    assert info["status"] == "WP"
+
+
+# ---------------------------------------------------------------- 本地支付落地
+def test_payment_check_writes_license_before_success(env, monkeypatch):
+    """查单成功必须先落库，再返回 paid（防丢码）。"""
+    lic = env["lic"]
+    monkeypatch.setattr(lic, "_post", lambda path, body: {
+        "ok": True, "status": "paid", "license_key": _license(env),
+        "trade_order_id": "T1"})
+    r = lic.payment_check("T1")
+    assert r["status"] == "paid"
+    assert lic.current()["plan"] == "enterprise"
+
+
+def test_recover_license_saves_to_db(env, monkeypatch):
+    """自助找回同样要验签并写入数据库后才算成功。"""
+    lic = env["lic"]
+    monkeypatch.setattr(lic, "_post", lambda path, body: {
+        "ok": True, "license_key": _license(env), "trade_order_id": "FP1",
+        "plan": "enterprise"})
+    r = lic.recover_license("A1B2C3")
+    assert r["status"] == "paid" and r["trade_order_id"] == "FP1"
+    assert lic.current()["plan"] == "enterprise"
+
+
+def test_recover_license_rejects_short_suffix(env):
+    with pytest.raises(env["lic"].CloudError):
+        env["lic"].recover_license("ABC")

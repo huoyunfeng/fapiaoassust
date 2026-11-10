@@ -248,6 +248,21 @@ async def api_payment_check(request: Request):
         return _err(str(e), 502)
 
 
+@auth.post("/api/license/recover")
+async def api_license_recover(request: Request, body: dict):
+    """自助找回：输入订单号后 6 位，云端返回已购授权码并本地验签落地。"""
+    user = getattr(request.state, "user", None)
+    if not user or user.get("role") != "admin":
+        return _err("仅管理员可执行授权找回", 403)
+    try:
+        result = license_service.recover_license(_body(body, "order_suffix"))
+    except license_service.CloudError as e:
+        return _err(str(e))
+    except license_service.LicenseError as e:
+        return _err(f"授权异常：{e}", 400)
+    return JSONResponse({"ok": True, **result, "data": license_service.status()})
+
+
 @auth.post("/api/license/deactivate")
 async def api_license_deactivate(request: Request):
     """注销本机授权：清空本地授权码，恢复免费版（便于重新输入订单号测试）。"""

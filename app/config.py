@@ -64,8 +64,10 @@ class Settings:
 
     # ---------------------------------------------------------------- 商业化与授权
     # 云端发码服务（私钥仅存在于云端，本机只内置公钥）
+    # 注意：域名 fapiao-assist.xyz 未完成 ICP 备案，会被阿里云拦截返回 403，
+    # 因此默认直连已备案可用的服务器 IP；后续域名备案通过可用 FAPIAO_CLOUD_URL 覆盖。
     cloud_base_url: str = field(
-        default_factory=lambda: os.getenv("FAPIAO_CLOUD_URL", "http://fapiao-assist.xyz"))
+        default_factory=lambda: os.getenv("FAPIAO_CLOUD_URL", "http://182.92.198.99"))
     cloud_timeout: float = 8.0          # 激活请求 8 秒超时（设计要求）
     # 本机内置公钥（可公开）；私钥绝不下发到客户端，只存在于云端 license_server.py
     license_public_key_pem: bytes = b"""-----BEGIN PUBLIC KEY-----

@@ -8,6 +8,9 @@ User=root
 WorkingDirectory=/opt/fapiao-license
 Environment=CLOUD_PORT=80
 Environment=CLOUD_ADMIN_TOKEN=fapiao-admin-2026
+# 支付商户密钥等敏感配置放独立环境文件（权限 600），格式：XUNHUPAY_APPSECRET=xxx
+# 不配置该项时 /api/payment/create 会直接报「未配置 XUNHUPAY_APPSECRET」
+EnvironmentFile=-/opt/fapiao-license/.env
 # 数据文件（orders/devices/blacklist）所在目录，默认即 WorkingDirectory
 # Environment=CLOUD_DATA_DIR=/opt/fapiao-license
 ExecStart=/usr/bin/python3 /opt/fapiao-license/license_server.py
