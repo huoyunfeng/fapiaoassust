@@ -119,6 +119,39 @@
 .sg-progress-mask .sg-progress-msg{font-size:12px;color:var(--text-3);min-height:16px;}
 .sg-progress-mask .sg-spinner{width:32px;height:32px;border:3px solid #e5e7eb;border-top-color:var(--primary);
   border-radius:50%;margin:0 auto 16px;animation:busySpin .8s linear infinite;}
+/* ===== 免费版：业务规则只读（眼馋展示） ===== */
+.free-banner{display:flex;align-items:center;gap:12px;padding:14px 18px;border-radius:10px;
+  background:#fffbeb;border:1px solid #fde68a;color:#92400e;font-size:13px;line-height:1.7;margin-bottom:16px;}
+.free-banner .fb-ico{font-size:20px;flex:none;}
+.free-banner b{color:#b45309;}
+.free-banner .btn{margin-left:auto;flex:none;background:#f59e0b;border-color:#f59e0b;color:#fff;}
+.free-banner .btn:hover{background:#d97706;border-color:#d97706;}
+.rule-locked .card{position:relative;}
+.rule-locked .card input,.rule-locked .card select,.rule-locked .card textarea{opacity:.6;}
+.rule-locked .card button{opacity:.55;}
+/* ===== 会员门控：模糊遮罩 / 大锁 / 数据交接置灰 ===== */
+.gate-wrap{position:relative;border-radius:12px;overflow:hidden;}
+.gate-blur{filter:blur(3px);opacity:.55;pointer-events:none;user-select:none;}
+.gate-overlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+  background:rgba(248,250,252,.55);backdrop-filter:blur(2px);padding:24px;}
+.gate-card{background:#fff;border-radius:14px;padding:28px 32px;text-align:center;max-width:420px;
+  box-shadow:0 18px 50px rgba(15,23,42,.16);border:1px solid var(--border-light);}
+.gate-card .gate-ico{font-size:34px;line-height:1;}
+.gate-card h3{font-size:17px;margin:10px 0 8px;color:var(--text);}
+.gate-card p{font-size:13px;color:var(--text-2);line-height:1.8;margin-bottom:16px;}
+.audit-gate{position:relative;border-radius:12px;overflow:hidden;}
+.audit-blur{filter:blur(5px);opacity:.8;pointer-events:none;user-select:none;}
+.audit-overlay{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+  background:rgba(255,255,255,.45);backdrop-filter:blur(2px);padding:24px;}
+.audit-card{background:#fff;border-radius:14px;padding:24px 30px;text-align:center;max-width:460px;
+  box-shadow:0 18px 50px rgba(15,23,42,.16);border:1px solid var(--border-light);font-size:14px;
+  line-height:1.9;color:var(--text);}
+.audit-card .btn{margin-top:14px;}
+.audit-empty{text-align:center;padding:80px 24px;}
+.audit-empty h2{margin:16px 0 8px;}
+.audit-empty .btn{margin-top:18px;}
+.cat-locked .card input,.cat-locked .card select,.cat-locked .card textarea{opacity:.6;}
+.cat-locked .card button{opacity:.55;}
 </style>
 
 <div class="sg-layout">
@@ -133,8 +166,8 @@
       <span class="sg-nav-icon">🏷️</span>费用字典
     </a>
     {% if u.role == 'admin' %}
-    <a class="sg-nav-item {% if section == 'team' %}active{% endif %}" href="/settings/team">
-      <span class="sg-nav-icon">👥</span>团队与权限
+    <a class="sg-nav-item{% if section == 'team' %} active{% endif %}" href="/settings/team">
+      <span class="sg-nav-icon">👥</span>团队与权限{% if not lic.features.team %}<span class="lock-tag">👑 企业版</span>{% endif %}
     </a>
     {% endif %}
     {% if u.role != 'employee' %}
@@ -149,7 +182,14 @@
 
     {% if section == 'rules' %}
     <!-- ============ 模块1：业务规则（含公司抬头配置） ============ -->
-    <div class="sg-pane active" id="pane-rules">
+    <div class="sg-pane active{% if lic.plan == 'free' %} rule-locked{% endif %}" id="pane-rules">
+      {% if lic.plan == 'free' %}
+      <div class="free-banner">
+        <span class="fb-ico">👑</span>
+        <div><b>当前为免费版</b>。升级个人版即可解锁智能风控拦截（税号白名单、拦截红冲、敏感词等）。</div>
+        <a class="btn btn-sm" href="/plans">立即升级</a>
+      </div>
+      {% endif %}
 
       <!-- 卡片 A：公司抬头配置（列表 + 弹窗录入） -->
       <div class="card" id="companyCard">
@@ -299,7 +339,14 @@
 
     {% if section == 'categories' %}
     <!-- ============ 模块2：费用字典 ============ -->
-    <div class="sg-pane active" id="pane-cats">
+    <div class="sg-pane active{% if lic.plan == 'free' %} cat-locked{% endif %}" id="pane-cats">
+      {% if lic.plan == 'free' %}
+      <div class="free-banner">
+        <span class="fb-ico">👑</span>
+        <div><b>当前为免费版</b>。可使用系统内置基础字典，升级个人版即可自定义分类与模板。</div>
+        <a class="btn btn-sm" href="/plans">立即升级</a>
+      </div>
+      {% endif %}
       <div class="card">
         <form class="inline mb" onsubmit="addCat(event)">
           <input name="name" id="newCatName" placeholder="新增分类名称（如 培训费）" required>
@@ -349,6 +396,38 @@
     {% if section == 'team' %}
     <!-- ============ 模块3：团队与权限（原「团队管理」平移） ============ -->
     <div class="sg-pane active" id="pane-team">
+      {% if not lic.features.team %}
+      <div class="gate-wrap">
+        <div class="gate-blur">
+          <div class="card">
+            <div class="tm-head">
+              <div>
+                <h2 style="margin-bottom:6px;">团队与权限</h2>
+                <p class="muted">企业版专属能力。员工只看本人数据，财务可见全部业务数据，管理员拥有全部权限。</p>
+                <div class="tm-seat">已使用席位：<b>3</b> / 10</div>
+              </div>
+              <button class="btn" type="button">添加成员</button>
+            </div>
+            <table class="tm-table">
+              <thead><tr><th>账号</th><th>名称</th><th>角色</th><th>状态</th><th>最近登录</th></tr></thead>
+              <tbody>
+                <tr><td>zhangsan</td><td>张三</td><td>财务</td><td>正常</td><td>2026-11-10 09:12</td></tr>
+                <tr><td>lisi</td><td>李四</td><td>员工</td><td>正常</td><td>2026-11-09 18:40</td></tr>
+                <tr><td>wangwu</td><td>王五</td><td>员工</td><td>正常</td><td>2026-11-08 11:05</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div class="gate-overlay">
+          <div class="gate-card">
+            <div class="gate-ico">👑</div>
+            <h3>解锁企业级协同</h3>
+            <p>{% if lic.plan == 'personal' %}个人版仅限单人单机使用，如需多账号协同，请升级企业版。{% else %}支持多账号权限隔离与防内鬼追溯，请升级企业版。{% endif %}</p>
+            <a class="btn" href="/plans?feature=team">立即升级企业版</a>
+          </div>
+        </div>
+      </div>
+      {% else %}
       <div class="card">
         <div class="tm-head">
           <div>
@@ -410,6 +489,7 @@
           </tbody>
         </table>
       </div>
+      {% endif %}
     </div>
     {% endif %}
 
@@ -421,7 +501,7 @@
       <div class="tabs">
         <div class="tab active" onclick="sgSecTab(this,'sgTabBackup')">数据与备份</div>
         <div class="tab" onclick="sgSecTab(this,'sgTabStorage')">存储与回收</div>
-        <div class="tab" onclick="sgSecTab(this,'sgTabAudit');sgEnsureAudit();">审计日志</div>
+        <div class="tab" onclick="sgSecTab(this,'sgTabAudit');{% if lic.features.audit %}sgEnsureAudit();{% endif %}">审计日志</div>
         <div class="tab" onclick="sgSecTab(this,'sgTabLicense')">授权与系统信息</div>
       </div>
 
@@ -452,8 +532,10 @@
             <h2>多设备数据交接</h2>
             <p class="muted mb" style="font-size:12px;color:#909399;">子设备导出交接包后，主设备导入会自动去重合并，绝不覆盖已有账目。</p>
             <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
-              <button class="btn btn-outline" onclick="exportHandover()">导出交接包</button>
-              <button class="btn btn-outline" onclick="document.getElementById('handoverFile').click()">导入交接包</button>
+              <button class="btn btn-outline" onclick="exportHandover()"
+                      {% if not lic.features.handover %}disabled title="数据交接包为企业版专属能力"{% endif %}>导出交接包</button>
+              <button class="btn btn-outline" onclick="document.getElementById('handoverFile').click()"
+                      {% if not lic.features.handover %}disabled title="数据交接包为企业版专属能力"{% endif %}>导入交接包</button>
               <input type="file" id="handoverFile" accept=".zip" style="display:none" onchange="importHandover(this)">
             </div>
             <p class="muted" style="font-size:12px;color:#909399;margin-top:10px;">导入的数据需重新执行匹配；与「一键备份」的区别：备份全量覆盖恢复，交接包增量合并去重。</p>
@@ -554,6 +636,7 @@
 
       <!-- ========= Tab 3：审计日志（全宽独立，防查账更清晰） ========= -->
       <div class="tabpane" id="sgTabAudit">
+        {% if lic.features.audit %}
         <div class="card" style="position:relative;">
           <h2>审计日志（不可篡改，仅供追溯）</h2>
           <p class="muted mb" style="font-size:12px;color:#909399;">凡字典增删、发票/报销单分类修改、冲突仲裁、解除匹配等关键操作均自动记录，建议每季度抽查。</p>
@@ -605,6 +688,39 @@
           </table>
           <div class="pager" id="sgAuditPager" style="justify-content:center;"></div>
         </div>
+        {% elif lic.plan == 'personal' %}
+        <div class="audit-gate">
+          <div class="audit-blur">
+            <div class="card">
+              <h2>审计日志（不可篡改，仅供追溯）</h2>
+              <p class="muted mb" style="font-size:12px;color:#909399;">凡字典增删、发票/报销单分类修改、冲突仲裁、解除匹配等关键操作均自动记录。</p>
+              <table class="sg-zebra">
+                <thead><tr><th style="width:160px;">时间</th><th style="width:120px;">操作</th><th>对象</th><th style="width:100px;">操作人</th><th>说明</th></tr></thead>
+                <tbody>
+                  <tr><td>2026-11-10 09:12</td><td>发票分类修改</td><td>发票 2431xxxx</td><td>张三</td><td>餐饮费 → 差旅费</td></tr>
+                  <tr><td>2026-11-09 18:40</td><td>解除匹配</td><td>报销单 BX-20261109</td><td>李四</td><td>金额不一致，人工解除</td></tr>
+                  <tr><td>2026-11-08 11:05</td><td>冲突仲裁</td><td>报销单 BX-20261108</td><td>管理员</td><td>以报销单为准</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div class="audit-overlay">
+            <div class="audit-card">
+              🔒 升级企业版，永久保留合规审计日志，防员工乱改账目。
+              <br><a class="btn" href="/plans?feature=audit">立即升级企业版</a>
+            </div>
+          </div>
+        </div>
+        {% else %}
+        <div class="card audit-empty">
+          <div style="font-size:64px;line-height:1;">🔒</div>
+          <h2>系统无审计记录</h2>
+          <p class="muted" style="max-width:520px;margin:0 auto;line-height:1.9;">
+            审计日志为企业版专属能力，升级后自动记录每一次关键操作，可追溯、不可篡改，有效防止内部乱改账目。
+          </p>
+          <a class="btn" href="/plans?feature=audit">升级企业版</a>
+        </div>
+        {% endif %}
       </div>
 
       <!-- ========= Tab 4：授权与系统信息 ========= -->
@@ -702,6 +818,30 @@
 {% endblock %}
 
 {% block scripts %}
+{% if lic.plan == 'free' and section == 'rules' %}
+<script>
+// 免费版：规则全部可见但不可操作（升级后自动解锁）
+document.addEventListener('DOMContentLoaded', function(){
+  document.querySelectorAll('#pane-rules .card input, #pane-rules .card select, '
+    + '#pane-rules .card textarea, #pane-rules .card button').forEach(function(el){
+    el.disabled = true;
+    el.setAttribute('title', '当前为免费版，升级解锁风控规则');
+  });
+});
+</script>
+{% endif %}
+{% if lic.plan == 'free' and section == 'categories' %}
+<script>
+// 免费版：基础字典只读（升级后可自定义分类与模板）
+document.addEventListener('DOMContentLoaded', function(){
+  document.querySelectorAll('#pane-cats .card input, #pane-cats .card select, '
+    + '#pane-cats .card textarea, #pane-cats .card button').forEach(function(el){
+    el.disabled = true;
+    el.setAttribute('title', '免费版仅支持基础字典，升级后可自定义');
+  });
+});
+</script>
+{% endif %}
 <script>
 // 公司抬头（税号白名单弹窗可一键带入）
 const SG_COMPANIES = {{ companies|tojson }};
@@ -2416,7 +2556,13 @@ async function activateLicense(){
     });
     return await r.json();
   });
-  if(j && j.ok){ toast('✅ ' + (j.message || '激活成功')); document.getElementById('licCodeInput').value=''; loadLicense(); }
+  if(j && j.ok){
+    document.getElementById('licCodeInput').value='';
+    loadLicense();
+    // 全局授权即时刷新：导航锁标记消失、套餐徽标更新，无需刷新页面
+    if(window.App && App.refreshPlan) App.refreshPlan();
+    toast('🎉 升级成功，已解锁全部高级功能！');
+  }
   else toast((j && j.message) || '激活失败', false);
 }
 // 重新验证授权：重新拉取 /api/license，刷新版本/授权状态/额度

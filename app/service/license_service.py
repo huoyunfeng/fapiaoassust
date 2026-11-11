@@ -36,18 +36,24 @@ CLOCK_ROLLBACK_TOLERANCE = 600
 PLANS = {
     "free": {
         "name": "免费版", "price": "0 元/年", "monthly_invoice_quota": 20,
-        "matching": False, "export": False, "team": False, "devices": 1,
+        "matching": False, "reimburse": False, "report": False,
+        "export": False, "team": False, "devices": 1,
+        "rules": False, "audit": False, "handover": False, "custom_categories": False,
         "desc": "每月 20 张发票额度，仅基础台账",
     },
     "personal": {
         "name": "个人版", "price": "99 元/年", "monthly_invoice_quota": None,
-        "matching": True, "export": True, "team": False, "devices": 1,
-        "desc": "不限额度，开放智能匹配与导出",
+        "matching": True, "reimburse": True, "report": True,
+        "export": True, "team": False, "devices": 1,
+        "rules": True, "audit": False, "handover": False, "custom_categories": True,
+        "desc": "不限额度，开放智能匹配、报销单、差异报告与基础风控",
     },
     "enterprise": {
         "name": "企业版", "price": "499 元/年", "monthly_invoice_quota": None,
-        "matching": True, "export": True, "team": True, "devices": 3,
-        "desc": "多账号、多设备协同与数据交接包",
+        "matching": True, "reimburse": True, "report": True,
+        "export": True, "team": True, "devices": 3,
+        "rules": True, "audit": True, "handover": True, "custom_categories": True,
+        "desc": "多账号、多设备协同、审计日志与数据交接",
     },
 }
 

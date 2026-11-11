@@ -9,3 +9,5 @@ rapidocr-onnxruntime>=1.4
 cryptography>=42.0
 # 桌面原生窗口（Windows 下依赖系统 WebView2 运行时）
 pywebview>=5.0
+# 单实例防多开（桌面启动器）
+filelock>=3.13

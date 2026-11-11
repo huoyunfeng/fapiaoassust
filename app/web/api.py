@@ -48,7 +48,11 @@ async def upload_invoices(request: Request, files: List[UploadFile] = File(...),
     try:
         license_service.consume_invoice_quota(len(payload))
     except license_service.QuotaExceeded as e:
-        return {"ok": False, "message": str(e)}
+        # 额度耗尽走专用错误码：前端弹升级卡片，而不是普通报错
+        return JSONResponse(status_code=403, content={
+            "ok": False, "code": "LIMIT_EXCEEDED", "msg": "额度用尽",
+            "limit": int((license_service.quota_status() or {}).get("limit") or 0),
+            "message": str(e)})
     # no_match=1: 前端逐文件上传以显示进度，导入完成后由前端统一触发一次匹配
     # 解析（尤其 OCR）耗时数秒，放线程池执行：事件循环保持畅通，删除等请求不被卡住
     result = await run_in_threadpool(
@@ -75,7 +79,11 @@ async def manual_invoice(
     try:
         license_service.consume_invoice_quota(1)
     except license_service.QuotaExceeded as e:
-        return {"ok": False, "message": str(e)}
+        # 额度耗尽走专用错误码：前端弹升级卡片，而不是普通报错
+        return JSONResponse(status_code=403, content={
+            "ok": False, "code": "LIMIT_EXCEEDED", "msg": "额度用尽",
+            "limit": int((license_service.quota_status() or {}).get("limit") or 0),
+            "message": str(e)})
     fields = {
         "invoice_no": invoice_no, "invoice_code": invoice_code,
         "invoice_date": invoice_date, "buyer_name": buyer_name,

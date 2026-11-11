@@ -13,7 +13,7 @@
 #        powershell -ExecutionPolicy Bypass -File scripts\build_exe.ps1
 #   3) 未配置证书时只提示跳过，不影响打包
 param(
-    [string]$Name = "fapiao-check",
+    [string]$Name = "发票报销核对助手",
     [string]$CertPath = $env:FAPIAO_SIGN_CERT,
     [string]$CertPassword = $env:FAPIAO_SIGN_PASSWORD,
     [string]$TimestampUrl = "http://timestamp.digicert.com"
@@ -22,21 +22,8 @@ param(
 Set-Location (Split-Path $PSScriptRoot -Parent)
 if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
-# --specpath build 会让 --add-data 的相对源路径按 build\ 解析，故这里用绝对路径
-$templates = Join-Path (Get-Location) "app\web\templates"
-
-python -m PyInstaller --noconfirm --clean --onedir --windowed --name $Name `
-  --distpath dist --workpath build --specpath build `
-  --add-data "$templates;app/web/templates" `
-  --collect-all rapidocr_onnxruntime `
-  --collect-all onnxruntime `
-  --collect-all uvicorn `
-  --collect-all pdfminer `
-  --collect-all pypdfium2 `
-  --collect-all webview `
-  --exclude-module tkinter `
-  --exclude-module pytest `
-  main.py
+# 统一走 spec 配置：onedir / 禁用 UPX / 隐藏控制台 / 图标 / 版本资源均在 spec 内定义
+python -m PyInstaller --noconfirm --clean --distpath dist --workpath build scripts\fapiao.spec
 
 if ($LASTEXITCODE -ne 0) { Write-Host "打包失败"; exit $LASTEXITCODE }
 

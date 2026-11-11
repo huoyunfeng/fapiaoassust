@@ -179,7 +179,13 @@ tr.row-out{opacity:0;transform:translateX(24px);transition:opacity .3s,transform
             <input class="rp-search" id="qInput" placeholder="搜索发票号 / 报销单号 / 提交人 / 差异说明"
                    oninput="onSearchInput()">
             <button class="btn btn-outline btn-sm" onclick="toggleColPanel()">列设置</button>
+            {% if lic.features.export %}
             <button class="btn btn-sm" id="exportBtn" onclick="exportExcel()">导出 Excel</button>
+            {% else %}
+            <button class="btn btn-sm btn-outline locked-btn" id="exportBtn" type="button"
+                    data-locked-feature="export" data-locked-name="报表导出"
+                    title="个人版及以上可用">🔒 导出 Excel</button>
+            {% endif %}
           </div>
         </div>
         <div class="col-panel" id="colPanel"></div>

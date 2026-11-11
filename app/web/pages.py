@@ -41,6 +41,8 @@ MATCH_TYPE_CN = {
 templates.env.filters["match_type_cn"] = lambda s: MATCH_TYPE_CN.get(s, s)
 # 模板内可直接读取当前授权状态（左侧导航的套餐标识 / 升级入口）
 templates.env.globals["license_status"] = license_service.status
+# 模板内可直接判断某个付费能力是否开通（导航锁定态 / 按钮置灰 / 升级引导）
+templates.env.globals["feature_allowed"] = license_service.feature_allowed
 templates.env.filters["fromjson"] = lambda s: (json.loads(s) if isinstance(s, str) and s else (s if isinstance(s, dict) else {}))
 # 业务规则中文展示（设置页规则列表）
 RULE_TYPE_CN = {

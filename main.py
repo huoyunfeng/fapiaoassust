@@ -1,9 +1,9 @@
 """桌面端启动入口（生产环境 / PyInstaller 打包入口）。
 
 职责（对应「桌面端架构防坑方案」）：
-  1. 单实例检测：临时目录原生锁文件，重复打开立即弹窗并退出；
+  1. 单实例检测：临时目录 filelock 锁文件，重复打开立即弹窗并退出；
   2. 数据目录：由 app.config 统一解析到 %APPDATA%\\FapiaoAssistant（见配置层）；
-  3. 动态端口：socket 绑定 0 端口探测空闲端口，uvicorn 启动失败自动换端口重试 5 次；
+  3. 固定端口：默认 8000（可用环境变量 FAPIAO_PORT 覆盖），被占用时按 8001~8009 顺延；
   4. 后台线程跑 FastAPI，主线程探测 /health（最长 10 秒）通过后再开原生窗口；
   5. 优雅退出：窗口关闭 → 调用关停 API 释放数据库连接 → 等待 1.5 秒 → os._exit(0)。
 
@@ -22,8 +22,11 @@ from pathlib import Path
 
 HOST = "127.0.0.1"
 APP_TITLE = "发票报销核对助手"
+# 固定端口：桌面端始终使用 8000，方便书签 / 排查；被占用时按 8001~8009 顺延
+PREFERRED_PORT = int(os.environ.get("FAPIAO_PORT", "8000"))
+PORT_SPAN = 10            # 固定端口被占用时的候选范围（8000~8009）
 HEALTH_TIMEOUT = 10.0     # 启动探测上限（秒）
-START_RETRIES = 5         # 端口被抢占时的重试次数
+START_RETRIES = 2         # 单个端口的启动尝试次数
 SHUTDOWN_SETTLE = 1.5     # 关停后等待后台彻底收尾的时间
 
 # 打包为 --noconsole 后 stdout/stderr 为 None，日志库写入会抛异常；
@@ -48,53 +51,47 @@ def _alert(message: str) -> None:
 
 
 class SingleInstance:
-    """基于临时目录锁文件的单实例检测（Windows 原生 msvcrt，无第三方依赖）。
+    """基于 filelock 的单实例检测（锁文件放临时目录）。
 
     锁随进程退出由操作系统自动释放，崩溃后不会残留死锁。
     """
 
     def __init__(self) -> None:
+        from filelock import FileLock
+
         self.path = Path(tempfile.gettempdir()) / "FapiaoAssistant.lock"
-        self._fh = None
+        self._lock = FileLock(str(self.path))
 
     def acquire(self) -> bool:
-        # a+ 打开（不存在则创建），先占位再写入当前 PID，便于排查
-        fh = open(self.path, "a+")
+        from filelock import Timeout
+
         try:
-            import msvcrt
-            fh.seek(0)
-            msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
-        except OSError:
-            fh.close()
+            # timeout=0：已被其他进程持锁时立刻失败，不等待
+            self._lock.acquire(timeout=0)
+        except Timeout:
             return False
-        fh.seek(0)
-        fh.truncate()
-        fh.write(str(os.getpid()))
-        fh.flush()
-        self._fh = fh
+        # 写入当前 PID，便于排查（不影响锁本身）
+        try:
+            self.path.write_text(str(os.getpid()), encoding="utf-8")
+        except OSError:
+            pass
         return True
 
     def release(self) -> None:
-        if self._fh is None:
-            return
         try:
-            import msvcrt
-            self._fh.seek(0)
-            msvcrt.locking(self._fh.fileno(), msvcrt.LK_UNLCK, 1)
+            self._lock.release()
         except Exception:
             pass
-        try:
-            self._fh.close()
-        except Exception:
-            pass
-        self._fh = None
 
 
-def _free_port() -> int:
-    """绑定 0 端口获取系统分配的空闲端口，取到后立刻释放交给 uvicorn。"""
+def _port_free(port: int) -> bool:
+    """端口是否可用：能 bind 说明没有其他进程在监听。"""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.bind((HOST, 0))
-        return sock.getsockname()[1]
+        try:
+            sock.bind((HOST, port))
+            return True
+        except OSError:
+            return False
 
 
 def _is_healthy(port: int) -> bool:
@@ -142,21 +139,24 @@ class Backend:
 
 
 def _start_backend() -> Backend:
-    """动态端口 + 最多 5 次重试，确保服务一定拉得起来。"""
-    last_error = "未知错误"
-    for attempt in range(1, START_RETRIES + 1):
-        port = _free_port()
-        backend = Backend(port)
-        backend.start()
-        if backend.wait_healthy():
-            return backend
-        last_error = f"第 {attempt} 次启动失败（端口 {port}）"
-        try:
-            backend.server.should_exit = True
-        except Exception:
-            pass
-        backend.thread.join(timeout=2)
-    raise RuntimeError(f"后台服务连续 {START_RETRIES} 次启动失败：{last_error}")
+    """固定端口优先（默认 8000），被占用时按序顺延，确保服务一定拉得起来。"""
+    tried = []
+    for port in range(PREFERRED_PORT, PREFERRED_PORT + PORT_SPAN):
+        if not _port_free(port):
+            tried.append(f"{port} 被占用")
+            continue
+        for attempt in range(1, START_RETRIES + 1):
+            backend = Backend(port)
+            backend.start()
+            if backend.wait_healthy():
+                return backend
+            tried.append(f"{port} 第 {attempt} 次启动失败")
+            try:
+                backend.server.should_exit = True
+            except Exception:
+                pass
+            backend.thread.join(timeout=2)
+    raise RuntimeError("后台服务启动失败：" + "；".join(tried[-5:]))
 
 
 def _graceful_exit(backend: Backend, token: str) -> None:

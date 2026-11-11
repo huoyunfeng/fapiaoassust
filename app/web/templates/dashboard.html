@@ -145,12 +145,14 @@
         <div class="db-sub" style="text-decoration:underline;" onclick="event.stopPropagation();location.href='/reimburses?status=unmatched'">未匹配 {{ unmatched_reimburses|length }}</div>
       </div>
     </div>
-    <div class="db-card" onclick="location.href='/matches?tab=matched'">
+    <div class="db-card" onclick="location.href='/matches?tab=matched'"
+         {% if not lic.features.matching %}data-locked-feature="matching" data-locked-name="智能匹配中心"{% endif %}>
       <div class="db-icon purple">🔗</div>
       <div class="db-body">
         <div class="db-label">生效匹配</div>
         <div class="db-num">{{ active_matches }}</div>
-        <div class="db-sub" onclick="event.stopPropagation();location.href='/matches?tab=pending'">待处理 {{ match_counts.get('SUSPICIOUS',0) }} · 冲突 {{ match_counts.get('CONFLICT',0) }}</div>
+        <div class="db-sub" onclick="event.stopPropagation();location.href='/matches?tab=pending'"
+             {% if not lic.features.matching %}data-locked-feature="matching" data-locked-name="智能匹配中心"{% endif %}>待处理 {{ match_counts.get('SUSPICIOUS',0) }} · 冲突 {{ match_counts.get('CONFLICT',0) }}</div>
       </div>
     </div>
     <div class="db-card{% if unmatched_invoices %} danger{% endif %}" onclick="location.href='/invoices?status=unmatched'">
@@ -234,7 +236,8 @@
           <thead><tr><th>发票号</th><th>报销单</th><th>分数</th><th>说明</th><th>操作</th></tr></thead>
           <tbody>
           {% for d in suspicious[:8] %}
-            <tr class="clickable" title="点击定位" onclick="location.href='/matches?tab=pending&focus_id={{ d.match.id }}'">
+            <tr class="clickable" title="点击定位" onclick="location.href='/matches?tab=pending&focus_id={{ d.match.id }}'"
+                {% if not lic.features.matching %}data-locked-feature="matching" data-locked-name="智能匹配中心"{% endif %}>
               <td>{{ d.match.invoice_no or '—' }}</td>
               <td>{{ d.reimburse.reimburse_no if d.reimburse else (d.match.reimburse_no or '汇总') }}</td>
               <td style="font-weight:600;">{{ '%.2f'|format(d.match.match_score) }}</td>

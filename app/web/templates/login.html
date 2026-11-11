@@ -35,10 +35,14 @@
         <label>密码</label>
         <input id="password" type="password" autocomplete="current-password" placeholder="请输入密码" required>
       </div>
-      <label class="auth-remember"><input type="checkbox" id="remember"> 30 天内免登录</label>
+      <label class="auth-remember"><input type="checkbox" id="remember" checked> 30 天内免登录</label>
       <div class="auth-actions">
         <a href="/forgot-password">忘记密码？</a>
-        <span class="muted" style="font-size:12px;">首次使用请联系管理员开通账号</span>
+        {% if team_enabled %}
+        <span class="muted" style="font-size:12px;">新成员请联系管理员开通账号</span>
+        {% else %}
+        <span class="muted" style="font-size:12px;">首次使用会自动进入初始化向导</span>
+        {% endif %}
       </div>
       <button class="auth-btn" id="loginBtn" type="submit">登录</button>
       <div class="auth-err" id="loginErr"></div>

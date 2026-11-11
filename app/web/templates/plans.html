@@ -445,8 +445,11 @@ async function pollPay(){
     if(d.status === 'paid'){
       _payClearTimers();
       document.getElementById('payMask').classList.remove('show');
-      toast('✅ 支付成功，授权已激活');
-      setTimeout(()=>location.reload(), 600);
+      if(window.App && App.refreshPlan){
+        App.refreshPlan().then(()=>toast('🎉 升级成功，已解锁全部高级功能！'));
+      }else{
+        toast('🎉 升级成功，已解锁全部高级功能！');
+      }
     }
   }catch(e){
     document.getElementById('payStatus').textContent = '网络波动，将继续自动重试…';
@@ -467,8 +470,11 @@ async function manualRefresh(tid){
     if(d.status === 'paid'){
       _payClearTimers();
       document.getElementById('payMask').classList.remove('show');
-      toast('✅ 支付成功，授权已激活');
-      setTimeout(()=>location.reload(), 600);
+      if(window.App && App.refreshPlan){
+        App.refreshPlan().then(()=>toast('🎉 升级成功，已解锁全部高级功能！'));
+      }else{
+        toast('🎉 升级成功，已解锁全部高级功能！');
+      }
     }else{
       toast(d.message || '订单暂未支付，请完成支付后再试', false);
     }
@@ -512,12 +518,15 @@ function showActivateSuccess(info){
         ${reason ? `<br><span style="color:#94a3b8;font-size:12px;">（${reason}）</span>` : ''}
       </div>
       <div class="btn-row">
-        <button class="btn btn-outline" onclick="document.querySelector('.act-success-mask').remove()">知道了</button>
-        <button class="btn btn-primary" style="background:var(--primary);color:#fff;border:none;padding:10px 22px;border-radius:8px;font-weight:600;cursor:pointer;" onclick="location.reload()">刷新页面</button>
+        <button class="btn btn-primary" style="background:var(--primary);color:#fff;border:none;padding:10px 22px;border-radius:8px;font-weight:600;cursor:pointer;" onclick="document.querySelector('.act-success-mask').remove()">开始使用</button>
       </div>
     </div>`;
   document.body.appendChild(mask);
   mask.addEventListener('click', e=>{ if(e.target===mask) mask.remove(); });
+  // 授权状态即时生效：导航 🔒 立即消失、套餐徽标更新，无需刷新页面
+  if(window.App && App.refreshPlan){
+    App.refreshPlan().then(()=>toast('🎉 升级成功，已解锁全部高级功能！'));
+  }
 }
 
 function show(el, msg, ok){

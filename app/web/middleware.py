@@ -31,9 +31,20 @@ EMPLOYEE_WRITE_PREFIX = (
     "/api/auth/", "/api/invoices/upload", "/api/invoices/manual",
 )
 FREE_BLOCKED = (
-    ("/api/match", "matching"), ("/matches", "matching"),
+    # 导出必须排在 /api/report 之前，否则会被 report 能力先匹配
     ("/api/invoices/export", "export"), ("/api/report/export", "export"),
+    ("/api/match", "matching"), ("/matches", "matching"),
+    ("/api/reimburses", "reimburse"), ("/reimburses", "reimburse"),
+    ("/api/report", "report"), ("/report", "report"),
+    ("/api/rules", "rules"),
+    ("/api/audit", "audit"),
+    ("/api/handover", "handover"),
 )
+# 会员能力的中文名（403 提示 / 升级引导用词一致）
+FREE_FEATURE_CN = {"matching": "智能匹配中心", "reimburse": "报销单管理",
+                   "report": "差异报告", "export": "数据导出", "team": "团队与权限",
+                   "rules": "智能风控规则", "audit": "审计日志",
+                   "handover": "数据交接包", "custom_categories": "自定义费用字典"}
 
 
 def _html_403(message: str) -> HTMLResponse:
@@ -119,18 +130,30 @@ class AuthMiddleware(BaseHTTPMiddleware):
                     and not path.startswith("/settings"):
                 return _html_403("普通员工仅可访问仪表盘与我的发票")
 
-        # 5. 免费版受限功能：前端拦截 + 服务端兜底
+        # 5. 免费版受限功能：前端拦截 + 服务端兜底（防抓包绕过）
         for prefix, feature in FREE_BLOCKED:
             if path.startswith(prefix) and not license_service.feature_allowed(feature):
                 if _is_api(path):
                     return JSONResponse(
                         {"ok": False, "code": "UPGRADE_REQUIRED",
-                         "message": "免费版不支持该功能，请升级后使用"},
-                        status_code=402)
+                         "feature": feature,
+                         "msg": "需要升级才能使用",
+                         "message": f"{FREE_FEATURE_CN.get(feature, '该功能')}为付费能力，升级后立即解锁"},
+                        status_code=403)
                 return RedirectResponse(f"/plans?feature={feature}")
 
+        # 5b. 自定义费用字典：免费版只保留基础字典，写操作一律拦截
+        if path.startswith("/api/categories") \
+                and request.method not in ("GET", "HEAD", "OPTIONS") \
+                and not license_service.feature_allowed("custom_categories"):
+            return JSONResponse(
+                {"ok": False, "code": "UPGRADE_REQUIRED",
+                 "feature": "custom_categories", "msg": "需要升级才能使用",
+                 "message": "自定义费用字典为付费能力，升级后立即解锁"},
+                status_code=403)
+
         # 6. 管理员专属：团队与权限 / 数据交接与存储迁移
-        #    /settings/team 为「团队管理」在系统设置中的新位置，权限与升级校验保持一致
+        #    免费版允许打开「团队与权限」页面（展示升级引导），只拦截真正的读写接口
         admin_prefix = ("/team", "/settings/team", "/api/team",
                         "/api/exchange", "/api/storage")
         if path.startswith(admin_prefix):
@@ -140,13 +163,13 @@ class AuthMiddleware(BaseHTTPMiddleware):
                                         status_code=403)
                 # 页面统一回到「业务规则」，不把无权限用户留在空白页
                 return RedirectResponse("/settings/rules", status_code=302)
-            if path.startswith(("/team", "/settings/team", "/api/team")) \
+            if path.startswith("/api/team") \
                     and not license_service.feature_allowed("team"):
-                if _is_api(path):
-                    return JSONResponse(
-                        {"ok": False, "code": "UPGRADE_REQUIRED",
-                         "message": "团队多账号为企业版专属能力，请升级"},
-                        status_code=402)
-                return RedirectResponse("/plans?feature=team")
+                return JSONResponse(
+                    {"ok": False, "code": "UPGRADE_REQUIRED",
+                     "feature": "team",
+                     "msg": "需要升级才能使用",
+                     "message": "团队多账号为企业版专属能力，请升级"},
+                    status_code=403)
 
         return await call_next(request)

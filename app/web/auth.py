@@ -24,7 +24,14 @@ def _body(body: dict, key: str, default: str = "") -> str:
 # ---------------------------------------------------------------- 页面
 @auth.get("/login", response_class=HTMLResponse)
 def login_page(request: Request):
-    return templates.TemplateResponse(request, "login.html", {"request": request})
+    # 无账号时直接进初始化向导：单机软件不该先弹一个"登不进去"的登录框
+    if not auth_service.has_users():
+        return RedirectResponse("/setup")
+    return templates.TemplateResponse(request, "login.html", {
+        "request": request,
+        # 「联系管理员」只在企业版（存在多账号协作）时才成立，个人版本机用户就是管理员
+        "team_enabled": license_service.feature_allowed("team"),
+    })
 
 
 @auth.get("/setup", response_class=HTMLResponse)
