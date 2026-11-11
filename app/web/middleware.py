@@ -5,7 +5,7 @@
 2. 未登录 -> 页面跳登录，接口返回 401；
 3. 普通员工：只保留「仪表盘 / 我的发票」，其余页面与写接口一律 403；
 4. 免费版：匹配中心、导出等受限功能前端拦截（页面跳升级页、接口 402）；
-5. 团队管理 / 高级设置：仅管理员，团队管理还要求企业版。
+5. 团队管理：仅管理员，且要求企业版。
 """
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -16,6 +16,8 @@ PUBLIC_PAGES = {"/login", "/setup", "/forgot-password", "/recover", "/health"}
 PUBLIC_API = {
     "/api/auth/login", "/api/auth/setup", "/api/auth/forgot", "/api/auth/recover",
     "/api/auth/logout",
+    # 桌面端优雅退出：仅启动器持有随机令牌，鉴权在接口内部完成
+    "/api/_shutdown",
 }
 # 员工可访问页面（其余业务页面均需财务及以上）
 EMPLOYEE_PAGES = {"/", "/invoices", "/plans", "/recovery-code", "/change-password"}
@@ -113,7 +115,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 if not path.startswith(EMPLOYEE_API_PREFIX):
                     return JSONResponse({"ok": False, "message": "无权限访问该接口"},
                                         status_code=403)
-            elif path not in EMPLOYEE_PAGES and not path.startswith("/invoices/"):
+            elif path not in EMPLOYEE_PAGES and not path.startswith("/invoices/") \
+                    and not path.startswith("/settings"):
                 return _html_403("普通员工仅可访问仪表盘与我的发票")
 
         # 5. 免费版受限功能：前端拦截 + 服务端兜底
@@ -126,15 +129,18 @@ class AuthMiddleware(BaseHTTPMiddleware):
                         status_code=402)
                 return RedirectResponse(f"/plans?feature={feature}")
 
-        # 6. 管理员专属：团队管理 / 高级设置
-        admin_prefix = ("/team", "/api/team", "/advanced", "/api/exchange",
-                        "/api/storage")
+        # 6. 管理员专属：团队与权限 / 数据交接与存储迁移
+        #    /settings/team 为「团队管理」在系统设置中的新位置，权限与升级校验保持一致
+        admin_prefix = ("/team", "/settings/team", "/api/team",
+                        "/api/exchange", "/api/storage")
         if path.startswith(admin_prefix):
             if not auth_service.can_manage_team(user):
-                return (JSONResponse({"ok": False, "message": "仅管理员可操作"},
-                                     status_code=403)
-                        if _is_api(path) else _html_403("仅管理员可访问"))
-            if path.startswith(("/team", "/api/team")) \
+                if _is_api(path):
+                    return JSONResponse({"ok": False, "message": "仅管理员可操作"},
+                                        status_code=403)
+                # 页面统一回到「业务规则」，不把无权限用户留在空白页
+                return RedirectResponse("/settings/rules", status_code=302)
+            if path.startswith(("/team", "/settings/team", "/api/team")) \
                     and not license_service.feature_allowed("team"):
                 if _is_api(path):
                     return JSONResponse(

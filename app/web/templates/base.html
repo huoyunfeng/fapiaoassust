@@ -260,13 +260,10 @@ tr.row-focus td{animation:focusFlash .7s ease-in-out 3;}
   <a href="/reimburses" {% if request.url.path.startswith('/reimburses') %}class="active"{% endif %}>报销单</a>
   <a href="/matches" {% if request.url.path.startswith('/matches') %}class="active"{% endif %}>匹配中心</a>
   <a href="/report" {% if request.url.path.startswith('/report') %}class="active"{% endif %}>差异报告</a>
-  <a href="/settings" {% if request.url.path.startswith('/settings') %}class="active"{% endif %}>设置</a>
   {% endif %}
-  {% if u.role == 'admin' %}
-  <a href="/team" {% if request.url.path.startswith('/team') %}class="active"{% endif %}>团队管理</a>
-  <a href="/advanced" {% if request.url.path.startswith('/advanced') %}class="active"{% endif %}>高级设置</a>
-  {% endif %}
+  <a href="/settings/rules" {% if request.url.path.startswith('/settings') %}class="active"{% endif %}>系统设置</a>
   <a href="/plans" {% if request.url.path.startswith('/plans') %}class="active"{% endif %}>升级 / 授权</a>
+  <a href="/help" {% if request.url.path.startswith('/help') %}class="active"{% endif %} title="帮助与支持" style="margin-left:auto;">❓ 帮助</a>
   <span class="nav-plan {{ lic.plan }}">{{ lic.plan_name }}{% if lic.exp_date %} · 至 {{ lic.exp_date }}{% endif %}</span>
   <div class="nav-user">
     <span class="who"><b>{{ u.display_name or u.username }}</b></span>

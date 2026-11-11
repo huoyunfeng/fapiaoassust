@@ -1,0 +1,435 @@
+{% extends "base.html" %}
+{% block title %}帮助与支持 - 发票报销核对助手{% endblock %}
+{% block content %}
+<style>
+/* ============ 帮助页面专属样式 ============ */
+.help-layout{display:flex;gap:24px;align-items:flex-start;max-width:1440px;margin:0 auto;}
+.help-sidebar{width:200px;flex-shrink:0;position:sticky;top:80px;}
+.help-sidebar .sidebar-title{font-size:13px;color:var(--muted);font-weight:600;margin-bottom:10px;padding:0 8px;text-transform:uppercase;letter-spacing:.5px;}
+.help-sidebar .anchor-nav{display:flex;flex-direction:column;gap:2px;background:#fff;border-radius:8px;padding:8px;box-shadow:0 1px 4px rgba(0,0,0,.04);border:1px solid var(--border-light);}
+.help-sidebar .anchor-nav a{display:flex;align-items:center;gap:8px;padding:10px 12px;border-radius:6px;color:var(--text-2);text-decoration:none;font-size:13px;transition:all .2s ease;border-left:3px solid transparent;}
+.help-sidebar .anchor-nav a:hover{background:var(--primary-light);color:var(--primary);}
+.help-sidebar .anchor-nav a.active{background:var(--primary-light);color:var(--primary);border-left-color:var(--primary);font-weight:600;}
+.help-sidebar .anchor-nav a .dot{width:6px;height:6px;border-radius:50%;background:var(--border);flex-shrink:0;transition:all .2s;}
+.help-sidebar .anchor-nav a.active .dot{background:var(--primary);box-shadow:0 0 0 3px rgba(37,99,235,.15);}
+
+.help-main{flex:1;min-width:0;}
+
+/* Hero 欢迎区 */
+.help-hero{background:linear-gradient(135deg,#2563eb 0%,#1d4ed8 50%,#1e40af 100%);color:#fff;border-radius:12px;padding:40px 48px;margin-bottom:28px;position:relative;overflow:hidden;}
+.help-hero::before{content:'';position:absolute;top:-50px;right:-50px;width:200px;height:200px;background:rgba(255,255,255,.08);border-radius:50%;}
+.help-hero::after{content:'';position:absolute;bottom:-80px;right:100px;width:150px;height:150px;background:rgba(255,255,255,.05);border-radius:50%;}
+.help-hero h1{font-size:28px;font-weight:700;margin-bottom:10px;position:relative;z-index:1;}
+.help-hero p{font-size:15px;opacity:.92;line-height:1.7;position:relative;z-index:1;}
+.help-hero .tag-row{display:flex;gap:10px;margin-top:18px;position:relative;z-index:1;flex-wrap:wrap;}
+.help-hero .tag-row span{background:rgba(255,255,255,.18);backdrop-filter:blur(4px);padding:5px 14px;border-radius:999px;font-size:12px;border:1px solid rgba(255,255,255,.25);}
+
+/* 通用卡片区块 */
+.help-section{background:#fff;border-radius:12px;padding:28px 32px;margin-bottom:24px;box-shadow:0 1px 4px rgba(0,0,0,.04);border:1px solid var(--border-light);scroll-margin-top:80px;}
+.help-section-title{display:flex;align-items:center;gap:12px;font-size:18px;font-weight:700;color:var(--text);margin-bottom:20px;padding-bottom:14px;border-bottom:1px solid var(--border-light);}
+.help-section-title .icon{width:32px;height:32px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0;}
+.help-section-title .icon.blue{background:#eff6ff;color:#2563eb;}
+.help-section-title .icon.green{background:#f0f9eb;color:#52c41a;}
+.help-section-title .icon.orange{background:#fdf6ec;color:#faad14;}
+.help-section-title .icon.red{background:#fef0f0;color:#ff4d4f;}
+.help-section-title .icon.purple{background:#f4f0ff;color:#722ed1;}
+
+/* 步骤条 */
+.steps{display:flex;flex-direction:column;gap:0;counter-reset:step;}
+.step{display:flex;gap:18px;position:relative;padding-bottom:24px;}
+.step:last-child{padding-bottom:0;}
+.step::before{content:'';position:absolute;left:15px;top:36px;bottom:0;width:2px;background:linear-gradient(to bottom,#bfdbfe,#e4e7ed);}
+.step:last-child::before{display:none;}
+.step-num{flex-shrink:0;width:32px;height:32px;border-radius:50%;background:var(--primary);color:#fff;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:700;box-shadow:0 2px 8px rgba(37,99,235,.3);}
+.step-body{flex:1;padding-top:4px;}
+.step-title{font-size:15px;font-weight:600;color:var(--text);margin-bottom:6px;}
+.step-desc{font-size:13px;color:var(--text-2);line-height:1.7;}
+.step-desc strong{color:var(--primary);}
+
+/* 折叠面板 */
+.collapse-list{display:flex;flex-direction:column;gap:10px;}
+.collapse-item{border:1px solid var(--border-light);border-radius:8px;overflow:hidden;transition:all .25s ease;}
+.collapse-item:hover{border-color:var(--primary-border);box-shadow:0 2px 8px rgba(37,99,235,.08);}
+.collapse-head{display:flex;align-items:center;gap:12px;padding:16px 20px;cursor:pointer;background:#fafbfc;font-size:14px;font-weight:600;color:var(--text);user-select:none;}
+.collapse-head .q-icon{width:24px;height:24px;border-radius:50%;background:var(--primary-light);color:var(--primary);display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;flex-shrink:0;}
+.collapse-head .chevron{margin-left:auto;transition:transform .25s ease;color:var(--muted);font-size:12px;}
+.collapse-item.open .collapse-head .chevron{transform:rotate(180deg);}
+.collapse-body{max-height:0;overflow:hidden;transition:max-height .35s ease;padding:0 20px;font-size:13px;color:var(--text-2);line-height:1.8;}
+.collapse-item.open .collapse-body{max-height:600px;padding:0 20px 18px;}
+.collapse-body b{color:var(--text);}
+.collapse-body .tip{display:inline-block;margin-top:10px;padding:8px 12px;border-radius:6px;background:#eff6ff;color:#1d4ed8;font-size:12px;border:1px solid #bfdbfe;}
+
+/* 安全指南告警 */
+.safety-guide{background:linear-gradient(135deg,#fffbeb 0%,#fef3c7 100%);border:1px solid #fde68a;border-radius:10px;padding:20px 24px;}
+.safety-guide .guide-title{display:flex;align-items:center;gap:10px;font-size:14px;font-weight:700;color:#92400e;margin-bottom:10px;}
+.safety-guide .guide-title .shield{font-size:18px;}
+.safety-guide p{font-size:13px;color:#78350f;line-height:1.8;}
+.safety-guide p strong{color:#b45309;}
+
+/* 版本日志 */
+.version-log{display:flex;flex-direction:column;gap:18px;}
+.version-item{position:relative;padding-left:24px;}
+.version-item::before{content:'';position:absolute;left:7px;top:8px;width:10px;height:10px;border-radius:50%;background:var(--primary);box-shadow:0 0 0 4px rgba(37,99,235,.15);}
+.version-item::after{content:'';position:absolute;left:11px;top:20px;bottom:-18px;width:2px;background:#e4e7ed;}
+.version-item:last-child::after{display:none;}
+.version-header{display:flex;align-items:center;gap:12px;margin-bottom:10px;}
+.version-tag{display:inline-flex;align-items:center;gap:6px;background:var(--primary);color:#fff;padding:4px 12px;border-radius:999px;font-size:12px;font-weight:700;}
+.version-tag.current{background:#52c41a;box-shadow:0 2px 8px rgba(82,196,26,.3);}
+.version-date{font-size:12px;color:var(--muted);}
+.version-body{font-size:13px;color:var(--text-2);line-height:1.8;}
+.version-body li{margin-bottom:4px;list-style-type:disc;margin-left:18px;}
+
+/* 底部客服卡片 */
+.help-support-card{background:linear-gradient(135deg,#f0f9ff 0%,#e0f2fe 100%);border:2px solid #7dd3fc;border-radius:14px;padding:32px;margin-top:8px;text-align:center;position:relative;overflow:hidden;}
+.help-support-card::before{content:'';position:absolute;top:-60px;right:-60px;width:180px;height:180px;background:rgba(14,165,233,.08);border-radius:50%;}
+.help-support-card h3{font-size:17px;font-weight:700;color:#0c4a6e;margin-bottom:8px;position:relative;}
+.help-support-card p{font-size:13px;color:#0369a1;line-height:1.7;margin-bottom:16px;position:relative;}
+.help-support-card .wx-row{display:inline-flex;align-items:center;gap:10px;background:#fff;padding:12px 22px;border-radius:999px;box-shadow:0 4px 14px rgba(14,165,233,.15);position:relative;}
+.help-support-card .wx-label{font-size:12px;color:#0369a1;}
+.help-support-card .wx-id{font-size:15px;font-weight:700;color:#0c4a6e;letter-spacing:.5px;}
+.help-support-card .copy-btn{display:inline-flex;align-items:center;gap:4px;background:#0ea5e9;color:#fff;border:none;padding:6px 14px;border-radius:999px;font-size:12px;font-weight:600;cursor:pointer;transition:all .2s;}
+.help-support-card .copy-btn:hover{background:#0284c7;box-shadow:0 2px 8px rgba(14,165,233,.3);}
+.help-support-card .copy-btn.copied{background:#52c41a;}
+
+/* 响应式 */
+@media (max-width: 1100px){
+  .help-layout{flex-direction:column;}
+  .help-sidebar{width:100%;position:static;}
+  .help-sidebar .anchor-nav{flex-direction:row;flex-wrap:wrap;gap:4px;padding:12px;}
+  .help-sidebar .anchor-nav a{border-left:none;border-bottom:2px solid transparent;padding:8px 14px;border-radius:6px;}
+  .help-sidebar .anchor-nav a.active{border-left:none;border-bottom-color:var(--primary);}
+  .help-sidebar .anchor-nav a .dot{display:none;}
+}
+@media (max-width: 640px){
+  .help-hero{padding:28px 24px;}
+  .help-hero h1{font-size:22px;}
+  .help-section{padding:20px;}
+}
+</style>
+
+<div class="help-layout">
+
+  <!-- 左侧锚点导航 -->
+  <aside class="help-sidebar">
+    <div class="sidebar-title">目录导航</div>
+    <nav class="anchor-nav" id="anchorNav">
+      <a href="#welcome" class="active"><span class="dot"></span>快速上手</a>
+      <a href="#advanced"><span class="dot"></span>进阶玩法</a>
+      <a href="#faq"><span class="dot"></span>常见问题</a>
+      <a href="#safety"><span class="dot"></span>数据安全</a>
+      <a href="#changelog"><span class="dot"></span>版本日志</a>
+    </nav>
+  </aside>
+
+  <!-- 右侧内容区 -->
+  <main class="help-main">
+
+    <!-- Hero 欢迎区 -->
+    <section class="help-hero" id="welcome">
+      <h1>🎉 欢迎使用发票报销核对助手</h1>
+      <p>纯本地安全运行，让财务对账效率提升十倍。<br>数据绝不上传云端，彻底保障企业隐私。</p>
+      <div class="tag-row">
+        <span>🔒 本地运行</span>
+        <span>⚡ 智能匹配</span>
+        <span>📊 差异报告</span>
+        <span>🛡️ 数据安全</span>
+      </div>
+    </section>
+
+    <!-- 快速上手 -->
+    <section class="help-section" id="quickstart">
+      <div class="help-section-title">
+        <div class="icon blue">🚀</div>
+        三步快速上手
+      </div>
+      <div class="steps">
+        <div class="step">
+          <div class="step-num">1</div>
+          <div class="step-body">
+            <div class="step-title">导入发票原件</div>
+            <div class="step-desc">
+              在左侧导航栏点击 <strong>【发票】</strong> 进入发票管理页，点击 <strong>「批量导入」</strong> 按钮，
+              选择 PDF / OFD / 图片格式的发票文件，系统将自动解析并提取发票号、金额、税率、购销方等关键字段。
+            </div>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-num">2</div>
+          <div class="step-body">
+            <div class="step-title">导入报销单 Excel</div>
+            <div class="step-desc">
+              进入 <strong>【报销单】</strong> 页面，点击 <strong>「导入报销单」</strong> 上传您公司的 Excel 明细表。
+              系统会自动识别表头、引导您完成字段映射，确保模板兼容各种格式。
+            </div>
+          </div>
+        </div>
+        <div class="step">
+          <div class="step-num">3</div>
+          <div class="step-body">
+            <div class="step-title">执行智能匹配，查看差异报告</div>
+            <div class="step-desc">
+              数据就绪后，点击顶部 <strong>【匹配中心】</strong> → <strong>「执行全量匹配」</strong>，
+              系统在几秒内完成所有发票与报销单的智能对账。随后前往 <strong>【差异报告】</strong> 查看异常项并人工处理。
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 进阶玩法 -->
+    <section class="help-section" id="advanced">
+      <div class="help-section-title">
+        <div class="icon green">💡</div>
+        进阶玩法
+      </div>
+      <div class="collapse-list">
+        <div class="collapse-item">
+          <div class="collapse-head" onclick="toggleCollapse(this)">
+            <span class="q-icon">❓</span>
+            什么是"多维匹配与平局检测"？
+            <span class="chevron">▼</span>
+          </div>
+          <div class="collapse-body">
+            当报销单未填写发票号时，系统会按 <b>金额、日期</b> 进行模糊打分。
+            若遇到多张<strong>一模一样</strong>的发票（如同一天的同金额餐饮发票），
+            系统会<strong>全部列出</strong>让您人工点选，绝不自作主张帮您配对，彻底杜绝"错配"灾难。
+          </div>
+        </div>
+        <div class="collapse-item">
+          <div class="collapse-head" onclick="toggleCollapse(this)">
+            <span class="q-icon">❓</span>
+            什么是"主从联动法则"？
+            <span class="chevron">▼</span>
+          </div>
+          <div class="collapse-body">
+            <p>修改<strong>报销单分类</strong>，关联的发票会<strong>同步修改</strong>（主账变更，明细必须跟着变）；</p>
+            <p>但单独修改<strong>某张发票分类</strong>，系统只会打上 <span class="tip">⚠️ 分类差异标签</span>，
+            不会覆盖总账，确保账目绝对清晰可追溯。</p>
+          </div>
+        </div>
+        <div class="collapse-item">
+          <div class="collapse-head" onclick="toggleCollapse(this)">
+            <span class="q-icon">❓</span>
+            如何更换电脑或重装系统？
+            <span class="chevron">▼</span>
+          </div>
+          <div class="collapse-body">
+            授权采用<strong>一机一码</strong>绑定机制。请将旧电脑的 <b>【机器码】</b> 发给客服解绑，
+            即可在新电脑上输入原订单号重新激活。数据层面建议先做一次
+            <b>【一键备份】</b>（系统设置 → 系统与安全），备份文件拷贝到新电脑后使用
+            <b>【恢复数据】</b> 即可完整迁移。
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 常见问题 FAQ -->
+    <section class="help-section" id="faq">
+      <div class="help-section-title">
+        <div class="icon orange">📖</div>
+        常见问题 FAQ
+      </div>
+      <div class="collapse-list">
+        <div class="collapse-item">
+          <div class="collapse-head" onclick="toggleCollapse(this)">
+            <span class="q-icon">Q</span>
+            发票解析失败 / 解析不完整怎么办？
+            <span class="chevron">▼</span>
+          </div>
+          <div class="collapse-body">
+            系统内置了 PDF 文本层解析、OFD 结构化解析、OCR 图像识别三重引擎，任一环节成功即可提取字段。
+            若全部失败，会自动降级到<strong>人工补录</strong>模式，您可以手动填写关键字段后继续使用。
+            建议优先使用 PDF 格式的电子发票，解析成功率最高。
+          </div>
+        </div>
+        <div class="collapse-item">
+          <div class="collapse-head" onclick="toggleCollapse(this)">
+            <span class="q-icon">Q</span>
+            匹配结果有错误，可以手动修改吗？
+            <span class="chevron">▼</span>
+          </div>
+          <div class="collapse-body">
+            完全可以。<b>【匹配中心】</b>页面提供了完整的人工干预能力：
+            <br>• 对"待人工确认"记录，可以并排比对后点选正确发票
+            <br>• 对"无候选"记录，可以手动指定任意发票进行绑定
+            <br>• 对已匹配记录，可以一键<strong>解除匹配</strong>后重新配对
+            <br>所有人工操作都会留下审计日志，确保可追溯。
+          </div>
+        </div>
+        <div class="collapse-item">
+          <div class="collapse-head" onclick="toggleCollapse(this)">
+            <span class="q-icon">Q</span>
+            如何防止同一张发票被重复报销？
+            <span class="chevron">▼</span>
+          </div>
+          <div class="collapse-body">
+            系统在发票导入时自动进行<strong>去重检测</strong>：若待导入发票号在库中已存在，
+            会自动跳过不入库。同时，报销单匹配时也会校验发票是否已被占用，
+            已匹配的发票无法再次被其他报销单绑定。双向防护，彻底杜绝重复报销。
+          </div>
+        </div>
+        <div class="collapse-item">
+          <div class="collapse-head" onclick="toggleCollapse(this)">
+            <span class="q-icon">Q</span>
+            免费版和付费版有什么区别？
+            <span class="chevron">▼</span>
+          </div>
+          <div class="collapse-body">
+            免费版每月支持 <b>50 张</b> 发票额度，单用户使用；付费版不限额度、支持多席位、
+            解锁高级规则引擎、交接包、批量操作等企业级功能。详细对比和升级入口请点击顶部
+            <b>【升级 / 授权】</b>。
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 数据安全急救指南 -->
+    <section class="help-section" id="safety">
+      <div class="help-section-title">
+        <div class="icon red">🛡️</div>
+        数据安全急救指南
+      </div>
+      <div class="safety-guide">
+        <div class="guide-title">
+          <span class="shield">⚠️</span>
+          强烈建议：每周做一次完整备份
+        </div>
+        <p>
+          请定期进入 <strong>【系统设置 → 系统与安全 → 数据备份与恢复】</strong>，
+          点击 <strong>「一键备份数据」</strong>，将备份 zip 包保存到 <strong>U 盘或网盘</strong>。
+        </p>
+        <p style="margin-top:10px;">
+          即使发生误删或系统崩溃，您也有三重兜底：<br>
+          ① <strong>回收站</strong>：所有删除操作都先进入回收站，默认 30 天自动清理<br>
+          ② <strong>静默备份</strong>：系统每天凌晨自动备份一次（LRU 保留最近 3 份）<br>
+          ③ <strong>手动备份</strong>：您主动保存到外部的 zip 包，可随时恢复
+        </p>
+      </div>
+    </section>
+
+    <!-- 版本日志 -->
+    <section class="help-section" id="changelog">
+      <div class="help-section-title">
+        <div class="icon purple">📋</div>
+        版本更新日志
+      </div>
+      <div class="version-log">
+        <div class="version-item">
+          <div class="version-header">
+            <span class="version-tag current">V{{ app_version }} · 当前版本</span>
+          </div>
+          <div class="version-body">
+            <ul>
+              <li>新增 <b>"人工强制核销"</b> 支持：允许财务在金额有差异时强行绑定，差异会被标记留痕</li>
+              <li>优化多设备交接包的合并速度：大数据量导入性能提升约 60%</li>
+              <li>修复了长文本截断的 UI Bug：列表页超长内容悬浮显示完整 Tooltip</li>
+              <li>新增 <b>帮助与支持</b> 页面：集中收录产品使用指南与 FAQ</li>
+            </ul>
+          </div>
+        </div>
+        <div class="version-item">
+          <div class="version-header">
+            <span class="version-tag">V1.1.0</span>
+          </div>
+          <div class="version-body">
+            <ul>
+              <li>新增发票列表动态列配置：用户可自定义显示/隐藏列</li>
+              <li>报销单导入新增双层查重：Excel 内部去重 + 历史记录相似度检测</li>
+              <li>设置页重构：左右分栏布局，员工/管理员权限隔离</li>
+            </ul>
+          </div>
+        </div>
+        <div class="version-item">
+          <div class="version-header">
+            <span class="version-tag">V1.0.0</span>
+          </div>
+          <div class="version-body">
+            <ul>
+              <li>首发版本，支持多格式发票解析（PDF / OFD / 图片 OCR）</li>
+              <li>智能匹配引擎：精确匹配 + 多维模糊匹配 + 平局检测</li>
+              <li>防重复报销：发票入库去重 + 匹配占用校验</li>
+              <li>差异报告工作台：集中处理所有异常匹配项</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 底部客服支持 -->
+    <div class="help-support-card">
+      <h3>🤝 遇到无法解决的问题？</h3>
+      <p>请添加专属客服微信，我们将为您提供 <b>1 对 1</b> 指导与问题排查服务。</p>
+      <div class="wx-row">
+        <span class="wx-label">客服微信号</span>
+        <span class="wx-id">fengyunhuo123</span>
+        <button class="copy-btn" onclick="copyWechat(this)">📋 复制微信号</button>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<script>
+// 折叠面板开关
+function toggleCollapse(head){
+  const item = head.parentElement;
+  item.classList.toggle('open');
+}
+
+// 微信号复制
+async function copyWechat(btn){
+  const wxId = 'fengyunhuo123';
+  try{
+    await navigator.clipboard.writeText(wxId);
+  }catch(e){
+    // 降级方案
+    const ta = document.createElement('textarea');
+    ta.value = wxId;
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    try{ document.execCommand('copy'); }catch(err){}
+    document.body.removeChild(ta);
+  }
+  const orig = btn.innerHTML;
+  btn.innerHTML = '✅ 已复制';
+  btn.classList.add('copied');
+  toast('微信号已复制到剪贴板');
+  setTimeout(()=>{ btn.innerHTML = orig; btn.classList.remove('copied'); }, 2000);
+}
+
+// 锚点导航高亮（滚动联动）
+const sections = ['welcome','quickstart','advanced','faq','safety','changelog'];
+const navLinks = document.querySelectorAll('#anchorNav a');
+
+function updateActiveAnchor(){
+  const scrollTop = window.scrollY + 100;
+  let current = 'welcome';
+  for(const id of sections){
+    const el = document.getElementById(id);
+    if(el && el.offsetTop <= scrollTop) current = id;
+  }
+  navLinks.forEach(a => {
+    a.classList.toggle('active', a.getAttribute('href') === '#' + current);
+  });
+}
+
+// 平滑滚动到锚点
+navLinks.forEach(a => {
+  a.addEventListener('click', e => {
+    e.preventDefault();
+    const id = a.getAttribute('href').slice(1);
+    const el = document.getElementById(id);
+    if(el){
+      const offset = 70;
+      const top = el.getBoundingClientRect().top + window.scrollY - offset;
+      window.scrollTo({top, behavior:'smooth'});
+    }
+  });
+});
+
+window.addEventListener('scroll', updateActiveAnchor, {passive:true});
+window.addEventListener('load', updateActiveAnchor);
+</script>
+{% endblock %}

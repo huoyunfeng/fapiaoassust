@@ -68,19 +68,8 @@ def change_password_page(request: Request):
 
 @auth.get("/team", response_class=HTMLResponse)
 def team_page(request: Request):
-    return templates.TemplateResponse(request, "team.html", {
-        "request": request, "users": auth_service.list_users(),
-        "license": license_service.status(),
-    })
-
-
-@auth.get("/advanced", response_class=HTMLResponse)
-def advanced_page(request: Request):
-    return templates.TemplateResponse(request, "advanced.html", {
-        "request": request,
-        "upload_dir": storage_service.current_upload_dir(),
-        "counts": exchange_service.counts(),
-    })
+    # 团队管理已并入「系统设置 → 团队与权限」，旧入口统一重定向，避免书签失效
+    return RedirectResponse("/settings/team", status_code=302)
 
 
 # ---------------------------------------------------------------- 登录 / 初始化

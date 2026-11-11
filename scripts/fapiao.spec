@@ -1,10 +1,16 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller 单文件打包配置。
+"""PyInstaller 打包配置（文件夹模式 / onedir，禁用单文件模式）。
 
 用法（在仓库根目录）：
     python -m PyInstaller --noconfirm --clean --distpath dist --workpath build scripts\\fapiao.spec
 
-产出：dist\\fapiao-check.exe（首次运行会在 exe 同目录创建 data\\ 存库/上传/日志）
+产出：dist\\fapiao-check\\fapiao-check.exe
+      —— 数据不落在 exe 目录，而写入 %APPDATA%\\FapiaoAssistant（见 app/config.py）
+
+为什么必须 onedir：
+  · 单文件模式（-F/--onefile）运行时要把自身解压到 %TEMP% 再执行，
+    行为与常见恶意"自解压释放器"高度相似，是杀毒软件的重点误报对象；
+  · onedir 目录结构透明、启动快、无临时解压，误报率显著更低。
 """
 import os
 
@@ -22,15 +28,20 @@ hiddenimports = []
 # - onnxruntime：推理引擎 DLL
 # - uvicorn：loops/protocols 等运行时按字符串导入
 # - pdfminer / pypdfium2：PDF 解析与 CMap 数据
+# - webview：桌面窗口（pywebview），按平台动态导入
 for pkg in ("rapidocr_onnxruntime", "onnxruntime", "uvicorn",
-            "pdfminer", "pypdfium2"):
+            "pdfminer", "pypdfium2", "webview"):
     pkg_datas, pkg_binaries, pkg_hidden = collect_all(pkg)
     datas += pkg_datas
     binaries += pkg_binaries
     hiddenimports += pkg_hidden
 
+# 可选图标：存在 .ico 时自动启用（assets\\app_icon.ico）
+_icon = os.path.join(ROOT, "assets", "app_icon.ico")
+icon = _icon if os.path.exists(_icon) else None
+
 a = Analysis(
-    [os.path.join(ROOT, "run.py")],
+    [os.path.join(ROOT, "main.py")],
     pathex=[ROOT],
     binaries=binaries,
     datas=datas,
@@ -44,13 +55,21 @@ pyz = PYZ(a.pure)
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.datas,
     [],
+    exclude_binaries=True,      # 关键：二进制交给 COLLECT，产出文件夹而非单文件
     name="fapiao-check",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
+    upx=False,                  # UPX 压缩会被杀毒引擎判定为加壳，必须关闭
+    console=False,              # 隐藏控制台黑框（等价 -w / --noconsole）
+    icon=icon,
+)
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.datas,
+    strip=False,
     upx=False,
-    console=True,
+    name="fapiao-check",
 )

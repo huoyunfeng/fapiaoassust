@@ -913,6 +913,10 @@ class CompanyRepo:
     def delete(self, conn: sqlite3.Connection, cid: int) -> None:
         conn.execute("DELETE FROM company_profile WHERE id = ?", (cid,))
 
+    def set_default(self, conn: sqlite3.Connection, cid: int) -> None:
+        conn.execute("UPDATE company_profile SET is_default = 0")
+        conn.execute("UPDATE company_profile SET is_default = 1 WHERE id = ?", (cid,))
+
 
 # =====================================================================
 # 报销内容自定义词典（用户改名记忆）

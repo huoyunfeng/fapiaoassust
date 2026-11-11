@@ -1,5 +1,7 @@
 """UI 层 - JSON API 路由。只做参数接收与结果返回，不含业务规则（§2 职责铁律）。"""
+import io
 import json
+import zipfile
 from typing import List, Optional
 
 from fastapi import APIRouter, File, Form, Request, UploadFile
@@ -741,13 +743,33 @@ async def add_company(name: str = Form(...), tax_no: str = Form(...),
     return _j({"id": cid})
 
 
+@api.get("/settings/companies")
+async def list_companies():
+    """AJAX 刷新公司抬头列表（用于列表 + 弹窗模式）。"""
+    from app.repository import db
+    from app.repository.repos import company_repo
+    with db.read() as conn:
+        companies = company_repo.list(conn)
+    return _j({"companies": companies})
+
+
 @api.post("/companies/{company_id}/delete")
 async def delete_company(company_id: int):
     from app.repository import db
     from app.repository.repos import company_repo
     with db.tx() as conn:
         company_repo.delete(conn, company_id)
-    return _j({"deleted": company_id})
+    return _j({"ok": True, "deleted": company_id})
+
+
+@api.post("/companies/{company_id}/default")
+async def set_default_company(company_id: int):
+    """设为默认抬头：先清所有 is_default 再置目标为 1。"""
+    from app.repository import db
+    from app.repository.repos import company_repo
+    with db.tx() as conn:
+        company_repo.set_default(conn, company_id)
+    return _j({"ok": True, "default_id": company_id})
 
 
 @api.post("/rules")
@@ -890,7 +912,7 @@ async def delete_rule(rule_id: int):
     from app.repository.repos import rule_repo
     with db.tx() as conn:
         rule_repo.delete(conn, rule_id)
-    return _j({"deleted": rule_id})
+    return _j({"ok": True, "deleted": rule_id})
 
 
 # ---------------------------------------------------------------- 数据备份与恢复
@@ -1041,3 +1063,110 @@ async def handover_import(file: UploadFile = File(...)):
         logger.exception("handover_import 失败")
         return _j({"ok": False, "message": f"导入失败：{e}"})
     return _j(result)
+
+
+# ==============================================================
+# 新扩展：真实进度条 / MD5 校验 / Top10 / 诊断包 / 静默备份
+# ==============================================================
+
+from app.service import task_service  # noqa: E402  (放在末尾方便追溯)
+
+
+@api.get("/backup/last")
+async def backup_last():
+    """读取上次成功备份时间 + 静默备份列表（Tab1 顶部状态展示）。"""
+    manual = await run_in_threadpool(backup_service.get_last_backup)
+    silent = await run_in_threadpool(backup_service.list_silent_backups)
+    return _j({"ok": True, "manual": manual, "silent": silent})
+
+
+@api.post("/tasks/backup")
+async def tasks_backup():
+    """异步一键备份：返回 task_id，前端轮询 GET /api/tasks/{id} 拿真实进度。"""
+    task_id = await run_in_threadpool(task_service.create_task, "backup", backup_service.create_backup)
+    return _j({"ok": True, "task_id": task_id})
+
+
+@api.post("/tasks/restore")
+async def tasks_restore(file: UploadFile = File(...)):
+    """异步恢复：文件接收后把 bytes 交给后台线程；先做 MD5 比对再执行恢复。"""
+    filename = (file.filename or "").lower()
+    if not filename.endswith(".zip"):
+        return _j({"ok": False, "message": "请上传 .zip 格式的备份文件"})
+    content = await file.read()
+    if len(content) > MAX_ZIP_BYTES:
+        return _j({"ok": False, "message": "备份包过大（超过 2GB 上限）"})
+    # MD5 预校验：前端选文件后拿到"声明 md5"，但我们也可以先做一次完整性快查
+    declared_md5 = ""
+    try:
+        with zipfile.ZipFile(io.BytesIO(content)) as zf:
+            manifest = zf.read("manifest.json").decode("utf-8")
+            declared_md5 = (json.loads(manifest).get("md5") or "").lower()
+    except (KeyError, zipfile.BadZipFile, json.JSONDecodeError):
+        declared_md5 = ""
+    actual_md5 = backup_service.compute_md5_bytes(content).lower()
+    if declared_md5 and declared_md5 != actual_md5:
+        return _j({"ok": False, "md5_mismatch": True,
+                   "message": "⚠️ 备份包 MD5 校验失败，文件可能被篡改或损坏，禁止恢复！"})
+    # 交给后台线程
+    task_id = task_service.create_task("restore", backup_service.restore_backup, content)
+    return _j({"ok": True, "task_id": task_id})
+
+
+@api.post("/tasks/migrate")
+async def tasks_migrate(payload: dict):
+    """异步附件路径迁移。payload = {"new_path": "..."}。"""
+    new_path = (payload.get("new_path") or "").strip()
+    if not new_path:
+        return _j({"ok": False, "message": "请输入新路径"})
+    task_id = await run_in_threadpool(
+        task_service.create_task, "migrate",
+        backup_service.migrate_upload_dir, new_path
+    )
+    return _j({"ok": True, "task_id": task_id})
+
+
+@api.post("/tasks/clean-selected")
+async def tasks_clean_selected(payload: dict):
+    """异步按用户勾选清理附件。payload = {"recycle": bool, "orphan": bool, "detach_original": bool}。"""
+    recycle = bool(payload.get("recycle"))
+    orphan = bool(payload.get("orphan"))
+    detach_original = bool(payload.get("detach_original"))
+    if not (recycle or orphan or detach_original):
+        return _j({"ok": False, "message": "至少勾选一项清理类型"})
+    task_id = await run_in_threadpool(
+        task_service.create_task, "clean",
+        backup_service.cleanup_attachments, recycle, orphan, detach_original
+    )
+    return _j({"ok": True, "task_id": task_id})
+
+
+@api.get("/tasks/{task_id}")
+async def task_status(task_id: str):
+    """轮询任务状态。返回值含 state/progress/message/result/error。"""
+    info = await run_in_threadpool(task_service.get_task, task_id)
+    if not info:
+        return JSONResponse(status_code=404, content={"ok": False, "message": "任务不存在或已过期"})
+    return _j({"ok": True, "task": info})
+
+
+@api.get("/storage/top-attachments")
+async def storage_top_attachments(limit: int = 10):
+    """返回占用空间最大的前 N 个附件（清理向导左栏）。"""
+    items = await run_in_threadpool(backup_service.get_top_attachments, int(limit))
+    return _j({"ok": True, "items": items})
+
+
+@api.get("/system/diagnose")
+async def system_diagnose():
+    """导出诊断包（日志 + 配置 + 系统信息 + 授权状态，不含用户业务数据）。"""
+    try:
+        zpath = await run_in_threadpool(backup_service.export_diagnose)
+        return FileResponse(
+            path=str(zpath),
+            filename=zpath.name,
+            media_type="application/zip",
+        )
+    except Exception as e:
+        logger.exception("diagnose 失败")
+        return _j({"ok": False, "message": f"导出失败：{e}"})

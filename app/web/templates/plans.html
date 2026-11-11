@@ -15,6 +15,7 @@
 .pl-card{background:#fff;border:1px solid var(--border);border-radius:14px;padding:24px 22px;
   position:relative;display:flex;flex-direction:column;}
 .pl-card.hl{border-color:var(--primary);box-shadow:0 12px 36px rgba(37,99,235,.14);}
+.pl-card.disabled{opacity:.55;filter:grayscale(.2);}
 .pl-card .tag{position:absolute;top:-11px;left:20px;background:var(--primary);color:#fff;
   font-size:11px;padding:3px 10px;border-radius:999px;}
 .pl-name{font-size:17px;font-weight:700;}
@@ -25,39 +26,55 @@
 .pl-feat li{list-style:none;}
 .pl-now{margin-top:16px;text-align:center;padding:9px;border-radius:8px;background:#f1f5f9;color:#64748b;font-size:13px;}
 .pl-buy{margin-top:16px;text-align:center;padding:9px;border-radius:8px;border:1px solid var(--primary);
-  color:var(--primary);font-size:13px;cursor:pointer;background:#fff;text-decoration:none;display:block;}
-.pl-buy:hover{background:var(--primary-light);}
+  color:var(--primary);font-size:13px;cursor:pointer;background:#fff;text-decoration:none;display:block;font-weight:600;transition:all .15s;}
+.pl-buy:hover{background:var(--primary);color:#fff;}
+.pl-buy.primary{background:var(--primary);color:#fff;border-color:var(--primary);}
+.pl-buy.primary:hover{background:#1d4ed8;}
+.pl-buy:disabled{opacity:.5;cursor:not-allowed;background:#fff;color:#94a3b8;border-color:#e2e8f0;}
 .pl-sec{background:#fff;border-radius:14px;padding:22px 26px;box-shadow:0 10px 30px rgba(15,23,42,.06);margin-top:20px;}
 .pl-sec h2{font-size:15px;margin-bottom:4px;}
 .pl-sec .hint{font-size:12px;color:#94a3b8;margin-bottom:14px;line-height:1.8;}
 .pl-row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;}
 .pl-row input{flex:1;min-width:240px;padding:10px 12px;border:1px solid var(--border);border-radius:8px;font-size:14px;}
 .pl-btn{padding:10px 18px;border:none;border-radius:8px;background:var(--primary);color:#fff;
-  font-size:13px;font-weight:600;cursor:pointer;}
+  font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap;transition:all .15s;}
 .pl-btn:disabled{opacity:.6;cursor:not-allowed;}
 .pl-btn.ghost{background:#fff;border:1px solid var(--border);color:var(--text-2);}
+.pl-btn.ghost:hover{border-color:var(--primary);color:var(--primary);}
 .pl-msg{display:none;margin-top:12px;padding:10px 12px;border-radius:8px;font-size:13px;line-height:1.8;}
-.pl-qr{display:flex;gap:18px;align-items:center;padding:16px;border-radius:10px;
-  background:#f8fafc;border:1px dashed #cbd5e1;margin-top:8px;}
-.pl-qr .box{width:120px;height:120px;border-radius:10px;background:#fff;border:1px solid var(--border);
-  display:flex;align-items:center;justify-content:center;font-size:12px;color:#94a3b8;text-align:center;padding:8px;}
-.pl-qr .box img{width:100%;height:100%;object-fit:contain;}
 .pl-head-right{display:flex;flex-direction:column;align-items:flex-end;gap:6px;}
-.pl-deauth{padding:4px 12px;border-radius:6px;font-size:12px;cursor:pointer;
-  border:1px solid #fecaca;background:#fff;color:#dc2626;}
-.pl-deauth:hover{background:#fef2f2;}
-.pl-deauth:disabled{opacity:.6;cursor:not-allowed;}
 .pl-mc-label{font-size:12px;color:#94a3b8;}
 .pl-invite{font-family:ui-monospace,Consolas,monospace;font-size:11px;word-break:break-all;
   background:#f8fafc;border:1px dashed #cbd5e1;border-radius:8px;padding:10px;color:#334155;
   max-height:120px;overflow:auto;margin-top:10px;display:none;}
+
+/* ---- 倒计时状态横幅 ---- */
+.pl-banner{padding:12px 18px;border-radius:12px;margin:14px 0 0;display:flex;align-items:center;gap:10px;
+  font-size:13px;line-height:1.6;flex-wrap:wrap;}
+.pl-banner.green{background:#ecfdf5;border:1px solid #a7f3d0;color:#065f46;}
+.pl-banner.yellow{background:#fffbeb;border:1px solid #fde68a;color:#92400e;}
+.pl-banner.red{background:#fef2f2;border:1px solid #fecaca;color:#991b1b;}
+.pl-banner .icon{font-size:18px;flex-shrink:0;}
+.pl-banner .txt{flex:1;min-width:200px;}
+.pl-banner .cta{padding:6px 14px;border-radius:6px;font-size:12px;font-weight:600;text-decoration:none;transition:all .15s;}
+.pl-banner.yellow .cta{background:#f59e0b;color:#fff;}
+.pl-banner.yellow .cta:hover{background:#d97706;}
+.pl-banner.red .cta{background:#dc2626;color:#fff;}
+.pl-banner.red .cta:hover{background:#b91c1c;}
+
 /* ---- 处理中订单横幅 ---- */
 .pl-pending{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;
-  background:#fffbeb;border:1px solid #fde68a;border-radius:12px;padding:14px 18px;margin-top:20px;}
+  background:#fffbeb;border:1px solid #fde68a;border-radius:12px;padding:14px 18px;margin-top:14px;}
 .pl-pending .txt{font-size:13px;color:#92400e;line-height:1.7;}
 .pl-pending .act{padding:8px 16px;border:none;border-radius:8px;background:#f59e0b;color:#fff;
   font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap;}
 .pl-pending .act:disabled{opacity:.6;cursor:not-allowed;}
+
+/* ---- 子设备提示 ---- */
+.pl-sub-hint{background:#fff7ed;border:1px solid #fed7aa;border-radius:10px;padding:14px 18px;margin-top:20px;
+  font-size:13px;color:#9a3412;line-height:1.7;display:flex;gap:10px;align-items:center;}
+.pl-sub-hint .icon{font-size:18px;}
+
 /* ---- 支付弹窗 ---- */
 .pay-mask{position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:900;
   display:none;align-items:center;justify-content:center;padding:20px;}
@@ -87,9 +104,23 @@
 .pay-refresh:disabled{opacity:.6;cursor:not-allowed;}
 .pay-cs{margin-top:16px;padding-top:12px;border-top:1px dashed var(--border);
   font-size:12px;color:#94a3b8;line-height:1.8;}
+
+/* ---- 激活成功弹窗 ---- */
+.act-success-mask{position:fixed;inset:0;background:rgba(15,23,42,.55);z-index:1000;
+  display:flex;align-items:center;justify-content:center;padding:20px;}
+.act-success-box{background:#fff;border-radius:16px;padding:32px 36px;min-width:400px;max-width:500px;
+  text-align:center;box-shadow:0 24px 64px rgba(0,0,0,.2);animation:sgCardIn .3s ease;}
+@keyframes sgCardIn{from{opacity:0;transform:translateY(12px) scale(.97)}to{opacity:1;transform:none}}
+.act-success-box .big-icon{font-size:56px;margin-bottom:12px;}
+.act-success-box h3{font-size:18px;font-weight:700;color:#166534;margin:0 0 8px;}
+.act-success-box .plan-tag{display:inline-block;padding:3px 12px;border-radius:999px;font-size:12px;
+  background:#ecfdf5;color:#047857;margin-bottom:14px;}
+.act-success-box .info{font-size:13px;color:#475569;line-height:2;}
+.act-success-box .info b{color:#0f172a;}
+.act-success-box .btn-row{margin-top:20px;display:flex;gap:10px;justify-content:center;}
 </style>
 
-<div class="pl-wrap">
+<div class="pl-wrap" id="plWrap">
   {% if license.pending_order %}
   <div class="pl-pending" id="pendingBar">
     <div class="txt">
@@ -99,28 +130,30 @@
     <button class="act" id="pendingBtn" type="button" onclick="manualRefresh('{{ license.pending_order.trade_order_id }}')">已付款，获取授权</button>
   </div>
   {% endif %}
+
+  <!-- 倒计时状态横幅（三态） -->
+  <div id="statusBanner" style="display:none;"></div>
+
   <div class="pl-head">
     <div>
       <h1>升级 / 授权中心
         <span class="pl-badge {{ 'on' if license.activated else '' }}">{{ license.plan_name }}</span>
+        {% if license.dev_mode %}<span class="pl-badge" style="background:#fef3c7;color:#92400e;">🧪 开发者模式</span>{% endif %}
       </h1>
       <div class="sub">
         {% if license.activated %}
-          授权有效期至 {{ license.exp_date }}；{% if license.role == 'sub' %}子设备{% else %}主设备{% endif %}
+          授权有效期至 <b>{{ license.exp_date }}</b>；{% if license.role == 'sub' %}子设备{% else %}主设备{% endif %}
+          {% if license.apply_reason %}<span style="color:#10b981;">· {{ license.apply_reason }}</span>{% endif %}
         {% elif license.expired %}
           授权已于 {{ license.exp_date }} 过期，已降级为免费版
         {% elif license.error %}
-          本机授权无效：{{ license.error }}
+          本机授权异常：{{ license.error }}
         {% else %}
           当前为免费版{% if license.quota.limit %}，本月额度 {{ license.quota.used }}/{{ license.quota.limit }} 张{% endif %}
         {% endif %}
       </div>
     </div>
     <div class="pl-head-right">
-      {% if request.state.user and request.state.user.role == 'admin' %}
-      <button class="pl-deauth" id="deauthBtn" type="button"
-              onclick="deactivateLicense()" title="清空本机授权，恢复免费版，便于重新激活">注销授权</button>
-      {% endif %}
       <div class="pl-mc-label">本机机器码（只读）</div>
       <div class="pl-mc" id="mc">{{ license.machine_code }}</div>
     </div>
@@ -134,24 +167,23 @@
       {% if feature == 'matching' %}智能匹配{% elif feature == 'export' %}数据导出{% elif feature == 'team' %}多账号团队管理{% endif %}
       属于付费能力，升级后立即解锁，数据不受影响。
     </div>
-    <div class="pl-qr">
-      <div class="box">
-        {% if license.payment_qr_url %}
-        <img src="{{ license.payment_qr_url }}" alt="收款二维码">
-        {% else %}收款码<br>请联系客服{% endif %}
-      </div>
-      <div style="font-size:13px;color:var(--text-2);line-height:2;">
-        扫码支付后，客服会发送<strong>订单号</strong>；<br>
-        在下方「立即激活」输入订单号即可自动开通。<br>
-        机器码：<strong>{{ license.machine_code }}</strong>
-      </div>
+    <div class="pl-row">
+      <button class="pl-btn ghost" type="button" onclick="document.getElementById('activate').scrollIntoView({behavior:'smooth'})">使用订单号直接激活 →</button>
     </div>
   </div>
   {% endif %}
 
-  <div class="pl-grid">
+  <!-- 子设备提示 -->
+  {% if license.role == 'sub' %}
+  <div class="pl-sub-hint">
+    <span class="icon">🔐</span>
+    <div><b>当前设备是子设备</b>，续费/升级/同步授权请联系主设备操作。<br>机器码：{{ license.machine_code }}</div>
+  </div>
+  {% endif %}
+
+  <div class="pl-grid" id="planGrid">
     {% for p in license.plans %}
-    <div class="pl-card {% if p.key == 'enterprise' %}hl{% endif %}">
+    <div class="pl-card {% if p.key == 'enterprise' %}hl{% endif %} {% if license.role == 'sub' and not p.current %}disabled{% endif %}">
       {% if p.key == 'enterprise' %}<span class="tag">推荐 · 多设备 / 多账号</span>{% endif %}
       <div class="pl-name">{{ p.name }}</div>
       <div class="pl-price">{{ p.price }}</div>
@@ -163,48 +195,33 @@
         <li>✓ 多账号团队：{{ '支持' if p.team else '不支持' }}</li>
         <li>✓ 可绑定设备：{{ p.devices }} 台</li>
       </ul>
-      {% if p.current %}
-      <div class="pl-now">当前套餐</div>
-      {% elif p.key == 'free' %}
-      <div class="pl-now">免费使用</div>
-      {% elif request.state.user and request.state.user.role == 'admin' %}
-      <button class="pl-buy" style="border:1px solid var(--primary);width:100%;" type="button"
-              data-plan="{{ p.key }}" data-name="{{ p.name }}" onclick="openPay(this)">立即购买</button>
-      {% else %}
-      <div class="pl-now">请联系管理员购买</div>
-      {% endif %}
+      <!-- 按钮区：由 JS 动态根据场景注入 -->
+      <div id="planBtn-{{ p.key }}" data-plan="{{ p.key }}" data-name="{{ p.name }}"></div>
     </div>
     {% endfor %}
   </div>
 
   {% if request.state.user and request.state.user.role == 'admin' %}
+  <!-- ============ 合并激活卡片（激活 + 找回） ============ -->
   <div class="pl-sec" id="activate">
-    <h2>立即激活</h2>
-    <div class="hint">输入客服提供的订单号，系统会加密上报本机机器码并自动换取授权码（全程约 1~3 秒）。</div>
+    <h2>订单号激活（含找回）</h2>
+    <div class="hint">
+      输入完整订单号，系统会加密上报本机机器码并自动换取授权码（全程约 1~3 秒）。<br>
+      若已付款但未自动激活（关掉了弹窗 / 重装 / 回调延迟），请在此输入完整订单号。
+    </div>
     <div class="pl-row">
-      <input id="orderId" placeholder="请输入订单号，如 ORD-20261105-001" autocomplete="off">
+      <input id="orderId" placeholder="请输入完整订单号，如 ORD-20261105-001" autocomplete="off">
       <button class="pl-btn" id="actBtn" type="button" onclick="activate()">验证并立即激活</button>
     </div>
     <div class="pl-msg" id="actMsg"></div>
     <div class="hint" style="margin-top:14px;">
       激活失败？请先确认订单号无误、网络可访问授权服务器；
-      若仍失败，可点击<a href="/recover">这里</a>使用客服解锁码，或把机器码发给客服人工处理。
+      若仍失败，可把机器码发给客服人工处理。
     </div>
   </div>
 
-  <div class="pl-sec" id="recover">
-    <h2>授权找回</h2>
-    <div class="hint">
-      已付款但没拿到授权（关掉了弹窗 / 重装 / 回调延迟）？输入<strong>订单号后 6 位</strong>即可自助找回，
-      如订单号 <code>FP1762…A1B2C3</code> 就填 <code>A1B2C3</code>。
-    </div>
-    <div class="pl-row">
-      <input id="recoverSuffix" placeholder="请输入订单号后 6 位" maxlength="12" autocomplete="off">
-      <button class="pl-btn" id="recBtn" type="button" onclick="recoverLicense()">找回并激活</button>
-    </div>
-    <div class="pl-msg" id="recMsg"></div>
-  </div>
-
+  <!-- ============ 多设备授权 ============ -->
+  {% if license.plan == 'enterprise' and license.role != 'sub' %}
   <div class="pl-sec">
     <h2>多设备授权</h2>
     <div class="hint">
@@ -221,6 +238,27 @@
     </div>
     <div class="pl-msg" id="bindMsg"></div>
   </div>
+  {% elif license.role == 'sub' %}
+  <div class="pl-sec">
+    <h2>子设备状态</h2>
+    <div class="hint">
+      当前设备通过主设备邀请码绑定，授权已独立签发。如需升级/续费/注销，请联系主设备操作。
+    </div>
+    <div class="pl-row">
+      <button class="pl-btn ghost" type="button" onclick="syncLicense()">同步授权状态</button>
+      <span class="muted" style="font-size:12px;">机器码：{{ license.machine_code }}</span>
+    </div>
+  </div>
+  {% elif license.activated %}
+  <div class="pl-sec">
+    <h2>同步授权状态</h2>
+    <div class="hint">手动向云端校验一次授权有效性（检查黑名单/换机锁）。</div>
+    <div class="pl-row">
+      <button class="pl-btn ghost" type="button" onclick="syncLicense()">同步授权状态</button>
+    </div>
+  </div>
+  {% endif %}
+
   {% else %}
   <div class="pl-sec">
     <h2>如何升级</h2>
@@ -255,8 +293,91 @@
 </div>
 
 <script>
+/* ============ 全局：注入 statusBanner + 套餐按钮场景化 ============ */
+(function initStatusBanner(){
+  const lic = {{ license|tojson }};
+  const banner = document.getElementById('statusBanner');
+  if(lic.dev_mode){
+    banner.className = 'pl-banner green';
+    banner.innerHTML = '<span class="icon">🧪</span><div class="txt">当前为开发者模式，授权永久有效。</div>';
+    banner.style.display = 'flex';
+  } else if(lic.expired){
+    banner.className = 'pl-banner red';
+    banner.innerHTML = `<span class="icon">⚠️</span><div class="txt">授权已过期，已降级为免费版。<br>请重新购买或输入订单号激活。</div>
+      <a class="cta" href="#activate">立即激活 →</a>`;
+    banner.style.display = 'flex';
+  } else if(lic.activated){
+    const now = Math.floor(Date.now()/1000);
+    const remaining = lic.exp - now;
+    const days = Math.ceil(remaining / 86400);
+    if(days <= 30){
+      banner.className = 'pl-banner yellow';
+      banner.innerHTML = `<span class="icon">⏰</span><div class="txt">您的授权即将到期（剩余 <b>${days}</b> 天，至 ${lic.exp_date}），请及时续费。</div>
+        <a class="cta" href="#activate">使用订单号续费 →</a>`;
+      banner.style.display = 'flex';
+    } else {
+      banner.className = 'pl-banner green';
+      banner.innerHTML = `<span class="icon">✅</span><div class="txt">授权生效中，剩余 <b>${days}</b> 天（至 ${lic.exp_date}）。</div>`;
+      banner.style.display = 'flex';
+    }
+  }
+})();
+
+/* ============ 套餐卡片按钮：场景化注入 ============ */
+(function renderPlanButtons(){
+  const lic = {{ license|tojson }};
+  const isAdmin = {% if request.state.user and request.state.user.role == 'admin' %}true{% else %}false{% endif %};
+  const isSub = lic.role === 'sub';
+  const currentPlan = lic.plan;     // free / personal / enterprise
+
+  // 子设备：所有付费按钮都隐藏，只用灰色"子设备请联系主设备"
+  if(isSub){
+    document.querySelectorAll('#planGrid .pl-card').forEach(card=>{
+      const key = card.querySelector('[data-plan]')?.dataset.plan;
+      if(key && key !== 'free'){
+        const btnBox = card.querySelector('#planBtn-' + key);
+        btnBox.innerHTML = `<div class="pl-now">子设备 · 请联系主设备操作</div>`;
+      }
+    });
+    return;
+  }
+
+  lic.plans.forEach(p=>{
+    const btnBox = document.getElementById('planBtn-' + p.key);
+    if(!btnBox) return;
+    if(p.current){
+      btnBox.innerHTML = `<div class="pl-now">当前套餐</div>`;
+      return;
+    }
+    if(!isAdmin){
+      btnBox.innerHTML = `<div class="pl-now">请联系管理员购买</div>`;
+      return;
+    }
+    // enterprise 当前时，free/personal 置灰不可购买
+    if(currentPlan === 'enterprise' && p.key !== 'enterprise'){
+      btnBox.innerHTML = `<div class="pl-now">企业版覆盖更全，无需降级</div>`;
+      return;
+    }
+    // personal 当前时：personal → 续费；enterprise → 升级；free 置灰
+    if(currentPlan === 'personal'){
+      if(p.key === 'personal'){
+        btnBox.innerHTML = `<button class="pl-buy primary" type="button" onclick="openPay(this)" data-plan="${p.key}" data-name="${p.name}">续费个人版</button>`;
+        return;
+      }
+      if(p.key === 'enterprise'){
+        btnBox.innerHTML = `<button class="pl-buy" type="button" onclick="openPay(this)" data-plan="${p.key}" data-name="${p.name}">升级至企业版</button>`;
+        return;
+      }
+      btnBox.innerHTML = `<div class="pl-now">付费后无需降级</div>`;
+      return;
+    }
+    // free 当前或已过期：全部【立即购买】
+    btnBox.innerHTML = `<button class="pl-buy" type="button" onclick="openPay(this)" data-plan="${p.key}" data-name="${p.name}">立即购买</button>`;
+  });
+})();
+
 /* ============ 支付弹窗：防抖下单 + 3s 轮询 + 5min 倒计时 + 定时器销毁 ============ */
-const PAY_TTL = 300;              // 二维码有效期 5 分钟
+const PAY_TTL = 300;
 let payTimer = null, payCountTimer = null, payDeadline = 0, payTid = '', payBusy = false;
 
 function _payClearTimers(){
@@ -264,7 +385,7 @@ function _payClearTimers(){
   if(payCountTimer){ clearInterval(payCountTimer); payCountTimer = null; }
 }
 async function openPay(btn){
-  if(payBusy) return;                       // 防狂点生成多订单
+  if(payBusy) return;
   payBusy = true;
   const orig = btn.textContent;
   btn.disabled = true; btn.textContent = '正在下单…';
@@ -283,11 +404,10 @@ async function openPay(btn){
       '<img src="' + d.url_qrcode + '" alt="支付二维码">';
     document.getElementById('payStatus').textContent = '等待支付…';
     document.getElementById('payMask').classList.add('show');
-    // 二维码有效期由云端决定（复用旧码时剩余时间更短），缺省 5 分钟
     payDeadline = Date.now() + (d.expire_in || PAY_TTL) * 1000;
     payCountTimer = setInterval(tickPayCount, 1000);
-    payTimer = setInterval(pollPay, 3000);  // 每 3 秒查一次
-    setTimeout(()=>{                        // 15 秒后浮现手动刷新按钮
+    payTimer = setInterval(pollPay, 3000);
+    setTimeout(()=>{
       const b = document.getElementById('payRefresh');
       if(document.getElementById('payMask').classList.contains('show')) b.style.display = 'block';
     }, 15000);
@@ -303,11 +423,11 @@ function tickPayCount(){
   const m = String(Math.floor(left/60)).padStart(2,'0'), s = String(left%60).padStart(2,'0');
   document.getElementById('payCount').textContent = m + ':' + s;
   if(left <= 0){
-    _payClearTimers();                      // 倒计时结束销毁定时器，防后台死循环
+    _payClearTimers();
     document.getElementById('payQrBox').classList.add('expired');
     document.getElementById('payStatus').textContent =
       '二维码已过期。若你刚刚已完成支付，可点击下方按钮强制查询；否则请关闭后重新下单。';
-    document.getElementById('payRefresh').style.display = 'block';  // 超时仍可手动查
+    document.getElementById('payRefresh').style.display = 'block';
   }
 }
 async function pollPay(){
@@ -325,8 +445,8 @@ async function pollPay(){
     if(d.status === 'paid'){
       _payClearTimers();
       document.getElementById('payMask').classList.remove('show');
-      toast('支付成功，授权已激活');
-      setTimeout(()=>location.reload(), 800);
+      toast('✅ 支付成功，授权已激活');
+      setTimeout(()=>location.reload(), 600);
     }
   }catch(e){
     document.getElementById('payStatus').textContent = '网络波动，将继续自动重试…';
@@ -347,8 +467,8 @@ async function manualRefresh(tid){
     if(d.status === 'paid'){
       _payClearTimers();
       document.getElementById('payMask').classList.remove('show');
-      toast('支付成功，授权已激活');
-      setTimeout(()=>location.reload(), 800);
+      toast('✅ 支付成功，授权已激活');
+      setTimeout(()=>location.reload(), 600);
     }else{
       toast(d.message || '订单暂未支付，请完成支付后再试', false);
     }
@@ -360,16 +480,44 @@ async function manualRefresh(tid){
   }
 }
 function closePay(){
-  // 支付未完成时二次确认，避免用户误关后以为已经付过款
   if(payTid && document.getElementById('payMask').classList.contains('show')){
     const ok = confirm('支付尚未完成，如已付款请等待自动激活，' +
-      '或稍后在「授权找回」输入订单号后 6 位找回。确定关闭？');
+      '或稍后在「订单号激活」输入订单号找回。确定关闭？');
     if(!ok) return;
   }
-  _payClearTimers();                        // 关闭弹窗必须销毁定时器
+  _payClearTimers();
   payTid = '';
   document.getElementById('payMask').classList.remove('show');
   document.getElementById('payRefresh').style.display = 'none';
+}
+
+/* ============ 激活成功弹窗（显示新到期时间） ============ */
+function showActivateSuccess(info){
+  const planName = info.plan_name || ({free:'免费版',personal:'个人版',enterprise:'企业版'})[info.plan] || '授权';
+  const expDate = info.exp_date || info.exp ? (()=>{
+    const ts = info.exp; if(!ts) return '';
+    return new Date(ts*1000).toISOString().slice(0,10);
+  })() : '';
+  const reason = info.apply_reason || '';
+  const mask = document.createElement('div');
+  mask.className = 'act-success-mask';
+  mask.innerHTML = `
+    <div class="act-success-box">
+      <div class="big-icon">🎉</div>
+      <h3>激活成功！</h3>
+      <div class="plan-tag">${planName}</div>
+      <div class="info">
+        您的授权有效期已${reason.includes('叠加') ? '<b>叠加延长</b>' : '<b>延长</b>'}至<br>
+        <b style="font-size:18px;color:#047857;">${expDate}</b>
+        ${reason ? `<br><span style="color:#94a3b8;font-size:12px;">（${reason}）</span>` : ''}
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-outline" onclick="document.querySelector('.act-success-mask').remove()">知道了</button>
+        <button class="btn btn-primary" style="background:var(--primary);color:#fff;border:none;padding:10px 22px;border-radius:8px;font-weight:600;cursor:pointer;" onclick="location.reload()">刷新页面</button>
+      </div>
+    </div>`;
+  document.body.appendChild(mask);
+  mask.addEventListener('click', e=>{ if(e.target===mask) mask.remove(); });
 }
 
 function show(el, msg, ok){
@@ -378,56 +526,48 @@ function show(el, msg, ok){
   el.style.color = ok ? '#15803d' : '#dc2626';
   el.style.border = ok ? '1px solid #bbf7d0' : '1px solid #fecaca';
 }
+
+/* ============ 合并激活卡：一个入口覆盖新激活 + 找回 ============ */
 async function activate(){
   const order = document.getElementById('orderId').value.trim();
   const btn = document.getElementById('actBtn');
   const msg = document.getElementById('actMsg');
-  if(!order){ show(msg, '请输入订单号', false); return; }
+  if(!order){ show(msg, '请输入完整订单号', false); return; }
   btn.disabled = true; btn.textContent = '正在校验并激活…';
   msg.style.display = 'none';
   try{
-    const r = await fetch('/api/license/activate', {
+    // 先尝试新订单号激活接口；若云端返回 "订单已被锁定/找不到"，
+    // 退而尝试 recover（输入完整订单号而非后 6 位）
+    let r = await fetch('/api/license/activate', {
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({order_id: order})
     });
-    const d = await r.json();
+    let d = await r.json();
+    // 如果明确提示"订单号格式不对 / 找不到完整订单号"，尝试 recover
+    if((!d.ok) && /订单|找不到|未找到/i.test(d.message || '')){
+      // 尝试把完整订单号当作 suffix（取后 6 位）再调用 recover
+      const suffix = order.replace(/[^A-Za-z0-9]/g,'').slice(-6);
+      if(suffix.length >= 6){
+        r = await fetch('/api/license/recover', {
+          method:'POST', headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({order_suffix: suffix})
+        });
+        d = await r.json();
+      }
+    }
     if(!r.ok || !d.ok){
-      show(msg, (d.message || '激活失败') + '　如订单号无误仍失败，请联系客服获取解锁码。', false);
+      show(msg, (d.message || '激活失败') + '　如已付款请保留截图联系客服。', false);
       return;
     }
-    show(msg, d.message + '，正在刷新…', true);
-    setTimeout(()=>location.reload(), 1200);
+    // 激活成功：弹窗显示新到期时间 + 叠加原因
+    showActivateSuccess(d.data || d);
   }catch(e){
-    show(msg, '网络异常，如您已付款，请保留截图联系客服。', false);
+    show(msg, '网络异常，如您已付款请保留截图联系客服。', false);
   }finally{
     btn.disabled = false; btn.textContent = '验证并立即激活';
   }
 }
-async function recoverLicense(){
-  const suffix = document.getElementById('recoverSuffix').value.trim();
-  const btn = document.getElementById('recBtn');
-  const msg = document.getElementById('recMsg');
-  if(suffix.length < 6){ show(msg, '请输入订单号后 6 位', false); return; }
-  btn.disabled = true; btn.textContent = '正在找回…';
-  msg.style.display = 'none';
-  try{
-    const r = await fetch('/api/license/recover', {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({order_suffix: suffix})
-    });
-    const d = await r.json();
-    if(!r.ok || !d.ok){
-      show(msg, (d.message || '找回失败') + '　如已付款请保留支付截图联系客服。', false);
-      return;
-    }
-    show(msg, (d.message || '授权已找回') + '，正在刷新…', true);
-    setTimeout(()=>location.reload(), 1200);
-  }catch(e){
-    show(msg, '网络异常，如您已付款，请保留截图联系客服。', false);
-  }finally{
-    btn.disabled = false; btn.textContent = '找回并激活';
-  }
-}
+
 async function getInvite(){
   const box = document.getElementById('inviteBox');
   try{
@@ -452,36 +592,23 @@ async function bindSub(){
     });
     const d = await r.json();
     if(!r.ok || !d.ok){ show(msg, d.message || '绑定失败', false); return; }
-    show(msg, d.message + '，正在刷新…', true);
-    setTimeout(()=>location.reload(), 1200);
+    showActivateSuccess(d.data || d);
   }catch(e){ show(msg, '网络异常，请稍后重试', false); }
   finally{ btn.disabled = false; btn.textContent = '绑定本机为子设备'; }
-}
-async function deactivateLicense(){
-  const btn = document.getElementById('deauthBtn');
-  btn.disabled = true; btn.textContent = '正在注销…';
-  try{
-    const r = await fetch('/api/license/deactivate', {method:'POST'});
-    const d = await r.json();
-    if(!r.ok || !d.ok){
-      toast(d.message || '注销失败', false);
-      btn.disabled = false; btn.textContent = '注销授权';
-      return;
-    }
-    toast('授权已注销，已恢复免费版');
-    setTimeout(()=>location.reload(), 600);
-  }catch(e){
-    toast('网络异常，请稍后重试', false);
-    btn.disabled = false; btn.textContent = '注销授权';
-  }
 }
 async function syncLicense(){
   try{
     const r = await fetch('/api/license/sync', {method:'POST'});
-    const d = await r.json();
-    if(!d.ok){ toast(d.message || '同步失败', false); return; }
-    toast('授权状态已同步');
-    setTimeout(()=>location.reload(), 800);
+    const j = await r.json();
+    if(!j.ok){ toast(j.message || '同步失败', false); return; }
+    const d = j.data || {};
+    if(d.blacklisted){
+      await sgAlert('⚠️ 授权异常：您的机器码已被云端拉黑，授权已强制降级为免费版。请联系客服！');
+      location.reload();
+      return;
+    }
+    toast('✅ 授权状态已同步');
+    setTimeout(()=>location.reload(), 600);
   }catch(e){ toast('网络异常', false); }
 }
 </script>

@@ -1,6 +1,9 @@
-﻿# 打包为单文件 exe（PyInstaller）：dist\<Name>.exe
+﻿# 打包为「文件夹模式」桌面程序（PyInstaller onedir）：dist\<Name>\<Name>.exe
 # 用法：powershell -ExecutionPolicy Bypass -File scripts\build_exe.ps1
 #       powershell -ExecutionPolicy Bypass -File scripts\build_exe.ps1 -Name fapiao-check
+#
+# 注意：绝对不要改回 --onefile（单文件）。单文件运行时需自解压到 %TEMP%，
+#       是杀毒软件误报的重点对象；onedir 目录结构透明、启动快、误报率低。
 #
 # 可选代码签名（降低杀毒误报 / SmartScreen 拦截）：
 #   1) 准备代码签名证书（.pfx），推荐 OV/EV 证书
@@ -22,7 +25,7 @@ if ($LASTEXITCODE) { exit $LASTEXITCODE }
 # --specpath build 会让 --add-data 的相对源路径按 build\ 解析，故这里用绝对路径
 $templates = Join-Path (Get-Location) "app\web\templates"
 
-python -m PyInstaller --noconfirm --clean --onefile --console --name $Name `
+python -m PyInstaller --noconfirm --clean --onedir --windowed --name $Name `
   --distpath dist --workpath build --specpath build `
   --add-data "$templates;app/web/templates" `
   --collect-all rapidocr_onnxruntime `
@@ -30,13 +33,14 @@ python -m PyInstaller --noconfirm --clean --onefile --console --name $Name `
   --collect-all uvicorn `
   --collect-all pdfminer `
   --collect-all pypdfium2 `
+  --collect-all webview `
   --exclude-module tkinter `
   --exclude-module pytest `
-  run.py
+  main.py
 
 if ($LASTEXITCODE -ne 0) { Write-Host "打包失败"; exit $LASTEXITCODE }
 
-$exe = Join-Path (Get-Location) "dist\$Name.exe"
+$exe = Join-Path (Get-Location) "dist\$Name\$Name.exe"
 Write-Host "已生成 $exe"
 
 # ---------------- 代码签名（可选） ----------------

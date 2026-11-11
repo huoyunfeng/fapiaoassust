@@ -7,12 +7,36 @@ from decimal import Decimal
 from pathlib import Path
 
 # 打包成 exe（PyInstaller）后 __file__ 位于临时解压目录，退出即删；
-# 因此可写数据（数据库/上传/日志）必须落在 exe 同目录，只读资源从包内目录读取。
+# 因此可写数据（数据库/上传/日志）统一落在 %APPDATA%（见 _resolve_data_dir），
+# 只读资源从包内目录读取。
 FROZEN = bool(getattr(sys, "frozen", False))
 BASE_DIR = (Path(sys.executable).resolve().parent if FROZEN
             else Path(__file__).resolve().parent.parent)
-# 打包资源（模板等）所在根目录：frozen 时是 PyInstaller 的解压目录
+# 打包资源（模板等，只读）所在根目录：frozen 时是 PyInstaller 的解压目录。
+# 注意：_MEIPASS 是临时解压目录，进程退出即被删除，只能读、绝不能写。
 RESOURCE_DIR = Path(getattr(sys, "_MEIPASS", BASE_DIR))
+
+
+def _resolve_data_dir() -> Path:
+    """解析可写数据根目录（数据库 / 附件 / 日志 / config.json 统一落在此处）。
+
+    优先级：
+      1) 环境变量 FAPIAO_DATA_DIR（便携版、测试、多套数据隔离场景自选）；
+      2) 打包运行（FROZEN）：%APPDATA%\\FapiaoAssistant
+         —— 用户级可写，升级/重装/换安装目录都不会丢数据；
+      3) 源码运行：仓库根目录 data/（开发调试沿用原有位置）。
+    绝不写入 sys._MEIPASS（临时目录，重启必丢）。
+    """
+    override = os.getenv("FAPIAO_DATA_DIR", "").strip()
+    if override:
+        return Path(override).expanduser()
+    if FROZEN:
+        appdata = os.getenv("APPDATA") or str(Path.home() / "AppData" / "Roaming")
+        return Path(appdata) / "FapiaoAssistant"
+    return BASE_DIR / "data"
+
+
+DATA_DIR = _resolve_data_dir()
 
 # 软件版本（备份 manifest 强校验用；发包时递增）
 APP_VERSION = "1.2.0"
@@ -22,7 +46,7 @@ SCHEMA_VERSION = 3
 LICENSE_SECRET = "fapiao-assust-offline-license-key-v1"
 
 # 用户级持久化配置（附件路径等自定义项），备份时随包带走
-CONFIG_FILE = BASE_DIR / "config.json"
+CONFIG_FILE = DATA_DIR / "config.json"
 
 
 def load_persisted_config() -> dict:
@@ -41,11 +65,11 @@ def save_persisted_config(cfg: dict) -> None:
 
 @dataclass
 class Settings:
-    # 存储路径
-    data_dir: Path = BASE_DIR / "data"
-    db_path: Path = field(default_factory=lambda: BASE_DIR / "data" / "fapiao.db")
-    upload_dir: Path = field(default_factory=lambda: BASE_DIR / "data" / "uploads")
-    log_dir: Path = field(default_factory=lambda: BASE_DIR / "data" / "logs")
+    # 存储路径（统一挂在 DATA_DIR 下：数据库 / 附件 / 日志）
+    data_dir: Path = DATA_DIR
+    db_path: Path = field(default_factory=lambda: DATA_DIR / "fapiao.db")
+    upload_dir: Path = field(default_factory=lambda: DATA_DIR / "uploads")
+    log_dir: Path = field(default_factory=lambda: DATA_DIR / "logs")
 
     # 匹配阈值（设计 §3.2 匹配状态机）
     auto_match_threshold: float = 0.95   # score >= 0.95 自动 MATCHED

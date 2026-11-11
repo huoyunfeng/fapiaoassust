@@ -10,6 +10,7 @@
 - 数据库绝不直接打包：先 WAL checkpoint + 复制到 temp/，副本无写，打包稳定。
 - 恢复路径穿越防护：zip-slip 拦截 + Windows 路径重试 + 完整回滚。
 """
+import hashlib
 import io
 import json
 import os
@@ -21,7 +22,7 @@ import zipfile
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Callable
 
 from app.config import APP_VERSION, SCHEMA_VERSION, settings
 from app.infra.logger import get_logger
@@ -252,36 +253,51 @@ def _resolve_source_path(sp: str) -> Optional[Path]:
 
 
 def cleanup_attachments(recycle: bool = False, orphan: bool = False,
-                        detach_original: bool = False) -> dict:
+                        detach_original: bool = False,
+                        on_progress: Optional[Callable[[int, str], None]] = None) -> dict:
     """清理附件（按用户勾选的策略执行）。
 
     返回 {"ok": bool, "files_deleted": int, "bytes_freed": int, "human_freed": str,
           "recycle_deleted": int, "orphan_deleted": int, "detached": int, "message": str}。
     所有操作写审计日志。
+
+    on_progress 可选：fn(progress_pct, message)。
     """
+    def _cb(pct: int, msg: str):
+        if on_progress:
+            try:
+                on_progress(pct, msg)
+            except Exception:
+                pass
+
     from app.service import audit_service
     files_deleted = 0
     bytes_freed = 0
     recycle_del = orphan_del = detached = 0
 
     try:
-        # 1. 清理孤儿文件（uploads/ 目录里但数据库无任何引用）
+        # 1. 清理孤儿文件
         if orphan:
+            _cb(5, "正在扫描并清理孤儿文件…")
             n, b = _delete_orphans()
             orphan_del, bytes_freed = n, bytes_freed + b
             files_deleted += n
 
-        # 2. 清理回收站附件（物理删除 + 审计）
+        # 2. 清理回收站附件
         if recycle:
+            _cb(45, "正在清理回收站附件…")
             n, b = _delete_recycle_attachments()
             recycle_del, bytes_freed = n, bytes_freed + b
             files_deleted += n
 
-        # 3. 仅清理原件（保留台账，更新 is_attachment_deleted）
+        # 3. 仅清理原件
         if detach_original:
+            _cb(80, "正在清理发票原件（仅清空台账）…")
             n, b = _detach_invoice_originals()
             detached, bytes_freed = n, bytes_freed + b
             files_deleted += n
+
+        _cb(95, "正在写入审计日志…")
 
         # 审计日志
         try:
@@ -425,12 +441,20 @@ def storage_path_info() -> dict:
             "default": str(settings.data_dir / "uploads")}
 
 
-def migrate_upload_dir(new_path: str) -> dict:
-    """把 uploads/ 整体迁移到新路径：复制 → 校验 → 更新配置 → 旧目录保底改名。
+def migrate_upload_dir(new_path: str,
+                       on_progress: Optional[Callable[[int, str], None]] = None) -> dict:
+    """把 uploads/ 整体迁移到新路径。复制 → 校验 → 改写 DB 路径 → 旧目录保底改名。
 
-    失败任何一步自动回滚（删除不完整新目录、恢复旧目录名、配置不写入）。
-    返回 {"ok": bool, "message": str, "new_path": str, "old_backup": str}。
+    失败自动回滚。返回 {"ok": bool, "message": str, "new_path": str, "old_backup": str}。
+    on_progress 可选：fn(progress_pct, message)。
     """
+    def _cb(pct: int, msg: str):
+        if on_progress:
+            try:
+                on_progress(pct, msg)
+            except Exception:
+                pass
+
     from app.config import load_persisted_config, save_persisted_config
 
     if is_backing_up():
@@ -454,7 +478,7 @@ def migrate_upload_dir(new_path: str) -> dict:
         return {"ok": False,
                 "message": "目标目录已存在，请选择一个尚未创建的目录（避免覆盖已有文件）"}
 
-    # 磁盘空间预检：目标盘剩余空间须大于当前附件体积
+    # 磁盘空间预检
     usage = storage_usage()
     try:
         probe = target
@@ -474,9 +498,12 @@ def migrate_upload_dir(new_path: str) -> dict:
     n_rewritten = 0
 
     try:
-        # ① 复制到新目录（不删源，先保证新位置完整）
+        # ① 复制到新目录
+        _cb(2, "开始复制附件…")
         target.mkdir(parents=True, exist_ok=False)
         n_copied = 0
+        total_src = usage["files"] or 0
+        last_reported_pct = 2
         if src.exists():
             from app.infra.winpath import fs_path, iter_files
             for p in iter_files(src):
@@ -485,23 +512,31 @@ def migrate_upload_dir(new_path: str) -> dict:
                 os.makedirs(fs_path(dst.parent), exist_ok=True)
                 shutil.copy2(fs_path(p), fs_path(dst))
                 n_copied += 1
-        # ② 校验：新目录文件数必须等于源目录
+                if total_src:
+                    pct = 2 + int(80 * n_copied / total_src)
+                    if pct - last_reported_pct >= 3:
+                        _cb(pct, f"已复制 {n_copied}/{total_src}")
+                        last_reported_pct = pct
+        _cb(85, "附件复制完成，正在校验…")
+        # ② 校验
         n_src = usage["files"]
         if n_copied != n_src:
             raise RuntimeError(f"复制不完整：源 {n_src} 个，目标 {n_copied} 个")
-        # ③ 改写数据库中的附件绝对路径（source_path 是绝对路径，不随配置切换而变；
-        #    不改写会导致历史发票预览、附件清理、孤儿扫描全部指向已改名旧目录）
+        _cb(90, "正在改写数据库附件路径…")
+        # ③ 改写路径
         n_rewritten = _rewrite_source_paths(src, target)
-        # ④ 旧目录改名保底（确认无误后用户可手动删除）
+        # ④ 旧目录保底改名
+        _cb(95, "正在为旧目录改名保底…")
         if src.exists():
             _rename_with_retry(src, old_backup)
-        # ⑤ 配置落盘 + 热切换（最后一步，成功才算迁移完成）
+        # ⑤ 配置落盘 + 热切换
         cfg = load_persisted_config()
         cfg["upload_dir"] = str(target)
         save_persisted_config(cfg)
         settings.upload_dir = target
         logger.info("附件路径迁移成功: %s -> %s（旧目录保底 %s，改写 %d 条路径）",
                     src, target, old_backup.name, n_rewritten)
+        _cb(100, "迁移完成")
         return {"ok": True,
                 "message": f"迁移成功！共迁移 {n_copied} 个附件。"
                            f"旧目录已保底为 {old_backup.name}，确认无误后可手动删除。",
@@ -582,19 +617,30 @@ def _safe_members(zf: zipfile.ZipFile) -> tuple:
 # 模块一·二：备份（全量打包）
 # ==============================================================
 
-def create_backup() -> dict:
+def create_backup(on_progress: Optional[Callable[[int, str], None]] = None) -> dict:
     """打包全量数据并触发浏览器下载前的信息准备。
 
     模块一覆盖清单：数据库、WAL/SHM、uploads/、config.json/.env、
                    logs/app.log（近 30 天或 10MB 内）。
     返回 {"zip_path": Path, "invoices": int, "reimburses": int,
-          "attachments": int, "size_bytes": int, "size_human": str}。
+          "attachments": int, "size_bytes": int, "size_human": str,
+          "md5": str, "created_at": str}。
+
+    on_progress 是可选回调：fn(progress_pct, message)，供前端真实进度条轮询。
+    不传则退化为原行为（无进度反馈）。
     """
     with _backup_guard("create_backup"):
-        return _do_backup()
+        return _do_backup(on_progress=on_progress)
 
 
-def _do_backup() -> dict:
+def _do_backup(on_progress: Optional[Callable[[int, str], None]] = None) -> dict:
+    def _cb(pct: int, msg: str):
+        if on_progress:
+            try:
+                on_progress(pct, msg)
+            except Exception:
+                pass
+
     backup_dir = settings.data_dir / "backups"
     backup_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -612,8 +658,10 @@ def _do_backup() -> dict:
         ).fetchone()[0]
 
     try:
+        _cb(2, "执行 WAL checkpoint 并生成数据库快照…")
         # 1. WAL checkpoint（模块二·2：确保所有内存数据已落盘）
         _wal_checkpoint()
+        _cb(8, "正在生成数据库一致性快照…")
 
         # 2. 生成一致性数据库快照（模块二·3：绝不能直接打正在使用的文件）。
         #    直接复制文件在并发写入时可能拿到撕裂页；用 SQLite 在线备份 API
@@ -627,19 +675,22 @@ def _do_backup() -> dict:
         _snapshot_db(temp_db)
 
         # 3. 打包副本 + uploads + config + 日志
+        _cb(15, "开始打包附件与配置…")
         n_att = 0
+        total_files = 0
+        # 预估总进度：附件数是大头
+        if settings.upload_dir.exists():
+            from app.infra.winpath import iter_files
+            total_files = sum(1 for _ in iter_files(settings.upload_dir))
+        processed = 0
+        last_report_pct = 15
         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
             # 3a. 数据库副本
             for f in sorted(temp_dir.iterdir()):
                 if f.is_file() and f.name.startswith(settings.db_path.name):
                     zf.write(f, arcname=f.name)
-            # 3a2. 版本标识（P4-1：恢复时强校验，高版本包拒绝恢复/低版本自动迁移）
-            zf.writestr("manifest.json", json.dumps({
-                "kind": "full-backup",
-                "app_version": APP_VERSION,
-                "schema_version": SCHEMA_VERSION,
-                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            }, ensure_ascii=False, indent=2))
+            # 3a2. 版本标识 + MD5 预留位（最终 md5 在打包完成后回填，见下方）
+            _manifest_created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             # 3b. 附件目录（原样保留 YYYYMM 子目录层级）
             if settings.upload_dir.exists():
                 from app.infra.winpath import fs_path, iter_files
@@ -648,6 +699,14 @@ def _do_backup() -> dict:
                            + str(p.relative_to(settings.upload_dir)).replace("\\", "/"))
                     zf.write(fs_path(p), arcname=arc)
                     n_att += 1
+                    processed += 1
+                    if total_files:
+                        # 15% ~ 85% 区间对应附件打包
+                        pct = 15 + int(70 * processed / total_files)
+                        if pct - last_report_pct >= 2:    # 每 2% 上报一次，避免刷屏
+                            _cb(pct, f"已打包附件 {processed}/{total_files}")
+                            last_report_pct = pct
+            _cb(86, "正在补充配置文件与近期日志…")
             # 3c. 配置文件（若存在）
             for extra_name in ("config.json", ".env"):
                 cand = settings.data_dir.parent / extra_name
@@ -656,10 +715,36 @@ def _do_backup() -> dict:
             # 3d. 运行日志：近 30 天 + 单文件 ≤ 10MB
             _add_recent_logs(zf)
 
-        size_bytes = zip_path.stat().st_size
-        logger.info("备份完成: %s (invoices=%d, reimburse=%d, attachments=%d, size=%.1f KB)",
-                    zip_path.name, invoices_n, reimburses_n, n_att, size_bytes / 1024)
+        _cb(92, "正在计算备份包 MD5…")
+        # 4. 计算 MD5（逐块读，支持大文件）
+        md5 = hashlib.md5()
+        with open(zip_path, "rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                md5.update(chunk)
+        md5_hex = md5.hexdigest()
+        _cb(95, "正在写入 manifest…")
 
+        # 5. 把最终 md5 回填进 manifest.json（用 zipfile 重新写入同名条目覆盖）
+        #    标准 zipfile 不支持 in-place 覆盖，这里重开 ZipFile(zipfile.ZIP_DEFLATED) 追加同名 arcname
+        #    后写同名条目会覆盖前一个条目（Python zipfile 会指向最后一次写入）。
+        with zipfile.ZipFile(zip_path, "a") as zf2:
+            zf2.writestr("manifest.json", json.dumps({
+                "kind": "full-backup",
+                "app_version": APP_VERSION,
+                "schema_version": SCHEMA_VERSION,
+                "created_at": _manifest_created_at,
+                "md5": md5_hex,
+                "attachments": n_att,
+            }, ensure_ascii=False, indent=2))
+
+        size_bytes = zip_path.stat().st_size
+        logger.info("备份完成: %s (invoices=%d, reimburse=%d, attachments=%d, size=%.1f KB, md5=%s)",
+                    zip_path.name, invoices_n, reimburses_n, n_att, size_bytes / 1024, md5_hex)
+
+        # 写一份"最近备份"状态到隐藏文件，前端 Tab1 显示"上次成功备份时间"用
+        _record_last_backup(zip_path.name, md5_hex, size_bytes)
+
+        _cb(100, "备份完成")
         return {
             "zip_path": zip_path,
             "invoices": invoices_n,
@@ -667,6 +752,8 @@ def _do_backup() -> dict:
             "attachments": n_att,
             "size_bytes": size_bytes,
             "size_human": _human_size(size_bytes),
+            "md5": md5_hex,
+            "created_at": _manifest_created_at,
         }
     finally:
         # 模块二·4：无论成功失败，finally 里强制清临时目录
@@ -675,6 +762,42 @@ def _do_backup() -> dict:
                 shutil.rmtree(temp_dir, ignore_errors=True)
         except Exception:
             logger.warning("清理备份临时目录失败（可忽略）: %s", temp_dir)
+
+
+_LAST_BACKUP_FILE = Path.home() / ".fapiao_last_backup.json"
+
+
+def _record_last_backup(filename: str, md5: str, size_bytes: int) -> None:
+    try:
+        _LAST_BACKUP_FILE.write_text(json.dumps({
+            "filename": filename,
+            "md5": md5,
+            "size_bytes": size_bytes,
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+        }, ensure_ascii=False), encoding="utf-8")
+    except OSError as e:
+        logger.debug("写入上次备份标记失败（非致命）: %s", e)
+
+
+def get_last_backup() -> Optional[dict]:
+    """读取最近一次成功备份的元信息；未做过备份返回 None。"""
+    try:
+        if not _LAST_BACKUP_FILE.exists():
+            return None
+        data = json.loads(_LAST_BACKUP_FILE.read_text(encoding="utf-8"))
+        # 同时检查备份文件本身是否还在（用户可能手动删除了）
+        backup_dir = settings.data_dir / "backups"
+        p = backup_dir / data.get("filename", "")
+        if p.exists():
+            return data
+        return None
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def compute_md5_bytes(content: bytes) -> str:
+    """对任意 bytes 计算 MD5（前端上传 zip 包后，先算一次比对 manifest 声明值）。"""
+    return hashlib.md5(content).hexdigest()
 
 
 def _snapshot_db(target: Path) -> None:
@@ -749,22 +872,46 @@ def _read_manifest(zf: zipfile.ZipFile) -> dict:
         return {"app_version": "0.0.0", "schema_version": 0}
 
 
-def restore_backup(content: bytes) -> dict:
+def restore_backup(content: bytes, on_progress: Optional[Callable[[int, str], None]] = None) -> dict:
     """从 zip 备份覆盖恢复全部数据。
 
     返回 {"ok": bool, "message": str, "invoices": int, "reimburses": int,
           "attachments": int}。
     - dispose() 强制断连 + 中止后台清理线程。
     - 旧库/旧附件带时间戳改名保底，失败自动回滚。
-    - 任何损坏（zip-slip / db 打不开 / 移动失败）都只返回失败，不碰现有数据。
+    - 任何损坏（zip-slip / db 打不开 / 移动失败 / MD5 不匹配）都只返回失败，不碰现有数据。
+
+    on_progress 可选：fn(progress_pct, message)。
     """
     with _backup_guard("restore_backup"):
-        return _do_restore(content)
+        return _do_restore(content, on_progress=on_progress)
 
 
-def _do_restore(content: bytes) -> dict:
+def _do_restore(content: bytes, on_progress: Optional[Callable[[int, str], None]] = None) -> dict:
+    def _cb(pct: int, msg: str):
+        if on_progress:
+            try:
+                on_progress(pct, msg)
+            except Exception:
+                pass
+
+    _cb(2, "正在校验备份包 MD5…")
     if not content or not zipfile.is_zipfile(io.BytesIO(content)):
         return {"ok": False, "message": "备份文件无效：不是合法的 .zip 文件"}
+
+    # 0. MD5 完整性校验（防篡改 / 传输损坏）
+    try:
+        with zipfile.ZipFile(io.BytesIO(content)) as zf_probe:
+            manifest_probe = _read_manifest(zf_probe)
+        declared_md5 = (manifest_probe.get("md5") or "").lower()
+    except zipfile.BadZipFile:
+        return {"ok": False, "message": "备份文件损坏：无法打开"}
+    actual_md5 = hashlib.md5(content).hexdigest().lower()
+    if declared_md5 and declared_md5 != actual_md5:
+        logger.warning("恢复拦截：MD5 不匹配 manifest=%s actual=%s", declared_md5, actual_md5)
+        return {"ok": False,
+                "message": "⚠️ 备份包 MD5 校验失败，文件可能被篡改或传输损坏，禁止恢复！"}
+    _cb(8, "MD5 校验通过，继续恢复流程")
 
     db_path = settings.db_path
     upload_dir = settings.upload_dir
@@ -774,8 +921,9 @@ def _do_restore(content: bytes) -> dict:
     restore_dir = settings.data_dir / "temp_restore"
 
     try:
+        _cb(12, "正在读取备份清单…")
         with zipfile.ZipFile(io.BytesIO(content)) as zf:
-            # ⓪ 版本强校验（P4-1）：包版本高于当前软件 → 拒绝恢复并提示升级
+            # ⓪ 版本强校验：包版本高于当前软件 → 拒绝恢复并提示升级
             manifest = _read_manifest(zf)
             pack_ver = manifest.get("app_version", "0.0.0")
             if _ver_tuple(pack_ver) > _ver_tuple(APP_VERSION):
@@ -789,10 +937,12 @@ def _do_restore(content: bytes) -> dict:
             db_member = sorted(db_members)[0]
 
             # ① 强制释放所有数据库连接（Windows 文件占用防护）
+            _cb(20, "正在释放数据库连接…")
             db_repo.dispose()
             time.sleep(0.5)  # 让 WAL 收敛
 
             # ② 旧数据改名保底（先清 WAL/SHM 副文件；重试应对瞬时占用）
+            _cb(25, "正在为旧数据改名保底…")
             try:
                 for suffix in ("-wal", "-shm"):
                     side = db_path.with_name(db_path.name + suffix)
@@ -812,7 +962,10 @@ def _do_restore(content: bytes) -> dict:
                         "message": f"恢复失败：旧数据无法改名保底（{e}）。"
                                    f"请关闭可能占用的 Excel/资源管理器后重试。"}
 
-            # ③ 沙盒解压到 temp_restore/ + 校验（模块三·2：绝不直接覆盖原目录）
+            # ③ 沙盒解压到 temp_restore/ + 校验
+            _cb(35, "正在解压备份文件…")
+            total = len(upload_members)
+            idx = 0
             try:
                 if restore_dir.exists():
                     shutil.rmtree(restore_dir, ignore_errors=True)
@@ -821,14 +974,19 @@ def _do_restore(content: bytes) -> dict:
                 new_db = restore_dir / db_member
                 with zf.open(db_member) as src, open(new_db, "wb") as dst:
                     shutil.copyfileobj(src, dst)
+                _cb(45, "数据库已解压")
                 # 解压附件（保留 uploads/ 前缀，便于整体重命名）
                 for name in upload_members:
                     target = restore_dir / name
                     target.parent.mkdir(parents=True, exist_ok=True)
                     with zf.open(name) as src, open(target, "wb") as dst:
                         shutil.copyfileobj(src, dst)
+                    idx += 1
+                    if total and idx % max(1, total // 10) == 0:
+                        _cb(45 + int(25 * idx / total), f"已解压附件 {idx}/{total}")
 
                 # 校验新数据库：能打开 + 有核心表
+                _cb(72, "正在校验新数据库完整性…")
                 probe = sqlite3.connect(new_db)
                 try:
                     row = probe.execute(
@@ -848,8 +1006,10 @@ def _do_restore(content: bytes) -> dict:
                 return {"ok": False, "message": f"恢复失败，已自动回滚原数据：{e}"}
 
             # ④ 原子替换：新库 + 新附件移入主目录
+            _cb(82, "正在原子替换数据库…")
             try:
                 _rename_with_retry(new_db, db_path)
+                _cb(88, "正在原子替换附件目录…")
                 if upload_members:
                     new_uploads = restore_dir / _UPLOADS_ARC_PREFIX.rstrip("/")
                     if new_uploads.exists():
@@ -864,6 +1024,7 @@ def _do_restore(content: bytes) -> dict:
                 return {"ok": False, "message": f"恢复失败，已自动回滚原数据：{e}"}
 
         # ⑤ 成功：重建 schema（幂等）
+        _cb(94, "正在重建数据库 schema…")
         try:
             db_repo.init_schema()
         except Exception as e:
@@ -876,6 +1037,7 @@ def _do_restore(content: bytes) -> dict:
                 if p.is_file():
                     att_n += 1
 
+        _cb(100, "恢复完成")
         logger.info("恢复成功（旧库 %s, 旧附件 %s；inv=%d, reb=%d, att=%d）",
                     bak_db.name, bak_uploads.name, inv_n, reb_n, att_n)
         migrated = _ver_tuple(pack_ver) < _ver_tuple(APP_VERSION)
@@ -931,3 +1093,199 @@ def _rollback_all(db_path: Path, bak_db: Path, upload_dir: Path,
         logger.info("回滚完成：附件已恢复为备份前的状态")
     except Exception:
         logger.exception("附件回滚失败，请手动将 %s 改回 %s", bak_uploads, upload_dir)
+
+
+# ==============================================================
+# 模块四·扩展：Top10 大附件 / 静默备份（LRU）/ 诊断包
+# ==============================================================
+
+def get_top_attachments(limit: int = 10) -> list[dict]:
+    """返回占用空间最大的前 N 个附件（清理向导弹窗左栏用）。
+
+    每个条目：{path, size_bytes, size_human, mtime, date_str, invoice_no,
+               is_deleted}。invoice_no 来自数据库关联；is_deleted 标记附件
+               对应的发票是否已被回收站软删除（便于向导弹窗把它们优先列出）。
+    """
+    from app.repository import db as _db_repo
+    if not settings.upload_dir.exists():
+        return []
+    try:
+        from app.infra.winpath import iter_files
+        all_files = []
+        for p in iter_files(settings.upload_dir):
+            try:
+                st = p.stat()
+                all_files.append((st.st_size, st.st_mtime, p))
+            except OSError:
+                continue
+        all_files.sort(key=lambda x: -x[0])
+        top = all_files[:limit]
+
+        # 查数据库关联（source_path 包含绝对路径，用 LIKE '%'||filename 也能命中迁移后的数据）
+        results = []
+        with _db_repo.read() as conn:
+            for size, mtime, p in top:
+                fname = p.name
+                row = conn.execute(
+                    "SELECT invoice_no, deleted_at FROM invoice WHERE source_path LIKE ? "
+                    "ORDER BY LENGTH(source_path) DESC LIMIT 1",
+                    (f"%{fname}%",)
+                ).fetchone()
+                results.append({
+                    "path": str(p),
+                    "filename": fname,
+                    "size_bytes": size,
+                    "size_human": _human_size(size),
+                    "date_str": datetime.fromtimestamp(mtime).strftime("%Y-%m-%d"),
+                    "invoice_no": row[0] if row else "（孤儿，无关联）",
+                    "is_deleted": bool(row and row[1]),
+                })
+        return results
+    except Exception as e:
+        logger.warning("扫描 Top%d 附件失败: %s", limit, e)
+        return []
+
+
+# ---- 静默备份：LRU 保留最新 3 个只含 DB+config 的轻量备份 ----
+
+_SILENT_DIR = settings.data_dir / ".silent_backup"
+_SILENT_KV_KEY = "silent_backup_last"
+_SILENT_MAX = 3
+_SILENT_INTERVAL_SECS = 24 * 3600
+
+
+def run_silent_backup() -> Optional[dict]:
+    """静默备份：只打包 db + config（不含附件），体积小、速度快。
+
+    LRU 只保留最新 3 个包；超过 24 小时未执行才触发。返回备份元信息或 None。
+    幂等：若 24h 内已跑过，直接返回 None。
+    """
+    from app.repository.repos import kv_repo
+    try:
+        with db_repo.read() as conn:
+            last_row = kv_repo.get(conn, _SILENT_KV_KEY)
+        last_ts = float(last_row) if last_row else 0
+        if time.time() - last_ts < _SILENT_INTERVAL_SECS:
+            return None
+    except Exception:
+        last_ts = 0
+
+    try:
+        _SILENT_DIR.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        zip_path = _SILENT_DIR / f"silent_{stamp}.zip"
+        _wal_checkpoint()
+
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            # db 快照
+            temp_dir = settings.data_dir / "temp_silent"
+            temp_dir.mkdir(exist_ok=True)
+            temp_db = temp_dir / settings.db_path.name
+            try:
+                _snapshot_db(temp_db)
+                for f in sorted(temp_dir.iterdir()):
+                    if f.is_file() and f.name.startswith(settings.db_path.name):
+                        zf.write(f, arcname=f.name)
+            finally:
+                shutil.rmtree(temp_dir, ignore_errors=True)
+            # config / .env
+            for extra in ("config.json", ".env"):
+                cand = settings.data_dir.parent / extra
+                if cand.exists() and cand.is_file():
+                    zf.write(cand, arcname=extra)
+            # 诊断信息
+            zf.writestr("silent_manifest.json", json.dumps({
+                "kind": "silent-backup",
+                "app_version": APP_VERSION,
+                "schema_version": SCHEMA_VERSION,
+                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "only_db": True,
+            }, ensure_ascii=False, indent=2))
+
+        # 记录 LRU 时间戳
+        with db_repo.tx() as conn:
+            kv_repo.set(conn, _SILENT_KV_KEY, str(time.time()))
+
+        # LRU：只保留最新 3 个
+        all_pkgs = sorted(_SILENT_DIR.glob("silent_*.zip"),
+                          key=lambda p: p.stat().st_mtime, reverse=True)
+        for old in all_pkgs[_SILENT_MAX:]:
+            try:
+                old.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+        size = zip_path.stat().st_size
+        logger.info("静默备份完成: %s (%.1f KB)", zip_path.name, size / 1024)
+        return {"filename": zip_path.name, "size_human": _human_size(size),
+                "created_at": datetime.now().isoformat(timespec="seconds")}
+    except Exception as e:
+        logger.exception("静默备份失败（不影响主流程）")
+        return None
+
+
+def list_silent_backups() -> list[dict]:
+    """列出所有现存静默备份包（供 Tab1 展示"上次静默备份时间"）。"""
+    try:
+        items = []
+        for p in sorted(_SILENT_DIR.glob("silent_*.zip"),
+                        key=lambda x: x.stat().st_mtime, reverse=True):
+            st = p.stat()
+            items.append({
+                "filename": p.name,
+                "size_human": _human_size(st.st_size),
+                "created_at": datetime.fromtimestamp(st.st_mtime).isoformat(timespec="seconds"),
+            })
+        return items
+    except OSError:
+        return []
+
+
+# ---- 导出诊断包（发给售后排查用） ----
+
+def export_diagnose() -> Path:
+    """打包诊断信息：日志 + 配置 + 系统信息 + 授权状态。
+
+    不含用户业务数据（发票/报销单/附件），所以隐私安全。
+    返回 zip 路径。
+    """
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    zip_path = settings.data_dir / f"diagnose_{stamp}.zip"
+
+    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        # 1. 日志（近 7 天）
+        log_dir = settings.data_dir / "logs"
+        if log_dir.exists():
+            for log in log_dir.iterdir():
+                if log.is_file() and log.suffix == ".log":
+                    mtime = log.stat().st_mtime
+                    if time.time() - mtime < 7 * 86400:
+                        zf.write(log, arcname=f"logs/{log.name}")
+        # 2. 配置（若存在）
+        for extra in ("config.json", ".env"):
+            cand = settings.data_dir.parent / extra
+            if cand.exists() and cand.is_file():
+                zf.write(cand, arcname=extra)
+        # 3. 系统信息
+        try:
+            import platform, sys
+            from app.service import license_service
+            sysinfo = {
+                "app_version": APP_VERSION,
+                "schema_version": SCHEMA_VERSION,
+                "python": sys.version.split()[0],
+                "platform": platform.platform(),
+                "machine": platform.machine(),
+                "db_path": str(settings.db_path),
+                "upload_path": str(settings.upload_dir),
+                "data_dir": str(settings.data_dir),
+                "license": license_service.status(),
+                "plan_key": license_service.plan_key(),
+                "dev_mode": license_service.dev_mode(),
+            }
+            zf.writestr("system_info.json", json.dumps(sysinfo, ensure_ascii=False, indent=2, default=str))
+        except Exception as e:
+            zf.writestr("system_info.json", json.dumps({"error": str(e)}))
+
+    logger.info("导出诊断包: %s (%.1f KB)", zip_path.name, zip_path.stat().st_size / 1024)
+    return zip_path

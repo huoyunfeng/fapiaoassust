@@ -7,7 +7,7 @@ from fastapi import APIRouter, Query, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
-from app.config import RESOURCE_DIR
+from app.config import APP_VERSION, RESOURCE_DIR
 from app.service import (audit_service, auth_service, category_service,
                          invoice_service, license_service, match_service,
                          reimburse_service, report_service)
@@ -557,23 +557,69 @@ def report_page(request: Request, page_size: int = 20, filter: str = "", q: str 
     })
 
 
-@pages.get("/settings", response_class=HTMLResponse)
-def settings_page(request: Request):
+# ---------------------------------------------------------------- 系统设置（左右分栏 + 分区路由）
+# 四个分区与左侧二级导航一一对应；/settings 统一收敛到默认分区「业务规则」
+SETTINGS_SECTIONS = ("rules", "categories", "team", "security")
+
+
+@pages.get("/settings")
+def settings_root():
+    return RedirectResponse("/settings/rules", status_code=302)
+
+
+@pages.get("/settings/{section}", response_class=HTMLResponse)
+def settings_page(request: Request, section: str):
+    # 非法分区一律回到默认分区，避免出现空白设置页
+    if section not in SETTINGS_SECTIONS:
+        return RedirectResponse("/settings/rules", status_code=302)
+
+    user = getattr(request.state, "user", None) or {}
+    role = user.get("role")
+    # 权限兜底（与前端菜单隐藏双保险）：
+    # 员工仅可访问 业务规则 / 费用字典；团队与权限仅管理员可访问
+    if section == "security" and role == "employee":
+        return RedirectResponse("/settings/rules", status_code=302)
+    if section == "team" and role != "admin":
+        return RedirectResponse("/settings/rules", status_code=302)
+
     from app.repository import db
     from app.repository.repos import company_repo, rule_repo
     from app.service import backup_service
     with db.read() as conn:
         companies = company_repo.list(conn)
         rules = rule_repo.list_all(conn)
-    core_rules = [r for r in rules if r.get("is_core")]
-    return templates.TemplateResponse(request, "settings.html", {
-        "request": request, "companies": companies,
+
+    context = {
+        "request": request, "section": section,
+        "companies": companies,
         "rules": [r for r in rules if not r.get("is_core")],
-        "core_rules": core_rules,
+        "core_rules": [r for r in rules if r.get("is_core")],
         "categories": category_service.list_categories(include_disabled=True),
         # 首页仅展示最新 10 条概览；完整日志由前端通过 /api/audit 动态加载
         "audit_logs": audit_service.list_recent(limit=10)["items"],
+        "app_version": APP_VERSION,
+    }
+    if section == "security":
         # 附件容量监控（uploads 物理体积，超过 5GB 时页面黄色预警）
-        "storage": backup_service.storage_usage(),
+        context["storage"] = backup_service.storage_usage()
+    if section == "team":
+        users = auth_service.list_users()
+        lic = license_service.status()
+        # 席位上限取自授权（sub_limit）；未下发时按「不限」展示，不阻断操作
+        context.update({
+            "users": users,
+            "license": lic,
+            "seat_used": len(users),
+            "seat_limit": int(lic.get("sub_limit") or 0),
+        })
+    return templates.TemplateResponse(request, "settings.html", context)
+
+
+@pages.get("/help", response_class=HTMLResponse)
+def help_page(request: Request):
+    """帮助与支持页面（所有角色可见，无需权限隔离）。"""
+    return templates.TemplateResponse(request, "help.html", {
+        "request": request,
+        "app_version": APP_VERSION,
     })
 

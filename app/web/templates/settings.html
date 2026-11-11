@@ -6,7 +6,7 @@
 .sg-layout{display:flex;gap:20px;min-height:calc(100vh - 56px - 40px);}
 .sg-nav{width:200px;background:#fafafa;border:1px solid var(--border-light);border-radius:var(--radius-card);padding:10px 0;flex-shrink:0;align-self:flex-start;position:sticky;top:20px;}
 .sg-nav-title{font-size:12px;color:var(--text-3);padding:8px 18px 6px;font-weight:600;letter-spacing:.5px;}
-.sg-nav-item{display:flex;align-items:center;gap:10px;padding:10px 18px;cursor:pointer;color:var(--text-2);font-size:13px;border-left:3px solid transparent;transition:var(--transition);}
+.sg-nav-item{display:flex;align-items:center;gap:10px;padding:10px 18px;cursor:pointer;color:var(--text-2);font-size:13px;border-left:3px solid transparent;transition:var(--transition);text-decoration:none;}
 .sg-nav-item:hover{background:#f5f7fa;color:var(--text);}
 .sg-nav-item.active{background:var(--primary-light);color:var(--primary);border-left-color:var(--primary);font-weight:600;}
 .sg-nav-icon{font-size:15px;width:18px;text-align:center;}
@@ -14,6 +14,35 @@
 .sg-content{flex:1;min-width:0;background:transparent;padding:0;}
 .sg-pane{display:none;}
 .sg-pane.active{display:block;}
+
+/* 分区内的子区块（系统与安全：三张卡片内部再分块） */
+.sg-hr{height:1px;background:var(--border-light);margin:18px 0;}
+.sg-sub{font-size:14px;font-weight:600;margin-bottom:8px;}
+.sg-sub .muted{font-weight:400;font-size:12px;}
+
+/* 团队与权限：席位进度 + 成员表 */
+.tm-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap;}
+.tm-seat{font-size:13px;color:var(--text-2);}
+.tm-seat b{font-size:18px;color:var(--text);}
+.tm-table{width:100%;border-collapse:collapse;font-size:13px;}
+.tm-table th{text-align:left;color:var(--text-3);font-weight:500;padding:8px 10px;border-bottom:1px solid var(--border);}
+.tm-table td{padding:10px;border-bottom:1px solid var(--border-light);}
+.tm-pill{display:inline-block;padding:2px 9px;border-radius:999px;font-size:11px;background:#f1f5f9;color:#64748b;}
+.tm-pill.admin{background:#eff6ff;color:#1d4ed8;}
+.tm-pill.finance{background:#ecfdf5;color:#047857;}
+.tm-pill.emp{background:#f8fafc;color:#64748b;}
+.tm-pill.off{background:#fef0f0;color:#cf1322;}
+.tm-act{display:flex;gap:6px;flex-wrap:wrap;}
+.tm-mini{padding:4px 9px;border-radius:6px;border:1px solid var(--border);background:#fff;font-size:12px;cursor:pointer;color:var(--text-2);}
+.tm-mini.danger{color:var(--danger-text);border-color:var(--danger-border);}
+.tm-form{display:none;margin-top:14px;}
+.tm-form.on{display:block;}
+.tm-f{display:flex;flex-direction:column;gap:5px;}
+.tm-f label{font-size:12px;color:var(--text-2);}
+.tm-f input,.tm-f select{padding:8px 10px;border:1px solid var(--border);border-radius:6px;font-size:13px;min-width:150px;background:#fff;}
+/* 系统与安全：卡片内部子区块（用细边框区分，避免套卡片的视觉噪音） */
+.sg-subblock{padding:14px 16px;border:1px solid var(--border-light);border-radius:8px;background:#fcfcfd;margin-top:12px;}
+.sg-subblock.card-warn{border-color:var(--warning-border);background:var(--warning-bg);}
 
 /* 折叠面板（系统信息等）*/
 .sg-collapse{background:#fff;border:1px solid transparent;border-radius:var(--radius-card);margin-top:16px;box-shadow:var(--shadow-card);}
@@ -74,64 +103,70 @@
 .sg-drawer pre{white-space:pre-wrap;word-break:break-all;max-height:300px;overflow:auto;}
 .sg-detail-row{display:flex;gap:8px;font-size:13px;line-height:1.8;}
 .sg-detail-row .sg-dk{color:var(--muted);width:72px;flex-shrink:0;}
+
+/* 进度模态框（真实进度轮询，不可点击外部关闭，不可 Esc 关闭） */
+.sg-progress-mask{position:fixed;inset:0;background:rgba(15,23,42,.6);z-index:9999;
+  display:flex;align-items:center;justify-content:center;animation:sgFadeIn .2s ease;}
+@keyframes sgFadeIn{from{opacity:0}to{opacity:1}}
+.sg-progress-mask .sg-progress-card{background:#fff;border-radius:14px;padding:32px 36px;min-width:420px;
+  box-shadow:0 24px 64px rgba(0,0,0,.25);text-align:center;animation:sgCardIn .25s ease;}
+@keyframes sgCardIn{from{opacity:0;transform:translateY(12px) scale(.97)}to{opacity:1;transform:none}}
+.sg-progress-mask .sg-progress-title{font-size:15px;font-weight:600;color:var(--text);margin:0 0 18px;}
+.sg-progress-mask .progress{width:100%;max-width:380px;margin:0 auto 14px;height:10px;border-radius:6px;background:#eef2f7;overflow:hidden;}
+.sg-progress-mask .progress-fill{height:100%;background:var(--primary);transition:width .25s ease;}
+.sg-progress-mask .sg-progress-num{font-size:26px;font-weight:700;color:var(--primary);font-variant-numeric:tabular-nums;
+  margin:10px 0 4px;letter-spacing:-.5px;}
+.sg-progress-mask .sg-progress-msg{font-size:12px;color:var(--text-3);min-height:16px;}
+.sg-progress-mask .sg-spinner{width:32px;height:32px;border:3px solid #e5e7eb;border-top-color:var(--primary);
+  border-radius:50%;margin:0 auto 16px;animation:busySpin .8s linear infinite;}
 </style>
 
 <div class="sg-layout">
 
-  <!-- ===== 左侧导航 ===== -->
+  <!-- ===== 左侧二级导航（真实路由，刷新/书签均可直达） ===== -->
   <aside class="sg-nav">
-    <div class="sg-nav-title">设置</div>
-    <div class="sg-nav-item active" data-pane="pane-basic" onclick="sgSwitch(this,'pane-basic')">
-      <span class="sg-nav-icon">⚙️</span>基础配置
-    </div>
-    <div class="sg-nav-item" data-pane="pane-rules" onclick="sgSwitch(this,'pane-rules')">
-      <span class="sg-nav-icon">📏</span>业务规则
-    </div>
-    <div class="sg-nav-item" data-pane="pane-cats" onclick="sgSwitch(this,'pane-cats')">
+    <div class="sg-nav-title">系统设置</div>
+    <a class="sg-nav-item {% if section == 'rules' %}active{% endif %}" href="/settings/rules">
+      <span class="sg-nav-icon">⚙️</span>业务规则
+    </a>
+    <a class="sg-nav-item {% if section == 'categories' %}active{% endif %}" href="/settings/categories">
       <span class="sg-nav-icon">🏷️</span>费用字典
-    </div>
-    <div class="sg-nav-item" data-pane="pane-system" onclick="sgSwitch(this,'pane-system')">
+    </a>
+    {% if u.role == 'admin' %}
+    <a class="sg-nav-item {% if section == 'team' %}active{% endif %}" href="/settings/team">
+      <span class="sg-nav-icon">👥</span>团队与权限
+    </a>
+    {% endif %}
+    {% if u.role != 'employee' %}
+    <a class="sg-nav-item {% if section == 'security' %}active{% endif %}" href="/settings/security">
       <span class="sg-nav-icon">🛡️</span>系统与安全
-    </div>
+    </a>
+    {% endif %}
   </aside>
 
   <!-- ===== 右侧内容 ===== -->
   <main class="sg-content">
 
-    <!-- ============ 模块1：基础配置 ============ -->
-    <div class="sg-pane active" id="pane-basic">
-      <div class="card">
-        <h2>公司抬头（用于匹配抬头校验与税号规则）</h2>
-        <form class="inline mb" onsubmit="submitForm(event,'/api/companies')">
-          <input name="name" placeholder="公司名称" required>
-          <input name="tax_no" placeholder="税号" required>
-          <label class="muted"><input type="checkbox" name="is_default" value="1"> 默认</label>
-          <button class="btn btn-sm">添加</button>
-        </form>
+    {% if section == 'rules' %}
+    <!-- ============ 模块1：业务规则（含公司抬头配置） ============ -->
+    <div class="sg-pane active" id="pane-rules">
+
+      <!-- 卡片 A：公司抬头配置（列表 + 弹窗录入） -->
+      <div class="card" id="companyCard">
+        <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap;">
+          <div style="flex:1;min-width:280px;">
+            <h2 style="margin:0 0 4px;">公司抬头配置（用于匹配校验与税号规则）</h2>
+            <p class="muted" style="margin:0;font-size:12px;line-height:1.7;">
+              请先录入您公司的抬头和税号，开启白名单规则时，系统将以此作为校验标准。
+            </p>
+          </div>
+          <button class="btn btn-primary" style="background:var(--primary);color:#fff;border:none;padding:9px 16px;border-radius:8px;font-weight:600;cursor:pointer;white-space:nowrap;"
+                  id="addCompanyBtn" type="button" onclick="openCompanyModal()">+ 添加公司抬头</button>
+        </div>
+        <div id="companyListArea" style="margin-top:16px;"></div>
       </div>
 
-      <div class="card">
-        {% if companies %}
-        <table>
-          <tr><th>ID</th><th>名称</th><th>税号</th><th>默认</th><th>操作</th></tr>
-          {% for c in companies %}
-          <tr>
-            <td>#{{ c.id }}</td>
-            <td class="wrap">{{ c.name }}</td>
-            <td>{{ c.tax_no }}</td>
-            <td>{% if c.is_default %}<span class="badge badge-green">默认</span>{% endif %}</td>
-            <td><button class="btn btn-sm btn-danger" onclick="delCompany({{ c.id }})">删除</button></td>
-          </tr>
-          {% endfor %}
-        </table>
-        {% else %}
-        <p class="muted">未配置。未配置时匹配的抬头维度按中性处理。</p>
-        {% endif %}
-      </div>
-    </div>
-
-    <!-- ============ 模块2：业务规则 ============ -->
-    <div class="sg-pane" id="pane-rules">
+      <!-- 2. 核心高频规则 -->
       <div class="card">
         <h2>核心高频规则（固定最高优先级）</h2>
         <p class="muted">以下 4 条内置规则始终排在其他规则之前执行，开关即时生效。</p>
@@ -259,27 +294,12 @@
         <p class="muted">暂无自定义规则（内置校验 C1-C5 始终生效）。</p>
         {% endif %}
       </div>
-
-      <!-- 折叠面板：系统信息 -->
-      <div class="sg-collapse" id="sgSysInfo">
-        <div class="sg-collapse-head" onclick="this.parentElement.classList.toggle('open')">
-          <span>🔧 系统信息（匹配阈值等）</span><span class="sg-arrow">▶</span>
-        </div>
-        <div class="sg-collapse-body" style="padding:16px;">
-          <div class="kv">
-            <span class="k">数据库</span><span>data/fapiao.db（SQLite）</span>
-            <span class="k">匹配阈值</span><span>自动通过 ≥ 0.95 · 待人工 0.70~0.95 · 无候选 &lt; 0.70</span>
-            <span class="k">金额容差</span><span>±0.01（不变量 I5）</span>
-            <span class="k">多对一组合上限</span><span>5 张发票（可在 config.py 调整）</span>
-            <span class="k">OCR</span><span>未配置（解析链中 OCR 环节自动跳过；图片/扫描件请人工录入）</span>
-            <span class="k">日志</span><span>data/logs/app.log</span>
-          </div>
-        </div>
-      </div>
     </div>
+    {% endif %}
 
-    <!-- ============ 模块3：费用字典 ============ -->
-    <div class="sg-pane" id="pane-cats">
+    {% if section == 'categories' %}
+    <!-- ============ 模块2：费用字典 ============ -->
+    <div class="sg-pane active" id="pane-cats">
       <div class="card">
         <form class="inline mb" onsubmit="addCat(event)">
           <input name="name" id="newCatName" placeholder="新增分类名称（如 培训费）" required>
@@ -324,122 +344,219 @@
         {% else %}<p class="muted">分类字典为空。</p>{% endif %}
       </div>
     </div>
+    {% endif %}
 
-    <!-- ============ 模块4：系统与安全 ============ -->
-    <div class="sg-pane" id="pane-system">
-      <!-- Tab 切换 -->
-      <div class="tabs">
-        <div class="tab active" onclick="switchTab(this,'sysBackup')">数据备份</div>
-        <div class="tab" onclick="switchTab(this,'sysAudit')">审计日志</div>
-        <div class="tab" onclick="switchTab(this,'sysRecycle');sgRecycleEnsure()">回收站与数据管理</div>
-        <div class="tab" onclick="switchTab(this,'sysInfo')">系统信息</div>
+    {% if section == 'team' %}
+    <!-- ============ 模块3：团队与权限（原「团队管理」平移） ============ -->
+    <div class="sg-pane active" id="pane-team">
+      <div class="card">
+        <div class="tm-head">
+          <div>
+            <h2 style="margin-bottom:6px;">团队与权限</h2>
+            <p class="muted" style="margin-bottom:10px;">企业版专属能力。员工只能看到自己上传的发票与报销单，财务可见全部业务数据，管理员拥有全部权限。</p>
+            <div class="tm-seat">
+              已使用席位：<b>{{ seat_used }}</b> / {{ seat_limit if seat_limit else '不限' }}
+              {% if seat_limit and seat_used >= seat_limit %}<span class="badge badge-red" style="margin-left:6px;">席位已满</span>{% endif %}
+            </div>
+            {% if seat_limit %}
+            <div class="progress" style="max-width:320px;">
+              <div class="progress-fill{% if seat_used >= seat_limit %} critical{% endif %}"
+                   style="width:{{ [seat_used / seat_limit * 100, 100]|min }}%;"></div>
+            </div>
+            {% endif %}
+          </div>
+          <button class="btn" type="button" onclick="tmToggleForm()"
+                  {% if seat_limit and seat_used >= seat_limit %}disabled title="席位已满，无法新增成员"{% endif %}>添加成员</button>
+        </div>
+
+        <!-- 添加成员表单（默认收起，点右上角按钮展开） -->
+        <div class="tm-form" id="tmAddForm">
+          <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;">
+            <div class="tm-f"><label>账号</label><input id="nUser" placeholder="如 zhangsan"></div>
+            <div class="tm-f"><label>显示名称</label><input id="nName" placeholder="如 张三"></div>
+            <div class="tm-f"><label>角色</label>
+              <select id="nRole">
+                <option value="employee">员工（仅本人数据）</option>
+                <option value="finance">财务（全部业务数据）</option>
+                <option value="admin">管理员（含团队与授权）</option>
+              </select>
+            </div>
+            <div class="tm-f"><label>初始密码</label><input id="nPwd" type="password" placeholder="至少 8 位"></div>
+            <button class="btn" id="createBtn" type="button" onclick="tmCreate()">创建账号</button>
+          </div>
+        </div>
       </div>
 
-      <!-- ---- Tab: 数据备份 ---- -->
-      <div class="tabpane active" id="sysBackup">
-        {% if storage %}
-        <div class="card{% if storage.warn5 %} card-warn{% elif storage.warn4 %} card-warn{% endif %}" id="storageCard">
-          <h2>附件存储容量</h2>
-          <p class="muted mb">发票原始附件目录 uploads/ 的物理占用。超过 4GB 建议清理历史附件；超过 5GB 可能影响系统运行。</p>
-          <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
-            <span style="font-size:18px;font-weight:700;">{{ storage.human }}</span>
-            <span class="muted">/ {{ storage.limit_human }} · 共 {{ storage.files }} 个附件</span>
-            {% if storage.warn5 %}<span class="badge badge-red">空间严重不足，超过 5GB</span>
-            {% elif storage.warn4 %}<span class="badge badge-yellow">容量已超过 4GB</span>
-            {% endif %}
-            <span style="margin-left:auto;">
-              <button class="btn btn-outline btn-sm" onclick="openCleanModal()">去清理</button>
-            </span>
+      <div class="card">
+        <table class="tm-table">
+          <thead><tr><th>账号</th><th>名称</th><th>角色</th><th>状态</th><th>最近登录</th><th style="width:220px;">操作</th></tr></thead>
+          <tbody id="userRows">
+          {% for m in users %}
+            <tr data-id="{{ m.id }}">
+              <td><strong>{{ m.username }}</strong></td>
+              <td>{{ m.display_name }}</td>
+              <td><span class="tm-pill {{ m.role if m.role != 'employee' else 'emp' }}">{{ m.role_cn }}</span></td>
+              <td><span class="tm-pill {{ '' if m.is_active else 'off' }}">{{ '正常' if m.is_active else '已停用' }}</span></td>
+              <td class="muted">{{ m.last_login_at or '—' }}</td>
+              <td>
+                <div class="tm-act">
+                  <button class="tm-mini" type="button" onclick="tmToggle({{ m.id }}, {{ 'false' if m.is_active else 'true' }})">{{ '停用' if m.is_active else '启用' }}</button>
+                  <button class="tm-mini" type="button" onclick="tmReset({{ m.id }}, '{{ m.username }}')">重置密码</button>
+                  <button class="tm-mini danger" type="button" onclick="tmDelete({{ m.id }}, '{{ m.username }}')">删除</button>
+                </div>
+              </td>
+            </tr>
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    {% endif %}
+
+    {% if section == 'security' %}
+    <!-- ============ 模块4：系统与安全（4 Tab：管理员心智模型 v2） ============ -->
+    <div class="sg-pane active" id="pane-system">
+
+      <!-- Tab 切换 -->
+      <div class="tabs">
+        <div class="tab active" onclick="sgSecTab(this,'sgTabBackup')">数据与备份</div>
+        <div class="tab" onclick="sgSecTab(this,'sgTabStorage')">存储与回收</div>
+        <div class="tab" onclick="sgSecTab(this,'sgTabAudit');sgEnsureAudit();">审计日志</div>
+        <div class="tab" onclick="sgSecTab(this,'sgTabLicense')">授权与系统信息</div>
+      </div>
+
+      <!-- ========= Tab 1：数据与备份 ========= -->
+      <div class="tabpane active" id="sgTabBackup">
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:var(--space);">
+
+          <!-- 左：全局备份与恢复 -->
+          <div class="card">
+            <h2>全局备份与恢复</h2>
+            <p class="muted mb" style="font-size:12px;color:#909399;">本系统全部数据（发票、报销单、日志、配置）均保存在本机。恢复会覆盖当前系统全部数据。</p>
+            <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+              <button class="btn btn-green" id="btnBackupNow" onclick="sgStartBackup()">一键备份数据</button>
+              <button class="btn btn-danger" id="btnRestoreNow" onclick="askRestore2()">恢复数据</button>
+              <input type="file" id="restoreFile" accept=".zip" style="display:none" onchange="doRestoreAsync(this)">
+            </div>
+            <p class="muted" style="font-size:12px;color:#909399;margin-top:10px;">备份内容：fapiao.db + uploads/ 附件 + config/.env + 近 30 天日志。每个备份包带 MD5 校验，恢复前自动比对，篡改/损坏直接拦截。</p>
+
+            <!-- 备份历史状态（静默 + 最近手动） -->
+            <div id="sgBackupStatus" style="margin-top:14px;padding:12px 14px;background:#f8fafc;border-radius:8px;font-size:12px;color:#909399;">
+              <span>加载最近备份状态…</span>
+            </div>
           </div>
-          <div class="progress">
+
+          <!-- 右：多设备数据交接 -->
+          <div class="card">
+            <h2>多设备数据交接</h2>
+            <p class="muted mb" style="font-size:12px;color:#909399;">子设备导出交接包后，主设备导入会自动去重合并，绝不覆盖已有账目。</p>
+            <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+              <button class="btn btn-outline" onclick="exportHandover()">导出交接包</button>
+              <button class="btn btn-outline" onclick="document.getElementById('handoverFile').click()">导入交接包</button>
+              <input type="file" id="handoverFile" accept=".zip" style="display:none" onchange="importHandover(this)">
+            </div>
+            <p class="muted" style="font-size:12px;color:#909399;margin-top:10px;">导入的数据需重新执行匹配；与「一键备份」的区别：备份全量覆盖恢复，交接包增量合并去重。</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- ========= Tab 2：存储与回收 ========= -->
+      <div class="tabpane" id="sgTabStorage">
+
+        <!-- 附件存储空间（三色预警 + 路径迁移异步任务） -->
+        <div class="card">
+          <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:16px;flex-wrap:wrap;">
+            <div style="flex:1;min-width:260px;">
+              <h2>附件存储空间</h2>
+              <p class="muted mb" style="font-size:12px;color:#909399;">发票原始附件目录 uploads/ 的物理占用。</p>
+            </div>
+            {% if storage %}
+            <div style="text-align:right;">
+              <span style="font-size:18px;font-weight:700;">{{ storage.human }}</span>
+              <span class="muted" style="font-size:12px;color:#909399;"> / {{ storage.limit_human }} · {{ storage.files }} 个附件</span>
+            </div>
+            <div>
+              <button class="btn btn-outline btn-sm" onclick="openCleanModal()">去清理</button>
+            </div>
+            {% endif %}
+          </div>
+          {% if storage %}
+          <div class="progress" style="max-width:100%;margin-top:14px;">
             <div class="progress-fill{% if storage.warn5 %} critical{% elif storage.warn4 %} warn{% endif %}"
                  style="width:{{ [storage.percent, 100]|min }}%;"></div>
           </div>
+          <!-- 三色预警说明（固定 3 档，用户一眼看懂） -->
+          <div style="display:flex;gap:18px;margin-top:8px;font-size:11px;color:#909399;">
+            <span><span style="display:inline-block;width:10px;height:10px;border-radius:3px;background:var(--success);margin-right:5px;vertical-align:middle;"></span><70% 健康</span>
+            <span><span style="display:inline-block;width:10px;height:10px;border-radius:3px;background:var(--warning);margin-right:5px;vertical-align:middle;"></span>70-90% 建议清理</span>
+            <span><span style="display:inline-block;width:10px;height:10px;border-radius:3px;background:var(--danger);margin-right:5px;vertical-align:middle;"></span>>90% 危险</span>
+          </div>
           {% if storage.warn5 %}
-          <p class="warn-text">空间严重不足，请立即清理：系统运行日志、附件缓存可能因磁盘满而丢失。建议先【一键备份】再清理。</p>
+          <p class="warn-text" style="font-size:12px;margin-top:8px;">⚠️ 空间严重不足，请立即清理：建议先【一键备份】再清理回收站附件。</p>
           {% elif storage.warn4 %}
-          <p class="warn-text">容量接近上限：超过 4GB 建议清理。可清理回收站附件（最安全）、孤儿文件或仅清理老旧发票的原件。</p>
+          <p class="warn-text" style="font-size:12px;margin-top:8px;">容量接近上限：可清理回收站附件（最安全）、孤儿文件或老旧发票原件。</p>
           {% endif %}
-          <p class="muted" style="font-size:12px;margin-top:8px;">
-            可清理：回收站附件 <b id="cleanRecycle">{{ storage.recycle.human }}</b>（{{ storage.recycle.files }} 个）
-            · 孤儿文件 <b id="cleanOrphan">{{ storage.orphan.human }}</b>（{{ storage.orphan.files }} 个）
-          </p>
-        </div>
-        {% endif %}
-        <div class="card">
-          <h2>数据备份与恢复</h2>
-          <p class="muted mb">本系统全部数据（包含发票、报销单、审计日志、系统配置及原始附件）均保存在本机。一键备份将打包上述所有内容；恢复会覆盖当前系统全部数据。</p>
-          <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
-            <button class="btn btn-green" onclick="downloadBackup()">一键备份数据</button>
-            <button class="btn btn-danger" onclick="askRestore()">恢复数据</button>
-            <input type="file" id="restoreFile" accept=".zip" style="display:none" onchange="doRestore(this)">
-            <span class="muted">备份内容：fapiao.db 数据库 + uploads/ 全部发票附件 + config/.env + 近 30 天日志</span>
-          </div>
-        </div>
+          {% endif %}
 
-        <!-- ===== 软件授权（P2-1/P3 预留） ===== -->
-        <div class="card" id="licenseCard">
-          <h2>软件授权 <span class="badge badge-purple" id="licDevBadge" style="display:none;">开发者模式</span></h2>
-          <p class="muted mb">授权码与本机机器码强绑定，一码一机。购买后凭订单号在本机激活；免费版每月限导入 20 张发票。</p>
-          <p id="licDevHint" class="muted" style="display:none;color:var(--warning-text);background:var(--warning-bg);
-             border:1px solid var(--warning-border);border-radius:4px;padding:8px 12px;margin:0 0 12px;font-size:12px;">
-            开发者调试模式已开启：授权与免费版额度校验均已跳过（不扣额度、不限张数）。发布前请删除环境变量 FAPIAO_DEV_MODE 或 config.json 中的 dev_mode，并重启软件。
-          </p>
-          <div id="licenseInfo" style="display:flex;flex-direction:column;gap:10px;">
-            <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
-              <span class="muted">当前版本：</span>
-              <b id="licPlanName">读取中…</b>
-              <span class="muted" id="licQuota"></span>
-            </div>
-            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-              <span class="muted">机器码：</span>
-              <code id="licMachineCode" style="font-size:15px;letter-spacing:1px;background:var(--primary-light);padding:4px 10px;border-radius:4px;">—</code>
-              <button class="btn btn-outline btn-sm" onclick="copyMachineCode()">复制</button>
-            </div>
-            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-              <input id="licCodeInput" placeholder="请输入订单号，如 ORD-20261105-001"
-                     style="width:300px;font-family:monospace;">
-              <button class="btn" onclick="activateLicense()">激活授权</button>
-              <span class="muted" style="font-size:12px;">无订单号？联系商家购买（个人版 99 元/年 · 企业版 499 元/年）</span>
+          <div style="margin-top:18px;padding-top:18px;border-top:1px solid var(--border-light);">
+            <h3 class="sg-sub" style="font-size:14px;font-weight:600;margin-bottom:4px;">附件存储路径</h3>
+            <p class="muted" style="font-size:12px;color:#909399;margin-bottom:10px;">迁移过程：复制 → 校验 → 切换配置 → 旧目录改名保底；任何一步失败自动回滚，不会丢数据。</p>
+            <div style="display:flex;flex-direction:column;gap:10px;">
+              <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                <span class="muted" style="font-size:12px;color:#909399;">当前路径：</span>
+                <code id="uploadPathNow" style="background:#f5f7fa;padding:4px 10px;border-radius:4px;font-size:12px;">读取中…</code>
+              </div>
+              <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                <input id="uploadPathNew" placeholder="新路径（绝对路径，如 D:\fapiao\uploads）" style="width:380px;" onkeydown="if(event.key==='Enter')migrateUploadPathAsync()">
+                <button class="btn btn-outline" id="btnMigrate" onclick="migrateUploadPathAsync()">迁移到新路径</button>
+              </div>
             </div>
           </div>
         </div>
 
-        <!-- ===== 数据交接包（P2-3） ===== -->
-        <div class="card">
-          <h2>数据交接包（多设备合并）</h2>
-          <p class="muted mb">子设备导出交接包（发票 + 报销单 + 附件），主设备导入时按发票号/单号自动去重合并，绝不覆盖本机已有账目。导入的数据需重新执行匹配。</p>
-          <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
-            <button class="btn btn-outline" onclick="exportHandover()">导出交接包</button>
-            <button class="btn btn-outline" onclick="document.getElementById('handoverFile').click()">导入交接包</button>
-            <input type="file" id="handoverFile" accept=".zip" style="display:none" onchange="importHandover(this)">
-            <span class="muted">与「一键备份」的区别：备份是全量覆盖恢复，交接包是增量合并去重。</span>
+        <!-- 回收站 -->
+        <div class="card" style="position:relative;">
+          <h2>回收站</h2>
+          <p class="muted mb" style="font-size:12px;color:#909399;">常规删除只做软删除（写入 deleted_at），数据先进入回收站；超过设定天数后系统每日自动彻底删除（含本地附件），并写入审计日志。</p>
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px;">
+            <label class="muted" style="font-size:12px;color:#909399;">回收站自动清理时间</label>
+            <select id="sgRecycleDays" onchange="sgRecycleSaveDays(this)" style="min-width:180px;">
+              <option value="7">7 天</option>
+              <option value="15">15 天</option>
+              <option value="30">30 天（默认）</option>
+              <option value="90">90 天</option>
+              <option value="0">永久保留（不自动删除）</option>
+            </select>
+            <span class="muted" id="sgRecycleDaysHint" style="font-size:12px;color:#909399;">当前：删除满 30 天后自动彻底删除</span>
+            <span style="margin-left:auto;" class="muted" id="sgRecycleCount" style="font-size:12px;color:#909399;"></span>
           </div>
-        </div>
-
-        <!-- ===== 附件存储路径（P2-4） ===== -->
-        <div class="card">
-          <h2>附件存储路径</h2>
-          <p class="muted mb">发票原始附件（PDF/图片）的存放目录。迁移时系统会复制 → 校验 → 切换配置 → 旧目录改名保底，任何一步失败自动回滚。</p>
-          <div style="display:flex;flex-direction:column;gap:10px;">
-            <div style="display:flex;align-items:center;gap:8px;">
-              <span class="muted">当前路径：</span>
-              <code id="uploadPathNow" style="background:#f5f7fa;padding:4px 10px;border-radius:4px;">读取中…</code>
-            </div>
-            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
-              <input id="uploadPathNew" placeholder="新路径（绝对路径，如 D:\fapiao\uploads）" style="width:360px;">
-              <button class="btn btn-outline" onclick="migrateUploadPath()">迁移到新路径</button>
-            </div>
+          <div id="sgRecycleLoading" style="display:none;position:absolute;inset:0;background:rgba(255,255,255,.6);z-index:5;border-radius:8px;align-items:center;justify-content:center;">
+            <div style="text-align:center;"><div class="spinner"></div><p class="muted" style="margin-top:8px;">加载中…</p></div>
           </div>
+          <table class="sg-zebra">
+            <thead>
+              <tr>
+                <th style="width:70px;">类型</th>
+                <th style="width:170px;">编号</th>
+                <th class="sg-cell-ellipsis">明细</th>
+                <th style="width:110px;text-align:right;">金额</th>
+                <th style="width:170px;">删除时间</th>
+                <th style="width:180px;">操作</th>
+              </tr>
+            </thead>
+            <tbody id="sgRecycleTbody">
+              <tr><td colspan="6" class="muted" style="text-align:center;padding:24px;">加载中…</td></tr>
+            </tbody>
+          </table>
         </div>
       </div>
 
-      <!-- ---- Tab: 审计日志 ---- -->
-      <div class="tabpane" id="sysAudit">
+      <!-- ========= Tab 3：审计日志（全宽独立，防查账更清晰） ========= -->
+      <div class="tabpane" id="sgTabAudit">
         <div class="card" style="position:relative;">
           <h2>审计日志（不可篡改，仅供追溯）</h2>
-
-          <!-- 筛选区 -->
+          <p class="muted mb" style="font-size:12px;color:#909399;">凡字典增删、发票/报销单分类修改、冲突仲裁、解除匹配等关键操作均自动记录，建议每季度抽查。</p>
           <div class="sg-filter-row">
             <label>时间：</label>
             <div class="sg-quick-date">
@@ -452,112 +569,123 @@
             <input type="date" id="sgAuditTo" onchange="sgAuditLoad()">
             <span class="sg-sep"></span>
             <label>操作：</label>
-            <select id="sgAuditAction" onchange="sgAuditLoad()" style="min-width:180px;">
+            <select id="sgAuditAction" onchange="sgAuditLoad()" style="min-width:200px;">
               <option value="">全部操作</option>
-              <option value="category_dict_add">字典新增</option>
-              <option value="category_dict_enable">字典启用</option>
-              <option value="category_dict_disable">字典禁用</option>
-              <option value="category_dict_merge">字典合并</option>
-              <option value="category_dict_rename">字典重命名</option>
+              <option value="backup">数据备份</option>
+              <option value="restore">数据恢复</option>
               <option value="invoice_category">发票分类修改</option>
               <option value="invoice_category_batch">发票分类批量修改</option>
               <option value="reimburse_category">报销单分类修改</option>
+              <option value="attachment_cleanup">系统清理（附件/路径迁移）</option>
               <option value="conflict_reimburse">冲突仲裁(以报销单为准)</option>
               <option value="conflict_invoice">冲突仲裁(以发票为准)</option>
               <option value="conflict_keep">冲突保留差异</option>
               <option value="unmatch">解除匹配</option>
             </select>
             <span class="sg-sep"></span>
-            <input id="sgAuditKw" placeholder="搜索操作人/对象" style="width:200px;" onkeydown="if(event.key==='Enter')sgAuditLoad()">
+            <input id="sgAuditKw" placeholder="操作人 / 对象 / 说明" style="width:220px;" onkeydown="if(event.key==='Enter')sgAuditLoad()">
             <button class="btn btn-sm" onclick="sgAuditLoad()">查询</button>
             <button class="btn btn-sm btn-outline" onclick="sgAuditReset()">重置</button>
           </div>
-
-          <!-- Loading 遮罩 -->
-          <div id="sgAuditLoading" style="display:none;position:absolute;inset:0;background:rgba(255,255,255,.6);z-index:5;border-radius:12px;align-items:center;justify-content:center;">
+          <div id="sgAuditLoading" style="display:none;position:absolute;inset:0;background:rgba(255,255,255,.6);z-index:5;border-radius:8px;align-items:center;justify-content:center;">
             <div style="text-align:center;"><div class="spinner"></div><p class="muted" style="margin-top:8px;">加载中…</p></div>
           </div>
-
           <table class="sg-zebra">
             <thead>
               <tr>
-                <th style="width:170px;">时间</th>
-                <th>操作</th>
+                <th style="width:160px;">时间</th>
+                <th style="width:120px;">操作</th>
                 <th>对象</th>
-                <th>操作人</th>
+                <th style="width:100px;">操作人</th>
                 <th class="sg-cell-ellipsis">说明</th>
-                <th style="width:90px;">操作</th>
+                <th style="width:80px;">操作</th>
               </tr>
             </thead>
-            <tbody id="sgAuditTbody">
-              <!-- JS 动态渲染 -->
-            </tbody>
+            <tbody id="sgAuditTbody"></tbody>
           </table>
-
-          <!-- 分页 -->
           <div class="pager" id="sgAuditPager" style="justify-content:center;"></div>
         </div>
       </div>
 
-      <!-- ---- Tab: 回收站与数据管理 ---- -->
-      <div class="tabpane" id="sysRecycle">
-        <div class="card">
-          <h2>回收站自动清理</h2>
-          <p class="muted mb">常规删除只做软删除（写入 deleted_at），数据先进入回收站；超过设定的天数后，系统每日自动彻底删除（含本地附件），并写入审计日志。</p>
-          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
-            <label class="muted">回收站自动清理时间</label>
-            <select id="sgRecycleDays" onchange="sgRecycleSaveDays(this)" style="min-width:200px;">
-              <option value="7">7 天</option>
-              <option value="15">15 天</option>
-              <option value="30">30 天（默认）</option>
-              <option value="90">90 天</option>
-              <option value="0">永久保留（不自动删除）</option>
-            </select>
-            <span class="muted" id="sgRecycleDaysHint"></span>
+      <!-- ========= Tab 4：授权与系统信息 ========= -->
+      <div class="tabpane" id="sgTabLicense">
+
+        <!-- 软件授权与激活（含倒计时进度条） -->
+        <div class="card" id="licenseCard">
+          <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap;">
+            <div>
+              <h2 style="display:inline;">软件授权与激活</h2>
+              <span class="badge badge-purple" id="licDevBadge" style="display:none;margin-left:8px;">开发者模式</span>
+            </div>
+            <button class="btn btn-outline btn-sm" onclick="reverifyLicense()">重新验证授权</button>
+          </div>
+          <p class="muted mb" style="font-size:12px;color:#909399;margin-top:6px;">授权码与本机机器码强绑定，一码一机。购买后凭订单号在本机激活；免费版每月限导入 20 张发票。</p>
+
+          <div id="licenseInfo" style="display:flex;flex-direction:column;gap:12px;">
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:12px 16px;background:var(--primary-light);border-radius:8px;">
+              <span class="muted" style="font-size:12px;color:#909399;">当前版本</span>
+              <b style="font-size:16px;">v{{ app_version }}</b>
+              <span class="badge" id="licPlanBadge" style="margin-left:6px;">读取中…</span>
+              <span class="muted" id="licQuota" style="font-size:12px;color:#909399;margin-left:auto;">—</span>
+            </div>
+            <!-- 授权倒计时进度条 -->
+            <div id="licCountdown" style="display:none;">
+              <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px;">
+                <span class="muted">授权有效期</span>
+                <span id="licCountdownText" class="muted"></span>
+              </div>
+              <div class="progress" style="max-width:100%;">
+                <div class="progress-fill" id="licCountdownBar" style="width:100%;"></div>
+              </div>
+              <p id="licCountdownWarn" class="warn-text" style="font-size:12px;margin-top:6px;"></p>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+              <span class="muted" style="font-size:12px;color:#909399;">机器码</span>
+              <code id="licMachineCode" style="font-size:14px;letter-spacing:1px;background:#f5f7fa;padding:4px 10px;border-radius:4px;">—</code>
+              <button class="btn btn-outline btn-sm" onclick="copyMachineCode()">复制</button>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+              <input id="licCodeInput" placeholder="请输入订单号，如 ORD-20261105-001"
+                     style="width:320px;font-family:monospace;">
+              <button class="btn" onclick="activateLicense()">激活授权</button>
+              <span class="muted" style="font-size:12px;color:#909399;">无订单号？联系商家购买（个人版 99 元/年 · 企业版 499 元/年）</span>
+            </div>
           </div>
         </div>
 
-        <div class="card" style="position:relative;">
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
-            <h2 style="margin:0;">回收站</h2>
-            <span class="muted" id="sgRecycleCount"></span>
+        <!-- 系统信息（高级参数，折叠面板） -->
+        <div class="card">
+          <div class="sg-collapse">
+            <div class="sg-collapse-head" onclick="this.parentElement.classList.toggle('open')">
+              <span>🔧 查看系统底层参数</span><span class="sg-arrow">▶</span>
+            </div>
+            <div class="sg-collapse-body" style="padding:16px;">
+              <p id="licDevHint" class="muted" style="display:none;color:var(--warning-text);background:var(--warning-bg);
+                 border:1px solid var(--warning-border);border-radius:4px;padding:8px 12px;margin-bottom:14px;font-size:12px;">
+                开发者调试模式已开启：授权与免费版额度校验均已跳过（不扣额度、不限张数）。发布前请删除环境变量 FAPIAO_DEV_MODE 或 config.json 中的 dev_mode，并重启软件。
+              </p>
+              <div class="kv">
+                <span class="k">系统版本</span><span>v{{ app_version }}</span>
+                <span class="k">授权状态</span><span id="licPlanName">读取中…</span>
+                <span class="k">本月额度</span><span id="licQuota2">—</span>
+                <span class="k">数据库</span><span>data/fapiao.db（SQLite）</span>
+                <span class="k">日志</span><span>data/logs/app.log</span>
+                <span class="k">匹配阈值</span><span>自动通过 ≥ 0.95 · 待人工 0.70~0.95 · 无候选 &lt; 0.70</span>
+                <span class="k">金额容差</span><span>±0.01（不变量 I5）</span>
+                <span class="k">多对一组合上限</span><span>5 张发票（可在 config.py 调整）</span>
+                <span class="k">OCR</span><span>未配置（解析链中 OCR 环节自动跳过；图片/扫描件请人工录入）</span>
+              </div>
+              <div style="margin-top:18px;padding-top:14px;border-top:1px solid var(--border-light);display:flex;gap:10px;align-items:center;">
+                <span class="muted" style="font-size:12px;">遇到问题？导出诊断包发给售后排查（仅日志 + 配置 + 系统信息，不含发票数据）</span>
+                <button class="btn btn-outline btn-sm" style="margin-left:auto;" onclick="sgDiagnose()">📦 导出诊断包</button>
+              </div>
+            </div>
           </div>
-          <div id="sgRecycleLoading" style="display:none;position:absolute;inset:0;background:rgba(255,255,255,.6);z-index:5;border-radius:12px;align-items:center;justify-content:center;">
-            <div style="text-align:center;"><div class="spinner"></div><p class="muted" style="margin-top:8px;">加载中…</p></div>
-          </div>
-          <table class="sg-zebra">
-            <thead>
-              <tr>
-                <th style="width:70px;">类型</th>
-                <th style="width:170px;">编号</th>
-                <th class="sg-cell-ellipsis">明细</th>
-                <th style="width:110px;text-align:right;">金额</th>
-                <th style="width:170px;">删除时间</th>
-                <th style="width:160px;">操作</th>
-              </tr>
-            </thead>
-            <tbody id="sgRecycleTbody">
-              <tr><td colspan="6" class="muted" style="text-align:center;padding:24px;">加载中…</td></tr>
-            </tbody>
-          </table>
         </div>
       </div>
 
-      <!-- ---- Tab: 系统信息 ---- -->
-      <div class="tabpane" id="sysInfo">
-        <div class="card">
-          <h2>系统信息</h2>
-          <div class="kv">
-            <span class="k">数据库</span><span>data/fapiao.db（SQLite）</span>
-            <span class="k">匹配阈值</span><span>自动通过 ≥ 0.95 · 待人工 0.70~0.95 · 无候选 &lt; 0.70</span>
-            <span class="k">金额容差</span><span>±0.01（不变量 I5）</span>
-            <span class="k">多对一组合上限</span><span>5 张发票（可在 config.py 调整）</span>
-            <span class="k">OCR</span><span>未配置（解析链中 OCR 环节自动跳过；图片/扫描件请人工录入）</span>
-            <span class="k">日志</span><span>data/logs/app.log</span>
-          </div>
-        </div>
-      </div>
     </div>
+    {% endif %}
 
   </main>
 </div>
@@ -581,26 +709,30 @@ const SG_COMPANIES = {{ companies|tojson }};
 const SG_CORE_CFG = {
   {% for c in core_rules %}"{{ c.id }}": {{ c.config|tojson }}{{ "," if not loop.last }}{% endfor %}
 };
-/* ===== 左侧导航切换 ===== */
-function sgSwitch(el, paneId){
-  document.querySelectorAll('.sg-nav-item').forEach(i=>i.classList.remove('active'));
+/* ===== 系统与安全：三 Tab 切换（管理员心智模型） ===== */
+function sgSecTab(el, paneId){
+  document.querySelectorAll('#pane-system .tab').forEach(t=>t.classList.remove('active'));
   el.classList.add('active');
-  document.querySelectorAll('.sg-pane').forEach(p=>p.classList.remove('active'));
+  document.querySelectorAll('#pane-system .tabpane').forEach(p=>p.classList.remove('active'));
   document.getElementById(paneId).classList.add('active');
-  try{ sessionStorage.setItem('sg_pane', paneId); }catch(e){}
-  // 切到审计日志 Tab 时自动加载一次
-  if(paneId==='pane-system'){
-    setTimeout(()=>sgEnsureAudit(), 50);
-  }
+}
+// 切换到 Tab2 时首次拉取回收站清理配置（days 下拉）
+function sgEnsureRecycleDays(){
+  if(sgEnsureRecycleDays._done) return;
+  sgEnsureRecycleDays._done = true;
+  fetch('/api/settings/recycle-days').then(r=>r.ok?r.json():null).then(d=>{
+    const x = d && d.data ? d.data : d;
+    if(x && typeof x.days === 'number') sgRecycleDaysHint(x.days);
+  }).catch(()=>{});
 }
 
-// 刷新后停留在上次查看的分区，避免总跳回「基础配置」
+/* ===== 分区初始化（左侧导航为真实路由，刷新/书签即保持当前分区） ===== */
+const SG_SECTION = {{ section|tojson }};
 (function(){
-  let p = null;
-  try{ p = sessionStorage.getItem('sg_pane'); }catch(e){}
-  if(!p || p === 'pane-basic') return;
-  const nav = document.querySelector('.sg-nav-item[data-pane="' + p + '"]');
-  if(nav) sgSwitch(nav, p);
+  if(SG_SECTION === 'security'){
+    // Tab1（默认激活）需审计日志；Tab2 懒加载：用户点「存储与回收」时触发
+    setTimeout(()=>{ sgEnsureAudit(); sgRecycleEnsure(); sgEnsureRecycleDays(); loadLastBackupStatus(); }, 50);
+  }
 })();
 
 /* ===== 核心高频规则：开关即时生效，需要参数的先弹窗（不跳转、不刷新） ===== */
@@ -611,6 +743,18 @@ const SG_CORE_LABEL = {
 
 function _sgFailed(j){
   return !!(j && (j.ok === false || (j.data && j.data.ok === false)));
+}
+
+// 单按钮提示弹窗（内嵌浏览器不支持原生 alert，复用站内模态框）
+function sgAlert(msg){
+  return new Promise(resolve=>{
+    const m = document.getElementById('modal');
+    m.innerHTML = '<p style="margin-bottom:16px;white-space:pre-line;line-height:1.6;">' + msg + '</p>'
+      + '<div style="text-align:right;"><button class="btn" id="sgAlertOk">知道了</button></div>';
+    openModal();
+    document.getElementById('sgAlertOk').onclick = ()=>{ closeModal(); resolve(true); };
+    document.getElementById('modalBg').onclick = ()=>{ closeModal(); resolve(true); };
+  });
 }
 
 async function sgCoreSwitch(el, id, name, want, okMsg){
@@ -634,6 +778,13 @@ async function sgCoreToggle(el){
 
   // 1) 关闭：直接提交，无需弹窗
   if(!el.checked){ return sgCoreSwitch(el, id, name, false); }
+
+  // 1.5) 税号白名单依赖上方「公司基础信息」：没有公司抬头/税号时直接拦下并提示
+  if(type === 'buyer_tax_no' && !SG_COMPANIES.length){
+    el.checked = false;
+    await sgAlert('请先在上方配置公司抬头和税号，否则该规则无法生效！');
+    return;
+  }
 
   // 2) 开启且无需额外参数（如拦截红冲）：直接提交
   if(type === 'red_flush'){
@@ -682,7 +833,7 @@ function sgRuleConfigModal(id, type, name){
            + (isTax ? '如 91110000XXXX1' : '如 烟、酒、礼品') + '">';
       if(isTax && SG_COMPANIES.length){
         ctrl += '<div style="margin-top:12px;"><label class="muted" style="display:block;margin-bottom:4px;">'
-             + '从基础配置带入（公司抬头）</label>'
+             + '从公司基础信息带入（公司抬头）</label>'
              + SG_COMPANIES.map(c =>
                  '<label style="display:flex;align-items:center;gap:6px;font-size:13px;margin:3px 0;">'
                  + '<input type="checkbox" class="sg-cm-co" value="' + _escHtml(c.tax_no || '') + '"> '
@@ -914,7 +1065,8 @@ function sgMoveRule(btn, dir){
   post('/api/rules/reorder', fd);
 }
 
-sgToggleRuleFields();
+// 仅「业务规则」分区渲染了规则表单，其它分区跳过（避免读空元素中断整段脚本）
+if(document.getElementById('sgRuleType')) sgToggleRuleFields();
 
 /* ===== 分类搜索 ===== */
 function sgFilterCats(kw){
@@ -933,17 +1085,47 @@ function sgFilterCats(kw){
 
 /* ===== 审计日志：加载 + 筛选 + 分页 + 详情抽屉 ===== */
 const ACTION_CN = {
+  // 系统级 / 备份清理
+  backup:'数据备份', restore:'恢复数据', attachment_cleanup:'附件清理',
+  purge:'彻底删除', delete:'移入回收站',
+  // 费用字典
   category_dict_add:'字典新增',category_dict_enable:'字典启用',category_dict_disable:'字典禁用',
   category_dict_merge:'字典合并',category_dict_rename:'字典重命名',
+  // 分类修改
   invoice_category:'发票分类修改',invoice_category_batch:'发票分类批量修改',
   reimburse_category:'报销单分类修改',
+  // 冲突仲裁
   conflict_reimburse:'冲突仲裁(以报销单为准)',conflict_invoice:'冲突仲裁(以发票为准)',
   conflict_keep:'冲突保留差异',unmatch:'解除匹配',
+  // 匹配确认/修正
   match_confirm:'人工确认匹配',match_reject:'人工拒绝匹配',
   match_auto_correct:'一键更正并重新匹配',match_manual:'人工绑定匹配',
   match_manual_batch:'批量人工绑定匹配',match_quick_fix:'快捷修复',
   match_arbitrate:'人工终裁归属',rule_exempt:'业务规则豁免',
 };
+
+/** 事件语义色（第 2 点）：按 action 类型自动选配色 */
+function _sgAuditActionClass(action){
+  const a = action || '';
+  if(a === 'restore')          return 'badge badge-green';   // 浅绿 + 深绿
+  if(a === 'backup')           return 'badge badge-green';
+  if(a === 'purge' || a === 'attachment_cleanup' || a === 'delete')
+                               return 'badge badge-red';    // 浅红 + 深红
+  if(a === 'invoice_category' || a === 'invoice_category_batch' || a === 'reimburse_category'
+     || a === 'category_dict_add' || a === 'category_dict_enable' || a === 'category_dict_disable'
+     || a === 'category_dict_merge' || a === 'category_dict_rename')
+                               return 'badge badge-blue';   // 浅蓝 + 深蓝（修改类）
+  return 'badge badge-gray';                                  // 常规操作：灰色底 + 深灰
+}
+
+/** 清洗对象列（第 3 点）：去掉前缀数据库主键如 "#465 " */
+function _sgAuditCleanTarget(label){
+  let s = _sgEsc(label || '').trim();
+  // 匹配 "#数字 " 前缀
+  s = s.replace(/^#\d+\s*/, '');
+  // 若清洗后为空（原 label 就是主键），退化为类型名
+  return s || '—';
+}
 let sgAuditPage = 1, sgAuditPageSize = 20;
 const sgAuditState = { loaded:false };
 
@@ -1038,25 +1220,43 @@ function sgAuditSummary(a){
 }
 function sgRenderAudit(r){
   const tbody = document.getElementById('sgAuditTbody');
+  const pager = document.getElementById('sgAuditPager');
   if(!r.items || !r.items.length){
-    tbody.innerHTML = '<tr><td colspan="6" class="muted" style="text-align:center;padding:24px;">暂无符合条件的日志</td></tr>';
-    document.getElementById('sgAuditPager').innerHTML = `<span class="muted">共 0 条</span>`;
+    // 第 5 点：空状态占位（带图标 + 友好提示）
+    const p = r.page||1, ps = r.page_size||20, total = r.total||0;
+    const hasFilter = !!document.getElementById('sgAuditAction').value
+                   || !!document.getElementById('sgAuditKw').value.trim()
+                   || !!document.getElementById('sgAuditFrom').value
+                   || !!document.getElementById('sgAuditTo').value;
+    tbody.innerHTML = `
+      <tr><td colspan="6" style="padding:48px 24px;text-align:center;">
+        <div style="font-size:48px;margin-bottom:8px;">📭</div>
+        <div class="muted" style="font-size:14px;">
+          ${hasFilter ? '暂无符合条件的审计记录' : '系统尚无审计记录'}
+        </div>
+        <div class="muted" style="font-size:12px;margin-top:4px;">
+          ${hasFilter ? '请尝试放宽筛选条件后再次查询' : '字典增删、发票分类修改、冲突仲裁等关键操作将自动留痕'}
+        </div>
+      </td></tr>`;
+    pager.innerHTML = `<span class="muted">共 0 条</span>`;
     return;
   }
   tbody.innerHTML = r.items.map((a,i)=>{
     const time = (a.created_at||'').replace('T',' ');
     const actCn = ACTION_CN[a.action] || a.action;
-    // target_label 已经是可读文本（业务单号/对象描述），不再附加 target_id
-    const obj = _escHtml(a.target_label || a.target_type || '');
+    // 第 1+2 点：中文枚举 + 语义色徽章
+    const badgeClass = _sgAuditActionClass(a.action);
+    // 第 3 点：清洗对象列（去掉数据库主键 "#数字 " 前缀）
+    const objRaw = a.target_label || a.target_type || '';
+    const objClean = _sgAuditCleanTarget(objRaw);
+    // 第 4 点：说明列（已有 sgAuditSummary 输出自然语言，交给 CSS 省略号截断，title 悬浮 Tooltip）
     const summary = sgAuditSummary(a);
-    // 交给 CSS 省略号截断，悬停 title 展示完整说明
-    const detail = summary;
     return `<tr>
       <td class="muted" style="font-variant-numeric:tabular-nums;font-size:12px;">${time}</td>
-      <td><span class="badge badge-blue">${_escHtml(actCn)}</span></td>
-      <td class="sg-cell-ellipsis" title="${obj}">${obj}</td>
-      <td>${_escHtml(a.operator||'—')}</td>
-      <td class="sg-cell-ellipsis muted" title="${_escHtml(summary||'—')}">${_escHtml(detail||'—')}</td>
+      <td><span class="${badgeClass}">${_sgEsc(actCn)}</span></td>
+      <td class="sg-cell-ellipsis" title="${_sgEsc(objClean)}">${objClean}</td>
+      <td>${_sgEsc(a.operator||'—')}</td>
+      <td class="sg-cell-ellipsis muted" title="${_sgEsc(summary||'—')}">${_sgEsc(summary||'—')}</td>
       <td><button class="btn btn-sm btn-outline" onclick='sgOpenDrawer(${JSON.stringify(a).replace(/'/g,"&#39;")})'>查看详情</button></td>
     </tr>`;
   }).join('');
@@ -1065,19 +1265,55 @@ function sgRenderAudit(r){
 function sgRenderPager(r){
   const pager = document.getElementById('sgAuditPager');
   const p = r.page||1, ps = r.page_size||20, total = r.total||0, pages = r.pages||1;
-  let html = `<span class="muted">共 ${total} 条 · 每页 ${ps} · 第 ${p}/${pages} 页</span>`;
-  html += `<button class="btn btn-sm btn-outline" ${p<=1?'disabled':''} onclick="sgAuditGoto(${p-1})">上一页</button>`;
-  // 最多显示 7 个页码
-  let start = Math.max(1, p-3), end = Math.min(pages, start+6);
-  if(end - start < 6) start = Math.max(1, end-6);
-  for(let i=start;i<=end;i++){
-    html += `<button class="btn btn-sm ${i===p?'':'btn-outline'}" style="min-width:32px;" onclick="sgAuditGoto(${i})">${i}</button>`;
+  if(total <= 0){ pager.innerHTML = `<span class="muted">共 0 条</span>`; return; }
+  const presets = [20, 50, 100, 200];
+  const isCustom = presets.indexOf(ps) < 0;
+  let html = `<span class="muted">共 ${total} 条</span>`;
+  html += `<span class="muted">每页</span>`;
+  html += `<select onchange="sgAuditSizeSel(this)" title="每页显示条数">`;
+  for(const n of presets){
+    html += `<option value="${n}" ${ps===n?'selected':''}>${n}</option>`;
   }
-  html += `<button class="btn btn-sm btn-outline" ${p>=pages?'disabled':''} onclick="sgAuditGoto(${p+1})">下一页</button>`;
+  html += `<option value="custom" ${isCustom?'selected':''}>自定义</option></select>`;
+  html += `<span class="muted">条</span>`;
+  html += `<span class="pager-custom" ${isCustom?'':'style="display:none;"'}>`;
+  html += `<input type="text" class="pager-custom-input" inputmode="numeric" maxlength="4"
+           value="${isCustom?ps:''}" placeholder="每页条数"
+           oninput="pagerDigits(this)"
+           onkeydown="if(event.key==='Enter'){event.preventDefault();sgAuditSizeCustom(this);}">`;
+  html += `<button class="btn btn-outline btn-sm" type="button" onclick="sgAuditSizeCustom(this)">确定</button></span>`;
+  html += `<button class="btn btn-outline btn-sm" ${p<=1?'disabled':''} onclick="sgAuditGoto(${p-1})">上一页</button>`;
+  html += `<span class="muted">第 ${p} / ${pages} 页</span>`;
+  html += `<button class="btn btn-outline btn-sm" ${p>=pages?'disabled':''} onclick="sgAuditGoto(${p+1})">下一页</button>`;
   pager.innerHTML = html;
 }
-function sgAuditGoto(p){
-  sgAuditPage = p; sgAuditLoad();
+/** 审计日志底部分页 —— 切页（保持当前 page_size） */
+function sgAuditGoto(p){ sgAuditPage = p; sgAuditLoad(); }
+/** 每页条数下拉选择：预设值直接切换，「自定义」展开输入框 */
+function sgAuditSizeSel(sel){
+  const wrap = sel.closest('.pager');
+  const box = wrap.querySelector('.pager-custom');
+  if(sel.value === 'custom'){
+    box.style.display = 'inline-flex';
+    const input = box.querySelector('.pager-custom-input');
+    input.value = ''; input.focus();
+    return;
+  }
+  box.style.display = 'none';
+  sgAuditPageSize = parseInt(sel.value, 10);
+  sgAuditPage = 1;
+  sgAuditLoad();
+}
+/** 自定义每页条数：校验 1~1000 后切换 */
+function sgAuditSizeCustom(btn){
+  const wrap = btn.closest('.pager');
+  const input = wrap.querySelector('.pager-custom-input');
+  const v = parseInt(input.value, 10);
+  if(!v || v < 1){ toast('请输入大于 0 的条数', false); input.focus(); return; }
+  if(v > 1000){ toast('每页最多 1000 条', false); input.focus(); return; }
+  sgAuditPageSize = v;
+  sgAuditPage = 1;
+  sgAuditLoad();
 }
 
 /* ===== 详情抽屉 ===== */
@@ -1184,7 +1420,163 @@ function sgCloseDrawer(){
 document.addEventListener('keydown', e=>{ if(e.key==='Escape') sgCloseDrawer(); });
 
 /* ===== 设置页原有 JS（公司/规则/分类/备份恢复）===== */
-async function delCompany(id){if(await confirmDlg('确认删除该公司抬头？'))post(`/api/companies/${id}/delete`).then(()=>location.reload());}
+/* ============ 公司抬头：列表 + 弹窗录入 ============ */
+let _companyList = [];
+function renderCompanyList(list){
+  _companyList = list;
+  const area = document.getElementById('companyListArea');
+  if(!list || !list.length){
+    area.innerHTML = `
+      <div style="padding:32px 20px;text-align:center;background:#f8fafc;border:1px dashed #e2e8f0;border-radius:10px;">
+        <div style="font-size:40px;margin-bottom:8px;">🏢</div>
+        <div class="muted" style="font-size:13px;">
+          暂未配置公司抬头
+        </div>
+        <div class="muted" style="font-size:12px;margin-top:4px;">
+          （未配置时匹配的抬头维度按中性处理）
+        </div>
+      </div>`;
+    return;
+  }
+  area.innerHTML = `
+    <table style="width:100%;border-collapse:collapse;font-size:13px;">
+      <thead>
+        <tr style="background:#f8fafc;border-bottom:1px solid var(--border-light);">
+          <th style="padding:10px 12px;text-align:left;font-weight:600;color:#475569;">公司名称</th>
+          <th style="padding:10px 12px;text-align:left;font-weight:600;color:#475569;">税号</th>
+          <th style="padding:10px 12px;text-align:left;font-weight:600;color:#475569;">是否默认</th>
+          <th style="padding:10px 12px;text-align:right;font-weight:600;color:#475569;min-width:180px;">操作</th>
+        </tr>
+      </thead>
+      <tbody>${list.map((c,i)=>`
+        <tr style="border-bottom:1px solid #f1f5f9;" onmouseover="this.style.background='#fafbfc'" onmouseout="this.style.background=''">
+          <td style="padding:10px 12px;">${_escHtml(c.name)}</td>
+          <td style="padding:10px 12px;font-family:ui-monospace,Consolas,monospace;color:#334155;">${_escHtml(c.tax_no)}</td>
+          <td style="padding:10px 12px;">
+            ${c.is_default
+              ? '<span class="badge badge-green" style="background:#ecfdf5;color:#047857;border:1px solid #a7f3d0;">默认</span>'
+              : '<span class="muted" style="font-size:12px;">—</span>'}
+          </td>
+          <td style="padding:10px 12px;text-align:right;">
+            ${c.is_default
+              ? '<span class="muted" style="font-size:12px;">已是默认</span>'
+              : `<button type="button" onclick="setCompanyDefault(${c.id})" style="color:var(--primary);background:none;border:none;cursor:pointer;font-size:12px;margin-right:12px;padding:0;">设为默认</button>`}
+            <button type="button" onclick="delCompany(${c.id})" style="color:#dc2626;background:none;border:none;cursor:pointer;font-size:12px;padding:0;">删除</button>
+          </td>
+        </tr>`).join('')}
+      </tbody>
+    </table>`;
+}
+async function reloadCompanyList(){
+  const area = document.getElementById('companyListArea');
+  if(!area) return;
+  try{
+    const r = await fetch('/api/settings/companies');
+    if(!r.ok){ renderCompanyList([]); return; }
+    const j = await r.json();
+    const data = j.data || j;
+    renderCompanyList(data.companies || []);
+  }catch(e){ renderCompanyList([]); }
+}
+
+function openCompanyModal(){
+  const modal = document.getElementById('modal');
+  modal.innerHTML = `
+    <div style="width:460px;padding:26px 28px;animation:sgCardIn .2s ease;">
+      <h3 style="margin:0 0 16px;font-size:16px;font-weight:700;">添加公司抬头</h3>
+      <div style="display:flex;flex-direction:column;gap:12px;">
+        <div>
+          <label style="font-size:12px;color:#64748b;display:block;margin-bottom:4px;">公司名称 <span style="color:#dc2626;">*</span></label>
+          <input id="cmName" placeholder="如：某某科技有限公司" required
+                 style="width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:8px;font-size:14px;box-sizing:border-box;">
+        </div>
+        <div>
+          <label style="font-size:12px;color:#64748b;display:block;margin-bottom:4px;">税号 <span style="color:#dc2626;">*</span></label>
+          <input id="cmTax" placeholder="如：91110000XXXXXXXXXX" required
+                 style="width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:8px;font-size:14px;box-sizing:border-box;font-family:ui-monospace,Consolas,monospace;">
+        </div>
+        <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:#475569;cursor:pointer;margin-top:4px;">
+          <input type="checkbox" id="cmDefault"> 设为默认抬头（开启白名单规则时优先用这条）
+        </label>
+      </div>
+      <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:20px;padding-top:14px;border-top:1px solid var(--border-light);">
+        <button class="btn btn-outline" type="button" onclick="closeModal()">取消</button>
+        <button class="btn btn-primary" id="cmSave" type="button"
+                style="background:var(--primary);color:#fff;border:none;padding:8px 18px;border-radius:8px;font-weight:600;cursor:pointer;"
+                onclick="saveCompany()">保存添加</button>
+      </div>
+    </div>`;
+  openModal();
+  setTimeout(()=>document.getElementById('cmName')?.focus(), 50);
+}
+async function saveCompany(){
+  const name = document.getElementById('cmName').value.trim();
+  const tax = document.getElementById('cmTax').value.trim().toUpperCase();
+  const isDefault = document.getElementById('cmDefault').checked ? '1' : '';
+  if(!name){ toast('请填写公司名称', false); return; }
+  if(!tax){ toast('请填写税号', false); return; }
+  const btn = document.getElementById('cmSave');
+  btn.disabled = true; btn.textContent = '保存中…';
+  try{
+    const fd = new FormData();
+    fd.append('name', name);
+    fd.append('tax_no', tax);
+    fd.append('is_default', isDefault);
+    const r = await fetch('/api/companies', {method:'POST', body:fd});
+    const j = await r.json();
+    // 后端 _j() 返回 {"ok":true,"data":{...}}，错误是裸 {"ok":false,"message":"..."}
+    const isOK = r.ok && j.ok;                         // 信封顶层 ok 才是可靠信号
+    if(!isOK){
+      // data 内嵌的 ok（旧版后端可能 data 里再包一层）
+      const d = j.data;
+      const nestedBad = d && typeof d.ok === 'boolean' && !d.ok;
+      const msg = (nestedBad && d.message) || j.message || '保存失败';
+      toast(msg, false); btn.disabled = false; btn.textContent = '保存添加'; return;
+    }
+    closeModal();
+    toast('✅ 已添加公司抬头');
+    await reloadCompanyList();
+  }catch(e){ toast('❌ 网络异常，请重试', false); btn.disabled = false; btn.textContent = '保存添加'; }
+}
+
+async function setCompanyDefault(id){
+  try{
+    const r = await fetch('/api/companies/' + id + '/default', {method:'POST'});
+    const j = await r.json();
+    const isOK = r.ok && j.ok;
+    if(!isOK){ toast(j.message || '设置失败', false); return; }
+    toast('✅ 已设为默认');
+    await reloadCompanyList();
+  }catch(e){ toast('❌ 网络异常：' + e.message, false); }
+}
+
+async function delCompany(id){
+  if(!id){ toast('ID 无效', false); return; }
+  const ok = await confirmDlg('确认删除该抬头配置吗？');
+  if(!ok) return;
+  toast('⏳ 正在删除...');
+  try{
+    const r = await fetch('/api/companies/' + id + '/delete', {method:'POST'});
+    const j = await r.json();
+    const isOK = r.ok && j.ok;
+    if(!isOK){
+      let msg = '删除失败 (HTTP ' + r.status + ')';
+      const d = j.data;
+      const nestedBad = d && typeof d.ok === 'boolean' && !d.ok;
+      msg = (nestedBad && d.message) || j.message || msg;
+      toast(msg, false); return;
+    }
+    toast('✅ 已删除');
+    await reloadCompanyList();
+  }catch(e){
+    toast('❌ 网络异常：' + (e && e.message ? e.message : e), false);
+  }
+}
+// SSR 页面 rules 分区渲染后自动 AJAX 填充公司抬头列表
+(function _initCompanyList(){
+  const area = document.getElementById('companyListArea');
+  if(area) reloadCompanyList();
+})();
 async function delRule(id){if(await confirmDlg('确认删除该规则？'))post(`/api/rules/${id}/delete`).then(()=>location.reload());}
 function toggleRule(id){post(`/api/rules/${id}/toggle`).then(()=>location.reload());}
 
@@ -1265,7 +1657,8 @@ async function mergeCat(id, name){
 async function downloadBackup(){
   // 锁状态检查（模块二·1：防并发断档）
   try{
-    const s = await fetch('/api/backup/status').then(r=>r.json());
+    const j = await fetch('/api/backup/status').then(r=>r.json());
+    const s = j.data || j;
     if(s.backing_up){ toast('系统正在生成备份，请稍候再操作', false); return; }
   }catch(e){ /* 网络异常不阻断，后端自己会加锁 */ }
   // P4-2 任务锁：打包期间锁定界面
@@ -1581,19 +1974,431 @@ async function refreshStorageCard(){
   const oEl = document.getElementById('cleanOrphan'); if(oEl) oEl.textContent = d.orphan.human;
 }
 
-// ===== 软件授权（P2-1 机器码绑定 + P3 云端预留） =====
+/* ================================================================
+ * 真实进度条模态框（4 类长耗时操作共用，不可点击外部/Esc 关闭）
+ * ================================================================ */
+let _sgProg = null;   // 当前模态框 DOM 引用
+function showProgressModal(title){
+  hideProgressModal();
+  const mask = document.createElement('div');
+  mask.className = 'sg-progress-mask';
+  mask.id = 'sgProgressModal';
+  // 拦截 Esc 键（兜底：即使焦点跳出也不响应）
+  document.addEventListener('keydown', _sgProgKeyHandler, true);
+  mask.innerHTML = `
+    <div class="sg-progress-card" role="dialog" aria-modal="true" aria-label="${_escHtml(title)}">
+      <div class="sg-spinner"></div>
+      <h3 class="sg-progress-title"></h3>
+      <div class="progress"><div class="progress-fill" style="width:0%;"></div></div>
+      <div class="sg-progress-num">0%</div>
+      <div class="sg-progress-msg">准备中…</div>
+    </div>`;
+  mask.querySelector('.sg-progress-title').textContent = title;
+  document.body.appendChild(mask);
+  _sgProg = mask;
+}
+function _sgProgKeyHandler(e){ if(e.key === 'Escape') e.stopPropagation(); }
+function updateProgress(pct, msg){
+  if(!_sgProg) return;
+  pct = Math.max(0, Math.min(100, Number(pct) || 0));
+  _sgProg.querySelector('.progress-fill').style.width = pct + '%';
+  _sgProg.querySelector('.sg-progress-num').textContent = pct + '%';
+  if(msg) _sgProg.querySelector('.sg-progress-msg').textContent = msg;
+}
+function hideProgressModal(){
+  if(_sgProg){
+    _sgProg.remove();
+    _sgProg = null;
+    document.removeEventListener('keydown', _sgProgKeyHandler, true);
+  }
+}
+
+/**
+ * 轮询后台任务直到结束。
+ * @param {string} taskId - POST /api/tasks/* 返回的 task_id
+ * @param {object} [opts]
+ *   - onProgress(pct, msg) - 每次更新时回调（默认 updateProgress）
+ *   - pollMs            - 轮询间隔 ms，默认 800
+ * @returns Promise<result> 成功时 resolve result dict；失败时 {error} reject
+ */
+function sgPollTask(taskId, opts = {}){
+  const onProg = opts.onProgress || updateProgress;
+  const pollMs = opts.pollMs || 800;
+  return new Promise((resolve, reject)=>{
+    let cancelled = false;
+    const tick = async ()=>{
+      if(cancelled) return;
+      let j;
+      try{
+        const r = await fetch('/api/tasks/' + encodeURIComponent(taskId));
+        j = await r.json();
+      }catch(e){
+        // 网络抖动：再试一次
+        setTimeout(tick, pollMs); return;
+      }
+      const task = j && (j.data || j).task;
+      if(!task){ setTimeout(tick, pollMs); return; }
+      if(typeof task.progress === 'number') onProg(task.progress, task.message || '');
+      if(task.state === 'succeeded'){
+        onProg(100, '完成');
+        setTimeout(()=>resolve(task.result || {ok:true}), 200);
+      } else if(task.state === 'failed'){
+        hideProgressModal();
+        reject(new Error(task.error || '任务失败'));
+      } else {
+        setTimeout(tick, pollMs);
+      }
+    };
+    tick();
+  });
+}
+
+/* ================================================================
+ * Tab1：备份（真实进度）/恢复（MD5 校验 + 真实进度）
+ * ================================================================ */
+async function sgStartBackup(){
+  const ok = await confirmDlg(
+    '即将生成完整备份包（数据库 + 全部附件 + 配置 + 近期日志）\n\n' +
+    '备份过程中写操作会被短暂阻塞，大附件较多时可能需要 1-2 分钟。\n\n继续吗？'
+  );
+  if(!ok) return;
+  showProgressModal('正在备份数据…');
+  try{
+    const r = await fetch('/api/tasks/backup', {method:'POST'});
+    const j = await r.json(); const d = j.data || j;
+    if(!d.ok){ hideProgressModal(); toast(d.message || '备份失败', false); return; }
+    const result = await sgPollTask(d.task_id);
+    hideProgressModal();
+    toast('✅ 备份成功：' + (result.size_human || ''));
+    loadLastBackupStatus();
+  }catch(e){
+    hideProgressModal();
+    toast('备份失败：' + e.message, false);
+  }
+}
+
+async function askRestore2(){
+  const ok = await confirmDlg(
+    '⚠️ 此操作将覆盖当前全部数据，且不可恢复！\n\n' +
+    '系统会自动保留当前数据为临时备份（fapiao_old_时间戳 + uploads_old_时间戳）。\n\n' +
+    '是否继续？'
+  );
+  if(!ok) return;
+  document.getElementById('restoreFile').click();
+}
+
+async function doRestoreAsync(input){
+  const f = input.files[0]; input.value = '';
+  if(!f) return;
+  if(!f.name.toLowerCase().endsWith('.zip')){ toast('仅支持 .zip 格式的备份文件', false); return; }
+  const fd = new FormData(); fd.append('file', f);
+  showProgressModal('正在恢复数据…');
+  try{
+    const r = await fetch('/api/tasks/restore', {method:'POST', body:fd});
+    const j = await r.json(); const d = j.data || j;
+    // API 层先做了一次 MD5 预校验，不匹配直接拦截
+    if(!d.ok){
+      hideProgressModal();
+      if(d.md5_mismatch){ await sgAlert(d.message); }
+      else toast(d.message || '恢复失败', false);
+      return;
+    }
+    const result = await sgPollTask(d.task_id);
+    hideProgressModal();
+    if(result.ok){ _restoreSuccessModal(result); }
+    else toast(result.message || '恢复失败', false);
+  }catch(e){
+    hideProgressModal();
+    toast('恢复请求失败：' + e.message, false);
+  }
+}
+
+/** Tab1 初始化：拉取上次手动备份时间 + 静默备份列表 */
+async function loadLastBackupStatus(){
+  const el = document.getElementById('sgBackupStatus');
+  if(!el) return;
+  el.innerHTML = '<span>加载最近备份状态…</span>';
+  try{
+    const r = await fetch('/api/backup/last');
+    const j = await r.json(); const d = j.data || j;
+    if(!d.ok) throw new Error(d.message);
+    const manual = d.manual;
+    const silents = d.silent || [];
+    const mStr = manual
+      ? `上次手动备份：<b>${_escHtml((manual.created_at||'').replace('T',' '))}</b>（${_escHtml(manual.filename||'')} · ${_escHtml(manual.size_human||'')}）`
+      : '尚未做过手动备份';
+    const sStr = silents.length
+      ? `· 静默备份 ${silents.length} 个（${silents.map(s=>_escHtml((s.created_at||'').replace('T',' '))).join(' / ')}）`
+      : '· 无静默备份（启动时自动检查，超 24h 触发）';
+    el.innerHTML = `${mStr}<br><span style="font-size:11px;color:#b0b3b8;">${sStr}</span>`;
+  }catch(e){
+    el.innerHTML = '<span style="color:#faad14;">无法读取备份状态：' + _escHtml(String(e)) + '</span>';
+  }
+}
+
+/* ================================================================
+ * Tab2：附件路径迁移（真实进度） / 清理向导弹窗（Top10 + 回收站）
+ * ================================================================ */
+async function migrateUploadPathAsync(){
+  const np = document.getElementById('uploadPathNew').value.trim();
+  if(!np){ toast('请输入新路径', false); return; }
+  const ok = await confirmDlg(
+    `⚠️ 确认迁移全部附件到：\n${np}\n\n` +
+    '迁移过程会复制并校验所有附件，旧目录将改名为 uploads_pre_migrate_时间戳 保底。\n' +
+    '迁移期间请勿操作软件。\n\n此操作不可逆，是否继续？'
+  );
+  if(!ok) return;
+  showProgressModal('正在迁移附件目录…');
+  try{
+    const r = await fetch('/api/tasks/migrate', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({new_path: np})
+    });
+    const j = await r.json(); const d = j.data || j;
+    if(!d.ok){ hideProgressModal(); toast(d.message || '迁移失败', false); return; }
+    const result = await sgPollTask(d.task_id);
+    hideProgressModal();
+    if(result.ok){
+      toast('✅ ' + result.message);
+      document.getElementById('uploadPathNew').value='';
+      loadUploadPath(); refreshStorageCard();
+    }else toast(result.message || '迁移失败', false);
+  }catch(e){ hideProgressModal(); toast('迁移失败：' + e.message, false); }
+}
+
+/** 清理向导弹窗：左栏 Top10 大附件勾选 + 右栏回收站附件预览 */
+async function openCleanModal(){
+  const btn = document.createElement('button');
+  btn.disabled = true; btn.textContent = '读取中…';
+  // 打开遮罩（轻量，无真实进度，仅预扫描阶段）
+  document.getElementById('cleanModal')?.remove();
+  const mask = document.createElement('div');
+  mask.id = 'cleanModal';
+  mask.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:2000;'
+                      + 'display:flex;align-items:center;justify-content:center;';
+  mask.addEventListener('click', e=>{ if(e.target===mask) mask.remove(); });
+  const modal = document.createElement('div');
+  modal.style.cssText = 'background:#fff;border-radius:12px;padding:22px 26px;min-width:720px;width:min(90vw,820px);'
+                      + 'box-shadow:0 16px 48px rgba(0,0,0,.18);max-height:86vh;overflow-y:auto;display:flex;flex-direction:column;gap:14px;';
+  modal.innerHTML = `
+    <div style="display:flex;align-items:center;gap:10px;">
+      <h3 style="margin:0;">清理附件释放空间</h3>
+      <span class="muted" style="font-size:12px;">勾选要彻底清理的文件，底部确认后执行</span>
+    </div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;min-height:300px;">
+      <!-- 左栏：Top10 大附件（按大小排序） -->
+      <div style="border:1px solid var(--border-light);border-radius:8px;padding:12px;">
+        <div style="font-size:13px;font-weight:600;margin-bottom:8px;">📦 占用空间 Top 10 附件</div>
+        <div id="cleanTopList" style="font-size:12px;color:#909399;">正在扫描…</div>
+      </div>
+      <!-- 右栏：策略卡片（回收站/孤儿/原件） -->
+      <div style="border:1px solid var(--border-light);border-radius:8px;padding:12px;">
+        <div style="font-size:13px;font-weight:600;margin-bottom:8px;">🗑️ 清理策略</div>
+        <div id="cleanPolicyBox" style="display:flex;flex-direction:column;gap:10px;"></div>
+      </div>
+    </div>
+    <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:8px;border-top:1px solid var(--border-light);padding-top:14px;">
+      <button class="btn btn-outline" onclick="document.getElementById('cleanModal').remove()">取消</button>
+      <button class="btn btn-danger" id="cleanDoBtn">一键彻底清理所选文件</button>
+    </div>
+  `;
+  mask.appendChild(modal);
+  document.body.appendChild(mask);
+
+  // 并行加载 Top10 和 存储容量
+  const [topR, storR] = await Promise.all([
+    fetch('/api/storage/top-attachments?limit=10').then(x=>x.json()).catch(()=>({})),
+    fetch('/api/storage').then(x=>x.json()).catch(()=>({})),
+  ]);
+  const topData = (topR && topR.data) || topR || {};
+  const stor = (storR && storR.data) || storR || {};
+  const items = topData.items || [];
+
+  // 渲染 Top10 列表（带勾选框 + 大小 + 发票号 + 是否已被回收站软删）
+  const topListEl = document.getElementById('cleanTopList');
+  if(!items.length){
+    topListEl.innerHTML = '<div class="muted">当前附件数较少，无需清理。</div>';
+  }else{
+    topListEl.innerHTML = items.map((it, idx)=>{
+      const tag = it.is_deleted
+        ? '<span class="badge badge-gray" style="margin-left:4px;">已软删</span>'
+        : '';
+      return `<label style="display:flex;align-items:flex-start;gap:8px;padding:6px 8px;border-radius:4px;cursor:pointer;"
+          onmouseover="this.style.background='#f8fafc'" onmouseout="this.style.background=''">
+        <input type="checkbox" class="clean-top-cb" data-path="${_escHtml(it.path)}" style="margin-top:2px;">
+        <div style="flex:1;min-width:0;">
+          <div style="font-weight:500;color:#303133;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;"
+               title="${_escHtml(it.filename)}">
+            #${idx+1} ${_escHtml(it.filename)}
+          </div>
+          <div style="color:#909399;font-size:11px;margin-top:2px;">
+            ${_escHtml(it.size_human)} · ${_escHtml(it.date_str || '')} ·
+            <span style="font-family:monospace;">${_escHtml(it.invoice_no || '')}</span>${tag}
+          </div>
+        </div>
+      </label>`;
+    }).join('');
+  }
+
+  // 渲染策略卡片
+  const policyBox = document.getElementById('cleanPolicyBox');
+  const parts = [];
+  if(stor.recycle && stor.recycle.files){
+    parts.push(`<div class="clean-item" style="padding:10px 12px;border:1px solid var(--border);border-radius:6px;cursor:pointer;"
+      onclick="this.querySelector('input').click();this.classList.toggle('on')">
+      <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;">
+        <input type="checkbox" class="clean-opt" data-key="recycle" style="margin:0;">
+        <div>
+          <div style="font-weight:600;color:#d48806;">⚠️ 回收站附件（最安全，推荐）
+            <span class="badge badge-gray" style="margin-left:4px;">${stor.recycle.human} · ${stor.recycle.files} 个</span></div>
+          <div class="muted" style="font-size:11px;">已软删除发票的原始附件，彻底清理后不可恢复</div>
+        </div>
+      </label>
+    </div>`);
+  }
+  if(stor.orphan && stor.orphan.files){
+    parts.push(`<div class="clean-item" style="padding:10px 12px;border:1px solid var(--border);border-radius:6px;cursor:pointer;"
+      onclick="this.querySelector('input').click();this.classList.toggle('on')">
+      <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;">
+        <input type="checkbox" class="clean-opt" data-key="orphan" style="margin:0;">
+        <div>
+          <div style="font-weight:600;color:#303133;">孤儿文件（系统底层垃圾）
+            <span class="badge badge-gray" style="margin-left:4px;">${stor.orphan.human} · ${stor.orphan.files} 个</span></div>
+          <div class="muted" style="font-size:11px;">数据库无引用的残留文件，清理无风险</div>
+        </div>
+      </label>
+    </div>`);
+  }
+  parts.push(`<div class="clean-item" style="padding:10px 12px;border:1px solid var(--border);border-radius:6px;cursor:pointer;"
+    onclick="this.querySelector('input').click();this.classList.toggle('on')">
+    <label style="display:flex;align-items:center;gap:8px;font-size:12px;cursor:pointer;">
+      <input type="checkbox" class="clean-opt" data-key="detach_original" style="margin:0;">
+      <div>
+        <div style="font-weight:600;color:#d48806;">⚠️ 仅清理原件（保留台账数据）</div>
+        <div class="muted" style="font-size:11px;">台账保留，仅删除本地 PDF/图片，适合年代久远的发票</div>
+      </div>
+    </label>
+  </div>`);
+  policyBox.innerHTML = parts.join('') || '<div class="muted">当前所有策略均为 0 字节。</div>';
+
+  // 确认按钮 → 二次确认 → 异步任务 + 真实进度
+  document.getElementById('cleanDoBtn').onclick = async ()=>{
+    const selected = {};
+    document.querySelectorAll('input.clean-opt').forEach(cb=>{ selected[cb.dataset.key] = cb.checked; });
+    const topSelected = document.querySelectorAll('input.clean-top-cb:checked').length;
+    if(!selected.recycle && !selected.orphan && !selected.detach_original && !topSelected){
+      toast('请至少勾选一项清理策略或附件', false); return;
+    }
+    const ok = await confirmDlg(
+      `⚠️ 此操作将永久物理删除所选内容，且不可恢复！\n\n` +
+      `勾选的策略：\n` +
+      `${selected.recycle ? '· 回收站附件（最安全）\n' : ''}` +
+      `${selected.orphan ? '· 孤儿文件\n' : ''}` +
+      `${selected.detach_original ? '· 仅清理原件（台账保留）\n' : ''}` +
+      `${topSelected ? `· Top10 勾选附件 ${topSelected} 个（含在对应策略中）\n` : ''}` +
+      `\n是否继续？`
+    );
+    if(!ok) return;
+    document.getElementById('cleanModal').remove();
+    showProgressModal('正在彻底清理所选文件…');
+    try{
+      const r = await fetch('/api/tasks/clean-selected', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify(selected)
+      });
+      const j = await r.json(); const d = j.data || j;
+      if(!d.ok){ hideProgressModal(); toast(d.message || '清理失败', false); return; }
+      const result = await sgPollTask(d.task_id);
+      hideProgressModal();
+      if(result.ok){ toast('✅ ' + (result.message || '清理完成')); refreshStorageCard(); sgRecycleLoad(); }
+      else toast(result.message || '清理失败', false);
+    }catch(e){ hideProgressModal(); toast('清理失败：' + e.message, false); }
+  };
+}
+
+/** Tab4 导出诊断包 */
+function sgDiagnose(){
+  window.location.href = '/api/system/diagnose';
+}
+
+/* ================================================================
+ * 软件授权（P2-1 机器码绑定 + P3 云端预留）——含倒计时进度条
+ * ================================================================ */
 async function loadLicense(){
+  // 仅「系统与安全」分区渲染了授权卡片，其它分区跳过
+  const skipA = !document.getElementById('licPlanName');
+  const skipB = !document.getElementById('licPlanBadge');
+  if(skipA && skipB) return;
   try{
     const r = await fetch('/api/license').then(x=>x.json());
     const d = r.data || r;
     if(!d.ok) return;
-    document.getElementById('licPlanName').textContent = d.plan_name + (d.exp_date ? `（有效期至 ${d.exp_date}）` : '');
-    const q = d.quota || {};
-    document.getElementById('licQuota').textContent = q.unlimited ? '' : `本月已导入 ${q.used}/${q.quota} 张`;
-    document.getElementById('licMachineCode').textContent = d.machine_code || '—';
-    // 开发者模式标识（仅调试用，醒目提示避免误发布）
-    document.getElementById('licDevBadge').style.display = d.dev_mode ? '' : 'none';
-    document.getElementById('licDevHint').style.display = d.dev_mode ? '' : 'none';
+    const planTxt = d.plan_name + (d.exp_date ? `（有效期至 ${d.exp_date}）` : '');
+    const planShort = d.plan_name || '免费版';
+    const qTxt = (q => q.unlimited ? '' : `本月已导入 ${q.used}/${q.quota} 张`)(d.quota || {});
+    // 授权状态：折叠面板中的 kv 行
+    if(!skipA) document.getElementById('licPlanName').textContent = planTxt;
+    // Tab3 顶部版本徽章（按套餐着色）
+    if(!skipB){
+      const badge = document.getElementById('licPlanBadge');
+      badge.textContent = planShort;
+      badge.className = 'badge '
+        + (d.plan === 'enterprise' ? 'badge-purple'
+           : d.plan === 'personal' ? 'badge-green' : 'badge-gray');
+    }
+    // 本月额度：两处都可能渲染，逐个做空检查
+    const q1 = document.getElementById('licQuota'); if(q1) q1.textContent = qTxt || '不限张数';
+    const q2 = document.getElementById('licQuota2'); if(q2) q2.textContent = qTxt || '不限张数';
+    const mc = document.getElementById('licMachineCode'); if(mc) mc.textContent = d.machine_code || '—';
+    // 开发者模式标识（两处：标题旁徽章 + 折叠面板黄色横幅）
+    const db = document.getElementById('licDevBadge'); if(db) db.style.display = d.dev_mode ? '' : 'none';
+    const dh = document.getElementById('licDevHint'); if(dh) dh.style.display = d.dev_mode ? '' : 'none';
+    // 授权倒计时进度条（有 exp 且非永久有效才显示）
+    const cWrap = document.getElementById('licCountdown');
+    if(cWrap){
+      const bar = document.getElementById('licCountdownBar');
+      const txt = document.getElementById('licCountdownText');
+      const warn = document.getElementById('licCountdownWarn');
+      if(d.dev_mode){
+        // 开发者模式：显示为永久绿色
+        cWrap.style.display = '';
+        bar.className = 'progress-fill';
+        bar.style.width = '100%';
+        txt.textContent = '开发者模式 · 永久';
+        warn.style.display = 'none';
+      } else if(d.exp && d.exp > 0 && !d.expired){
+        const now = Math.floor(Date.now() / 1000);
+        const remaining = d.exp - now;                   // 剩余秒数
+        const remainingDays = Math.ceil(remaining / 86400);
+        // 套餐默认有效期：enterprise/personal 365 天（参考授权码签发），免费版永久
+        const defaultDuration = (d.plan === 'enterprise' || d.plan === 'personal') ? 365 * 86400 : null;
+        if(defaultDuration){
+          const percent = Math.max(0, Math.min(100, remaining / defaultDuration * 100));
+          bar.style.width = percent + '%';
+          txt.textContent = `剩余 ${remainingDays} 天（至 ${d.exp_date || ''}）`;
+          if(remainingDays <= 30){
+            bar.className = 'progress-fill warn';
+            warn.textContent = `⚠️ 授权即将到期，请及时续费（剩余 ${remainingDays} 天）`;
+            warn.style.display = '';
+          } else {
+            bar.className = 'progress-fill';
+            warn.style.display = 'none';
+          }
+          cWrap.style.display = '';
+        } else {
+          cWrap.style.display = 'none';
+        }
+      } else if(d.expired && d.exp_date){
+        cWrap.style.display = '';
+        bar.className = 'progress-fill critical';
+        bar.style.width = '0%';
+        txt.textContent = '已于 ' + d.exp_date + ' 到期';
+        warn.textContent = '⚠️ 授权已过期，请立即续费';
+        warn.style.display = '';
+      } else {
+        cWrap.style.display = 'none';
+      }
+    }
   }catch(e){ /* 静默：授权读取失败不影响设置页其它功能 */ }
 }
 async function copyMachineCode(){
@@ -1604,15 +2409,20 @@ async function copyMachineCode(){
 async function activateLicense(){
   const code = document.getElementById('licCodeInput').value.trim();
   if(!code){ toast('请输入订单号', false); return; }
-  const d = await TaskLock.run('正在验证订单号…', async ()=>{
+  const j = await TaskLock.run('正在验证订单号…', async ()=>{
     const r = await fetch('/api/license/activate', {
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({order_id: code})
     });
-    return (await r.json()).data ?? await Promise.resolve(null) ?? {};
+    return await r.json();
   });
-  if(d && d.ok){ toast('✅ ' + d.message); document.getElementById('licCodeInput').value=''; loadLicense(); }
-  else toast((d && d.message) || '激活失败', false);
+  if(j && j.ok){ toast('✅ ' + (j.message || '激活成功')); document.getElementById('licCodeInput').value=''; loadLicense(); }
+  else toast((j && j.message) || '激活失败', false);
+}
+// 重新验证授权：重新拉取 /api/license，刷新版本/授权状态/额度
+async function reverifyLicense(){
+  await loadLicense();
+  toast('授权状态已重新验证');
 }
 
 // ===== 数据交接包（P2-3） =====
@@ -1639,6 +2449,7 @@ async function importHandover(input){
 
 // ===== 附件存储路径迁移（P2-4） =====
 async function loadUploadPath(){
+  if(!document.getElementById('uploadPathNow')) return;   // 仅「系统与安全」分区需要
   try{
     const r = await fetch('/api/storage/path').then(x=>x.json());
     const d = r.data || r;
@@ -1662,6 +2473,75 @@ async function migrateUploadPath(){
     document.getElementById('uploadPathNew').value='';
     loadUploadPath(); refreshStorageCard();
   }else toast((d && d.message) || '迁移失败', false);
+}
+
+// ===== 团队与权限（原独立「团队管理」页迁移，接口不变） =====
+function tmToggleForm(){
+  document.getElementById('tmAddForm').classList.toggle('on');
+}
+async function tmPost(url, body, method){
+  const r = await fetch(url, {
+    method: method || 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body || {})
+  });
+  return await r.json();
+}
+async function tmCreate(){
+  const btn = document.getElementById('createBtn');
+  btn.disabled = true;
+  try{
+    const d = await tmPost('/api/team/users', {
+      username: document.getElementById('nUser').value.trim(),
+      display_name: document.getElementById('nName').value.trim(),
+      role: document.getElementById('nRole').value,
+      password: document.getElementById('nPwd').value
+    });
+    if(!d.ok){ toast(d.message || '创建失败', false); return; }
+    toast('账号已创建');
+    setTimeout(()=>location.reload(), 700);
+  }catch(e){ toast('网络异常', false); }
+  finally{ btn.disabled = false; }
+}
+async function tmToggle(id, active){
+  const d = await tmPost(`/api/team/users/${id}/toggle`, {active: active});
+  if(!d.ok){ toast(d.message || '操作失败', false); return; }
+  location.reload();
+}
+async function tmReset(id, name){
+  const pwd = await sgPrompt(`为 ${name} 设置新密码（至少 8 位）`, '至少 8 位');
+  if(!pwd) return;
+  const d = await tmPost(`/api/team/users/${id}/reset`, {password: pwd});
+  if(!d.ok){ toast(d.message || '重置失败', false); return; }
+  toast('密码已重置');
+}
+async function tmDelete(id, name){
+  const ok = await confirmDlg(`确认删除账号 ${name}？该账号的历史数据仍保留。`);
+  if(!ok) return;
+  try{
+    const r = await fetch(`/api/team/users/${id}`, {method: 'DELETE'});
+    const d = await r.json();
+    if(!d.ok){ toast(d.message || '删除失败', false); return; }
+    location.reload();
+  }catch(e){ toast('网络异常', false); }
+}
+// 文本输入弹窗（内嵌浏览器不支持原生 prompt，复用站内模态框）
+function sgPrompt(msg, placeholder){
+  return new Promise(resolve=>{
+    const m = document.getElementById('modal');
+    m.innerHTML = '<p style="margin-bottom:12px;white-space:pre-line;line-height:1.6;">' + msg + '</p>'
+      + '<input id="sgPromptInput" style="width:100%;margin-bottom:16px;" placeholder="' + (placeholder || '') + '">'
+      + '<div style="text-align:right;display:flex;gap:8px;justify-content:flex-end;">'
+      + '<button class="btn btn-outline" id="sgPromptCancel">取消</button>'
+      + '<button class="btn" id="sgPromptOk">确定</button></div>';
+    openModal();
+    const input = document.getElementById('sgPromptInput');
+    input.focus();
+    const done = v => { closeModal(); resolve(v); };
+    document.getElementById('sgPromptOk').onclick = ()=>done(input.value.trim() || null);
+    document.getElementById('sgPromptCancel').onclick = ()=>done(null);
+    document.getElementById('modalBg').onclick = ()=>done(null);
+  });
 }
 
 // 页面加载时读取授权与附件路径
