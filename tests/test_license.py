@@ -221,6 +221,59 @@ class TestAuth:
         st = lic.status()
         assert st["readonly"] is True and st["plan"] == "free"
 
+    def test_pending_order_ttl(self, env):
+        """处理中订单超过 30 分钟自动清除，避免过期横幅长期挂着。"""
+        lic = env["lic"]
+        from app.repository.repos import kv_repo
+
+        with env["db"].tx() as conn:
+            kv_repo.set(conn, lic.PENDING_ORDER_KV, json.dumps({
+                "trade_order_id": "FP-NEW", "plan": "personal", "amount": 99,
+                "created_at": int(time.time())}))
+        assert lic.pending_order()["trade_order_id"] == "FP-NEW"
+
+        with env["db"].tx() as conn:
+            kv_repo.set(conn, lic.PENDING_ORDER_KV, json.dumps({
+                "trade_order_id": "FP-OLD", "plan": "personal", "amount": 99,
+                "created_at": int(time.time()) - lic.PENDING_ORDER_TTL - 5}))
+        assert lic.pending_order() is None
+        with env["db"].read() as conn:
+            assert kv_repo.get(conn, lic.PENDING_ORDER_KV, "") == ""
+
+    def test_auto_sync_only_when_stale(self, env, monkeypatch):
+        """付费授权距上次同步超过 6 小时才自动联网校验，否则跳过（避免误触 15 天宽限）。"""
+        lic = env["lic"]
+        from app.repository.repos import kv_repo
+
+        lic.apply_license_code(_license(env))
+        calls = []
+        monkeypatch.setattr(lic, "sync_license",
+                            lambda: calls.append(1) or {"ok": True})
+
+        with env["db"].tx() as conn:
+            kv_repo.set(conn, "last_cloud_sync_at", str(int(time.time())))
+        assert lic.auto_sync() is False and not calls
+
+        with env["db"].tx() as conn:
+            kv_repo.set(conn, "last_cloud_sync_at",
+                        str(int(time.time()) - lic.SYNC_INTERVAL - 60))
+        assert lic.auto_sync() is True and len(calls) == 1
+
+    def test_expiry_comes_from_cloud_without_local_stacking(self, env):
+        """有效期以云端签发的 exp 为准，本地不再二次叠加；重复激活同一授权幂等。"""
+        lic = env["lic"]
+        lic.apply_license_code(_license(env, order_id="O-1"))
+        old_exp = lic.status()["exp"]
+
+        renewed = _license(env, order_id="O-2",
+                           exp=old_exp + 365 * 86400, duration_days=365)
+        lic.apply_license_code(renewed)
+        assert lic.status()["exp"] == old_exp + 365 * 86400
+
+        # 同一授权码重复激活：必须幂等成功，不得延长，也不得报错
+        lic.apply_license_code(renewed)
+        assert lic.status()["exp"] == old_exp + 365 * 86400
+
 
 # ---------------------------------------------------------------- 修复回归
 def test_free_blocked_uses_api_prefixes():
@@ -394,6 +447,167 @@ def test_cloud_recover_by_order_suffix(tmp_path, monkeypatch):
     assert "其他设备" in str(getattr(exc.value, "detail", exc.value))
 
 
+def test_cloud_recover_rejects_unpaid_archived_order(tmp_path, monkeypatch):
+    """归档为 expired/failed 的未支付订单不能凭订单号白拿授权（越权漏洞回归）。"""
+    srv = _cloud_srv(tmp_path, monkeypatch, {
+        "FP1762A1B2C3": {"plan": "personal", "days": 365, "status": "expired",
+                         "machine_code": "M-1", "license_key": "", "amount": 1},
+    })
+    monkeypatch.setattr(srv, "_query_gateway",
+                        lambda oid: {"status": "WP", "total_fee": "0.01"})
+    with pytest.raises(Exception) as exc:
+        srv.payment_recover(
+            srv.PayRecoverReq(order_suffix="A1B2C3", machine_code="M-1"), _fake_request())
+    assert "尚未支付" in str(getattr(exc.value, "detail", exc.value))
+    orders = json.loads((tmp_path / "cloud" / "orders.json").read_text(encoding="utf-8"))["orders"]
+    assert orders["FP1762A1B2C3"]["license_key"] == ""
+
+
+def test_cloud_recover_issues_for_late_paid_order(tmp_path, monkeypatch):
+    """归档后补付的订单仍能凭订单号找回授权（不能因归档丢码）。"""
+    srv = _cloud_srv(tmp_path, monkeypatch, {
+        "FP1762A1B2C3": {"plan": "personal", "days": 365, "status": "expired",
+                         "machine_code": "M-1", "license_key": "", "amount": 1},
+    })
+    monkeypatch.setattr(srv, "_query_gateway",
+                        lambda oid: {"status": "OD", "total_fee": "0.01",
+                                     "transaction_id": "T-LATE"})
+    r = srv.payment_recover(
+        srv.PayRecoverReq(order_suffix="A1B2C3", machine_code="M-1"), _fake_request())
+    assert r["ok"] and r["license_key"]
+    orders = json.loads((tmp_path / "cloud" / "orders.json").read_text(encoding="utf-8"))["orders"]
+    assert orders["FP1762A1B2C3"]["status"] == "paid"
+
+
+def test_cloud_archive_expires_old_pending_only(tmp_path, monkeypatch):
+    """归档只动过期单：7 天未付 pending→expired、1 小时卡住 creating→failed，
+    新鲜 pending 与已支付订单保持不变，且记录不删除。"""
+    old = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time() - 8 * 86400))
+    old_c = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time() - 7200))
+    fresh = time.strftime("%Y-%m-%d %H:%M:%S")
+    srv = _cloud_srv(tmp_path, monkeypatch, {
+        "FP-OLD": {"plan": "personal", "status": "pending", "amount": 1,
+                   "created_at": old},
+        "FP-STUCK": {"plan": "personal", "status": "creating", "amount": 1,
+                     "created_at": old_c},
+        "FP-NEW": {"plan": "personal", "status": "pending", "amount": 1,
+                   "created_at": fresh},
+        "FP-PAID": {"plan": "personal", "status": "paid", "amount": 1,
+                    "license_key": "CODE", "created_at": old},
+    })
+    monkeypatch.setattr(srv, "_query_gateway",
+                        lambda oid: {"status": "WP", "total_fee": "0.01"})
+    assert srv._archive_stale_orders() == 2
+    orders = json.loads((tmp_path / "cloud" / "orders.json").read_text(encoding="utf-8"))["orders"]
+    assert orders["FP-OLD"]["status"] == "expired"
+    assert orders["FP-STUCK"]["status"] == "failed"
+    assert orders["FP-NEW"]["status"] == "pending"
+    assert orders["FP-PAID"]["status"] == "paid"
+    assert len(orders) == 4          # 只改状态，不删记录
+
+
+def test_cloud_finalize_paid_accepts_archived_order(tmp_path, monkeypatch):
+    """归档后订单补付成功时仍必须发码（回调晚到也不能丢单）。"""
+    srv = _cloud_srv(tmp_path, monkeypatch, {
+        "FP-OLD": {"plan": "personal", "days": 365, "status": "expired",
+                   "machine_code": "M-1", "amount": 1, "license_key": "",
+                   "created_at": time.strftime("%Y-%m-%d %H:%M:%S")},
+    })
+    order = srv._finalize_paid("FP-OLD", {"status": "OD", "total_fee": "0.01",
+                                          "transaction_id": "T-LATE"})
+    assert order["status"] == "paid" and order["license_key"]
+
+
+def test_cloud_finalize_stacks_previous_license(tmp_path, monkeypatch):
+    """有效期统一由云端叠加签发：同机器历史授权最晚到期日为基准，并带 duration_days。"""
+    future = int(time.time()) + 100 * 86400
+    srv = _cloud_srv(tmp_path, monkeypatch, {
+        "FP-OLD": {"plan": "personal", "status": "paid", "machine_code": "M-1",
+                   "exp": future, "license_key": "OLD", "amount": 9900},
+        "FP-NEW": {"plan": "enterprise", "status": "pending", "machine_code": "M-1",
+                   "amount": 49900,
+                   "created_at": time.strftime("%Y-%m-%d %H:%M:%S")},
+    })
+    order = srv._finalize_paid("FP-NEW", {"status": "OD", "total_fee": "499.00"})
+    payload = srv.verify_code(order["license_key"])
+    assert payload["exp"] == future + 365 * 86400
+    assert payload["duration_days"] == 365
+
+
+def test_cloud_get_license_rejects_archived_unpaid_order(tmp_path, monkeypatch):
+    """归档状态（expired/failed）的未支付订单不能通过换码接口白拿授权。"""
+    srv = _cloud_srv(tmp_path, monkeypatch, {
+        "FP-EXP": {"plan": "personal", "days": 365, "status": "expired"},
+        "FP-FAIL": {"plan": "personal", "days": 365, "status": "failed"},
+        "FP-OK": {"plan": "personal", "days": 365, "status": "paid"},
+    })
+    for oid in ("FP-EXP", "FP-FAIL"):
+        with pytest.raises(Exception) as exc:
+            srv.get_license(srv.LicenseReq(order_id=oid, machine_code="M-1"),
+                            _fake_request())
+        assert "尚未支付" in str(getattr(exc.value, "detail", exc.value))
+    assert srv.get_license(srv.LicenseReq(order_id="FP-OK", machine_code="M-1"),
+                           _fake_request())["ok"]
+
+
+def _invite(srv, parent: str = "P-1", sub_limit: int = 2) -> str:
+    return srv.sign_payload({
+        "machine_code": parent, "plan": "enterprise", "role": "master",
+        "exp": srv._now() + 365 * 86400, "sub_limit": sub_limit,
+        "order_id": "O-P"})
+
+
+def _seed_devices(tmp_path, srv, devices: dict) -> "object":
+    d = tmp_path / "cloud" / "devices.json"
+    d.write_text(json.dumps({"devices": devices}, ensure_ascii=False), encoding="utf-8")
+    return d
+
+
+def test_cloud_sub_bind_allows_expired_rebind(tmp_path, monkeypatch):
+    """旧绑定已过期时允许重新绑定：续费/换机重装后不能被 409 永久卡死。"""
+    srv = _cloud_srv(tmp_path, monkeypatch, {})
+    d = _seed_devices(tmp_path, srv, {"M-SUB": {
+        "parent": "P-1", "plan": "enterprise", "exp": srv._now() - 3600,
+        "order_id": "O-OLD", "at": "2026-01-01 00:00:00"}})
+    r = srv.sub_bind(srv.BindReq(invite_code=_invite(srv), machine_code="M-SUB"))
+    assert r["ok"] and r["license_code"]
+    devices = json.loads(d.read_text(encoding="utf-8"))["devices"]
+    assert devices["M-SUB"]["order_id"] == "O-P"
+
+
+def test_cloud_sub_bind_rejects_live_other_parent(tmp_path, monkeypatch):
+    """本机仍在效期内的其他主设备授权不允许被直接覆盖。"""
+    srv = _cloud_srv(tmp_path, monkeypatch, {})
+    _seed_devices(tmp_path, srv, {"M-SUB": {
+        "parent": "P-OTHER", "plan": "enterprise", "exp": srv._now() + 86400,
+        "order_id": "O-X", "at": "2026-01-01 00:00:00"}})
+    with pytest.raises(Exception) as exc:
+        srv.sub_bind(srv.BindReq(invite_code=_invite(srv), machine_code="M-SUB"))
+    assert "其他设备" in str(getattr(exc.value, "detail", exc.value))
+
+
+def test_cloud_admin_api_disabled_without_token(tmp_path, monkeypatch):
+    """未配置管理员令牌时管理接口一律拒绝，杜绝公开默认令牌被白嫖。"""
+    monkeypatch.setenv("CLOUD_ADMIN_TOKEN", "")
+    srv = _cloud_srv(tmp_path, monkeypatch, {})
+    with pytest.raises(Exception) as exc:
+        srv.unlock_code(srv.UnlockReq(machine_code="M-1"),
+                        x_admin_token="fapiao-admin-2026")
+    assert getattr(exc.value, "status_code", None) == 503
+
+
+def test_cloud_admin_api_rejects_default_token(tmp_path, monkeypatch):
+    """即使配置了强令牌，旧的公开默认令牌也必须失效。"""
+    monkeypatch.setenv("CLOUD_ADMIN_TOKEN", "strong-token-for-test")
+    srv = _cloud_srv(tmp_path, monkeypatch, {})
+    with pytest.raises(Exception) as exc:
+        srv.set_blacklist(srv.BlacklistReq(machine_code="M-1"),
+                          x_admin_token="fapiao-admin-2026")
+    assert getattr(exc.value, "status_code", None) == 401
+    assert srv.set_blacklist(srv.BlacklistReq(machine_code="M-1"),
+                             x_admin_token="strong-token-for-test")["ok"]
+
+
 def test_cloud_reconcile_issues_for_stale_paid_order(tmp_path, monkeypatch):
     """对账兜底：pending 超时订单主动查单为已支付后静默补发授权码。"""
     old = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time() - 1200))
@@ -439,11 +653,11 @@ def test_cloud_create_reuses_pending_qr(tmp_path, monkeypatch):
     second = srv.payment_create(srv.PayCreateReq(plan_type="personal", machine_code="M-1"))
     assert first["trade_order_id"] == second["trade_order_id"]
     assert second["reused"] is True and len(calls) == 1
-    assert first["amount_fen"] == 1 and first["amount"] == 0.01
+    assert first["amount_fen"] == 9900 and first["amount"] == 99.0
 
     orders = json.loads((tmp_path / "cloud" / "orders.json").read_text(encoding="utf-8"))["orders"]
     order = orders[first["trade_order_id"]]
-    assert order["status"] == "pending" and order["amount"] == 1
+    assert order["status"] == "pending" and order["amount"] == 9900
     assert order["url_qrcode"] == "https://qr/1.png"
 
 

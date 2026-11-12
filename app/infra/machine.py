@@ -72,6 +72,9 @@ def guard_file() -> Path:
 # 重装软件 / 删除数据库 / 清理 AppData 都无法清零。
 _REG_SUBKEY = r"Software\FapiaoAssistant"
 _REG_VALUE = "quota"
+# 防时间回拨锚点也写注册表：只删 guard.json / 清 AppData 无法把「最后运行时间」回退
+_REG_VALUE_LAST = "last_run"
+_REG_LAST_WRITTEN = 0
 
 
 def _registry_enabled() -> bool:
@@ -118,6 +121,36 @@ def _save_registry_quota(quota: dict) -> None:
         pass
 
 
+def _registry_last_run() -> int:
+    if not _registry_enabled():
+        return 0
+    try:
+        import winreg
+
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _REG_SUBKEY) as key:
+            raw, _type = winreg.QueryValueEx(key, _REG_VALUE_LAST)
+        return int(raw)
+    except Exception:
+        return 0
+
+
+def _save_registry_last_run(ts: int) -> None:
+    """同步防回拨锚点到注册表；每 5 分钟最多写一次，避免频繁写注册表。"""
+    global _REG_LAST_WRITTEN
+    if not _registry_enabled() or ts <= _REG_LAST_WRITTEN:
+        return
+    if ts - _REG_LAST_WRITTEN < 300:
+        return
+    try:
+        import winreg
+
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, _REG_SUBKEY) as key:
+            winreg.SetValueEx(key, _REG_VALUE_LAST, 0, winreg.REG_SZ, str(int(ts)))
+        _REG_LAST_WRITTEN = int(ts)
+    except Exception:
+        pass
+
+
 def load_guard() -> dict:
     try:
         data = json.loads(guard_file().read_text(encoding="utf-8"))
@@ -133,6 +166,10 @@ def load_guard() -> dict:
             except Exception:
                 continue
         data["quota"] = quota
+    # 合并注册表防回拨锚点：删文件也无法让系统时间「回到过去」
+    last = _registry_last_run()
+    if last > int(data.get("last_run_at", 0) or 0):
+        data["last_run_at"] = last
     return data
 
 
@@ -144,6 +181,8 @@ def save_guard(data: dict) -> None:
         pass
     if isinstance(data.get("quota"), dict):
         _save_registry_quota(data["quota"])
+    if data.get("last_run_at"):
+        _save_registry_last_run(int(data["last_run_at"]))
 
 
 def month_key(machine: str, month: str) -> str:

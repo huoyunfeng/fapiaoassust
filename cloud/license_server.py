@@ -49,7 +49,7 @@ def _load_private_key() -> Ed25519PrivateKey:
 
 
 _KEY = _load_private_key()
-_ADMIN_TOKEN = os.getenv("CLOUD_ADMIN_TOKEN", "fapiao-admin-2026")
+_ADMIN_TOKEN = (os.getenv("CLOUD_ADMIN_TOKEN") or "").strip()
 _DATA_DIR = Path(os.getenv("CLOUD_DATA_DIR", str(Path(__file__).parent)))
 # 订单库并发锁：所有 orders.json 的「读-改-写」都必须在这把锁内完成，
 # 否则多个客户同时支付时可能互相覆盖、甚至写坏文件。
@@ -71,8 +71,7 @@ XUNHUPAY_CREATE_URL = "https://api.xunhupay.com/payment/do.html"     # 下单
 XUNHUPAY_QUERY_URL = "https://api.xunhupay.com/payment/query.html"   # 主动查单
 
 # 套餐价格（单位：分）—— 后端写死，前端传什么都不会影响实际扣款
-# 联调期 personal 为 1 分钱；正式上线改为 9900（99 元）
-PLAN_PRICES = {"personal": 1, "enterprise": 49900}
+PLAN_PRICES = {"personal": 9900, "enterprise": 49900}
 
 # 同一机器 + 同一套餐的 pending 二维码复用时长：前端倒计时 5 分钟，此处保持一致，
 # 重复点击下单直接返回旧二维码，既有真实码也避免刷单刷爆网关。
@@ -81,6 +80,11 @@ PENDING_REUSE_SECONDS = 300
 # 对账兜底：pending 超过 10 分钟即视为"回调可能丢失"，每 10 分钟主动查单一次
 PAYMENT_PENDING_TIMEOUT = 600
 PAYMENT_RECHECK_INTERVAL = 600
+# 长期未支付订单归档：7 天后仍未支付标记 expired，避免 orders.json 无限膨胀；
+# 归档只改状态、不删记录，用户之后补付仍可通过回调或主动查单恢复正常
+PAYMENT_ARCHIVE_AFTER = 7 * 86400
+# 向网关下单失败的占位单（creating）超过 1 小时直接标记 failed
+PAYMENT_CREATING_TIMEOUT = 3600
 # 支付标题（展示在收银台）
 PLAN_TITLES = {"personal": "发票助手 个人版（1年）",
                "enterprise": "发票助手 企业版（1年）"}
@@ -125,8 +129,8 @@ def _http_post_form(url: str, data: dict) -> dict:
 def _issue_license(order: dict, order_id: str) -> tuple:
     """复用原有私钥签名逻辑，为已支付订单签发授权码，返回 (license_key, exp)。
 
-    平级续费叠加：同机器同套餐的未到期已支付订单，新授权在其到期时间上叠加，
-    避免提前续费损失剩余天数。
+    有效期统一由云端签发：同机器所有已支付订单中「最晚到期时间」作为叠加基准，
+    新授权在其上叠加购买时长（跨套餐也叠加），客户端只展示、不再本地二次叠加。
     """
     plan = order.get("plan")
     if plan not in PLAN_DAYS:
@@ -141,15 +145,15 @@ def _issue_license(order: dict, order_id: str) -> tuple:
         for other in _load("orders.json", "orders").values():
             if (other.get("status") in ("paid", "used")
                     and (other.get("machine_code") or "").strip() == machine
-                    and other.get("plan") == plan
                     and int(other.get("exp", 0) or 0) > base):
-                base = int(other["exp"])          # 叠加到最迟到期的同类授权上
+                base = int(other["exp"])          # 叠加到本机最晚到期的授权上
     payload = {
         "machine_code": machine,
         "plan": plan, "role": "master",
         "exp": base + days * 86400,
         "sub_limit": PLAN_DEVICES.get(plan, 0),
         "order_id": order_id,
+        "duration_days": days,
         "issued_at": _now(),
     }
     return sign_payload(payload), payload["exp"]
@@ -207,6 +211,15 @@ def _now() -> int:
     return int(time.time())
 
 
+def _admin_guard(token: str) -> None:
+    """管理接口鉴权：未配置令牌时整个管理面关闭（失败即拒绝），
+    避免公开默认令牌被用来白嫖签发解锁码、解绑他人订单或恶意拉黑设备。"""
+    if not _ADMIN_TOKEN:
+        raise HTTPException(503, "云端未配置 CLOUD_ADMIN_TOKEN，管理接口已禁用")
+    if token != _ADMIN_TOKEN:
+        raise HTTPException(401, "管理员令牌无效")
+
+
 def _is_blacklisted(machine: str) -> dict:
     return _load("blacklist.json", "blacklist").get(machine) or {}
 
@@ -229,7 +242,7 @@ async def _lifespan(_app):
         _STOP.set()
 
 
-app = FastAPI(title="发票助手云端授权服务", version="1.1", lifespan=_lifespan)
+app = FastAPI(title="发票助手云端授权服务", version="1.3", lifespan=_lifespan)
 
 # 换码接口简易限流：同一 IP 每分钟最多 20 次（防订单号暴力枚举）
 _RATE_LIMIT = 20
@@ -413,7 +426,9 @@ def homepage():
 
 @app.get("/health")
 def health():
-    return {"ok": True, "service": "fapiao-license", "time": _now()}
+    # 带上版本号：部署后可直接用公网 /health 确认新代码是否已生效
+    return {"ok": True, "service": "fapiao-license",
+            "version": app.version, "time": _now()}
 
 
 @app.post("/api/get_license")
@@ -434,8 +449,9 @@ def get_license(req: LicenseReq, request: Request):
             raise HTTPException(404, "订单号不存在或已失效")
         if order.get("status") == "refunded":
             raise HTTPException(403, "该订单已退款，无法激活")
-        # 支付订单未到账时不允许换码，避免用未支付订单号白拿授权
-        if order.get("status") == "pending":
+        # 未支付/已归档（expired/failed）订单不允许换码，避免用未支付订单号白拿授权；
+        # 无 status 字段的是管理员手工导入订单，保持兼容
+        if order.get("status") in ("pending", "creating", "expired", "failed"):
             raise HTTPException(403, "该订单尚未支付，请完成支付后再激活")
         bound = (order.get("machine_code") or "").strip()
         if bound and bound != machine:
@@ -491,14 +507,20 @@ def sub_bind(req: BindReq):
 
     with _LOCK:
         devices = _load("devices.json", "devices")
-        # 统计在效期内且归属于该主设备的子设备（过期条目不再占位）
-        bound_to_parent = [d for d in devices.values()
-                           if d.get("parent") == parent and int(d.get("exp", 0)) >= _now()]
+        exist = devices.get(machine) or {}
+        # 仅当本机已绑定「其他主设备」且仍在有效期时才拒绝；
+        # 同一主设备续期重绑、或旧绑定已过期（换机/续费后重装）必须允许覆盖，
+        # 否则付费用户会在续费后永远无法重新绑定
+        if (exist and int(exist.get("exp", 0) or 0) >= _now()
+                and exist.get("parent") != parent):
+            raise HTTPException(409, "本机已绑定其他设备授权，请先解绑")
+        # 统计在效期内且归属于该主设备的子设备（本机重绑不计入，过期条目不占位）
+        bound_to_parent = [m for m, d in devices.items()
+                           if m != machine and d.get("parent") == parent
+                           and int(d.get("exp", 0) or 0) >= _now()]
         limit = int(invite.get("sub_limit", 0) or 0)
         if len(bound_to_parent) >= limit:
             raise HTTPException(403, f"主设备可绑定子设备已达上限（{limit} 台）")
-        if devices.get(machine):
-            raise HTTPException(409, "本机已绑定其他设备授权，请先解绑")
         devices[machine] = {"parent": parent, "plan": "enterprise",
                             "exp": invite.get("exp"), "order_id": invite.get("order_id"),
                             "at": time.strftime("%Y-%m-%d %H:%M:%S")}
@@ -527,8 +549,7 @@ def status(req: StatusReq):
 @app.post("/api/unlock_code")
 def unlock_code(req: UnlockReq, x_admin_token: str = Header(default="")):
     """客服侧签发超管解锁码（短期有效，绑定机器码）。"""
-    if x_admin_token != _ADMIN_TOKEN:
-        raise HTTPException(401, "管理员令牌无效")
+    _admin_guard(x_admin_token)
     machine = (req.machine_code or "").strip()
     if not machine:
         raise HTTPException(400, "机器码不能为空")
@@ -540,8 +561,7 @@ def unlock_code(req: UnlockReq, x_admin_token: str = Header(default="")):
 
 @app.post("/api/blacklist")
 def set_blacklist(req: BlacklistReq, x_admin_token: str = Header(default="")):
-    if x_admin_token != _ADMIN_TOKEN:
-        raise HTTPException(401, "管理员令牌无效")
+    _admin_guard(x_admin_token)
     with _LOCK:
         data = _load("blacklist.json", "blacklist")
         if req.enabled:
@@ -556,8 +576,7 @@ def set_blacklist(req: BlacklistReq, x_admin_token: str = Header(default="")):
 @app.post("/api/reset_order")
 def reset_order(req: ResetOrderReq, x_admin_token: str = Header(default="")):
     """客服换机：解绑订单与旧机器码，允许重新激活。"""
-    if x_admin_token != _ADMIN_TOKEN:
-        raise HTTPException(401, "管理员令牌无效")
+    _admin_guard(x_admin_token)
     with _LOCK:
         orders = _load("orders.json", "orders")
         order = orders.get(req.order_id)
@@ -761,7 +780,9 @@ def _finalize_paid(trade_order_id: str, info: dict) -> dict:
             paid_cents = -1
         if paid_cents != int(order.get("amount", -1)):
             raise HTTPException(400, "支付金额与订单金额不一致")
-        if order.get("status") not in ("pending", "creating"):
+        # expired/failed 是归档状态：用户若在归档后补付（旧二维码/延迟回调），
+        # 仍必须能正常发码，否则会出现「扣了钱拿不到授权」
+        if order.get("status") not in ("pending", "creating", "expired", "failed"):
             raise HTTPException(400, f"订单状态异常（{order.get('status')}）")
         license_key, exp = _issue_license(order, trade_order_id)
         order.update({
@@ -828,12 +849,57 @@ def _reconcile_pending() -> int:
     return issued
 
 
+def _archive_stale_orders() -> int:
+    """归档长期未支付订单：pending 满 7 天、creating 满 1 小时。
+
+    绝不删除记录，只标记状态；若用户补付，回调或主动查单仍能正常发码。
+    """
+    with _LOCK:
+        orders = _load("orders.json", "orders")
+    stale_creating = [oid for oid, o in orders.items()
+                      if o.get("status") == "creating"
+                      and _order_age(o) >= PAYMENT_CREATING_TIMEOUT]
+    stale_pending = [oid for oid, o in orders.items()
+                     if o.get("status") == "pending"
+                     and _order_age(o) >= PAYMENT_ARCHIVE_AFTER]
+    if not stale_creating and not stale_pending:
+        return 0
+    archived = 0
+    for oid in stale_pending:
+        try:
+            info = _query_gateway(oid)
+            if (info.get("status") or "").strip().upper() == "OD":
+                _finalize_paid(oid, info)
+                continue
+        except Exception as exc:          # 查询失败则下轮再试，不误归档
+            logger.warning("归档查单失败 %s：%s", oid, exc)
+            continue
+        with _LOCK:
+            orders = _load("orders.json", "orders")
+            if orders.get(oid, {}).get("status") == "pending":
+                orders[oid]["status"] = "expired"
+                _save("orders.json", "orders", orders)
+                archived += 1
+    if stale_creating:
+        with _LOCK:
+            orders = _load("orders.json", "orders")
+            for oid in stale_creating:
+                if orders.get(oid, {}).get("status") == "creating":
+                    orders[oid]["status"] = "failed"
+                    archived += 1
+            _save("orders.json", "orders", orders)
+    return archived
+
+
 def _reconcile_loop() -> None:
     while not _STOP.is_set():
         try:
             n = _reconcile_pending()
             if n:
                 logger.info("本轮对账补发 %d 笔", n)
+            m = _archive_stale_orders()
+            if m:
+                logger.info("本轮归档过期订单 %d 笔", m)
         except Exception as exc:
             logger.warning("对账线程异常：%s", exc)
         _STOP.wait(PAYMENT_RECHECK_INTERVAL)
@@ -899,8 +965,9 @@ def payment_recover(req: PayRecoverReq, request: Request):
     order = orders[oid]
     status = (order.get("status") or "").lower()
 
-    # 未到账订单先主动查一次（回调可能刚丢失），仍未支付则明确告知
-    if status == "pending":
+    # 未到账订单先主动查一次（回调可能刚丢失），仍未支付则明确告知。
+    # expired/failed 是归档状态，同样必须查单确认，绝不能凭订单号白送授权
+    if status in ("pending", "expired", "failed"):
         try:
             info = _query_gateway(oid)
             if (info.get("status") or "").strip().upper() == "OD":
@@ -908,10 +975,10 @@ def payment_recover(req: PayRecoverReq, request: Request):
                 status = "paid"
         except HTTPException as exc:
             logger.warning("找回时查单失败 %s：%s", oid, exc.detail)
-    if status in ("pending", "unused"):
+    if status not in ("paid", "used"):
+        if status == "refunded":
+            raise HTTPException(403, "该订单已退款，无法激活")
         raise HTTPException(403, "该订单尚未支付，请完成支付后再找回")
-    if status == "refunded":
-        raise HTTPException(403, "该订单已退款，无法激活")
 
     bound = (order.get("machine_code") or "").strip()
     if bound and bound != machine:

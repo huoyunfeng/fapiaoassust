@@ -23,6 +23,8 @@ from app.repository.repos import kv_repo
 
 LICENSE_KV_KEY = "license_code"
 PENDING_ORDER_KV = "pay_pending_order"
+# 本地处理中订单有效期：超过后自动清除，避免 /plans 顶部横幅长期挂着过期订单
+PENDING_ORDER_TTL = 30 * 60
 CLOUD_TIMEOUT = 8.0
 
 # 套餐等级（防降级比较用）：free < personal < enterprise
@@ -229,38 +231,21 @@ def _save_meta(meta: dict) -> None:
         kv_repo.set(conn, _LICENSE_META_KV, json.dumps(meta, ensure_ascii=False))
 
 
-def _compute_final_exp(new_plan: str, duration_days: int,
-                        old_plan: Optional[str], old_exp: int) -> tuple:
-    """按叠加算法计算最终到期时间。
-
-    返回 (final_exp, reason_str)。
-    - new_plan: 云端下发的套餐类型
-    - duration_days: 云端下发的购买时长（天）
-    - old_plan: 本地旧套餐（None 表示无旧授权或已过期）
-    - old_exp: 本地旧到期时间戳（0 表示无）
-    """
-    now = int(time.time())
-    # 场景 A：无旧授权 / 旧授权已过期 → 从现在开始算
-    if not old_plan or old_exp <= now:
-        return now + duration_days * 86400, "新激活"
-    # 场景 B & C：有旧授权且未过期，不管同级续费还是跨级升级，都叠加旧 exp
-    return old_exp + duration_days * 86400, f"叠加旧授权({old_plan})到期时间"
-
-
 def apply_license_code(code: str) -> dict:
-    """验签 + 叠加算法 + 防降级 + 黑名单校验 后落地。
+    """验签 + 防降级 + 黑名单校验 后落地。
 
     安全红线：绝不轻信云端返回的"已支付"状态，必须本地验签通过才算数。
-    叠加算法（P4 极高优先级）：
-      - 无旧授权 / 旧授权过期   → final = now + duration_days
-      - 同级续费 (personal→personal) → final = old_exp + duration_days
-      - 跨级升级 (personal→enterprise) → final = old_exp + duration_days
-    最终 payload 原文保持签名完整性，叠加后的 final_exp 单独存入 metadata。
+    有效期统一以云端签名的 exp 为准（云端已按本机历史订单叠加好），
+    本地不再二次叠加，避免展示日期晚于真实有效期。
     """
     payload = verify_code(code)          # 签名/机器码/过期校验都在这里
     new_plan = payload.get("plan")
     if new_plan not in PLANS or new_plan == "free":
         raise LicenseError("授权码套餐类型无效")
+
+    raw_exp = int(payload.get("exp", 0) or 0)
+    if raw_exp <= 0:
+        raise LicenseError("授权码缺少有效期")
 
     # ---- 读取旧数据 ----
     old = current()                       # 已验签且在有效期内的旧授权
@@ -272,39 +257,16 @@ def apply_license_code(code: str) -> dict:
         raise LicenseError(
             f"当前已是{PLANS[old_plan]['name']}，不能降级激活{PLANS[new_plan]['name']}。"
             "如需更换套餐请先联系客服")
+    # 云端统一发放：若返回的有效期反而更短（重复激活旧订单），保留现有授权
+    if old_exp > raw_exp:
+        raise LicenseError("该订单有效期短于当前授权，无需重复激活")
 
-    # ---- 提取叠加参数 ----
-    # 新格式：授权码 payload 直接带 duration_days；
-    # 兼容旧格式：只有 exp 没有 duration_days，此时从 exp 反推 duration_days = (exp - now)//86400
     duration_days = int(payload.get("duration_days", 0) or 0)
     if duration_days <= 0:
-        raw_exp = int(payload.get("exp", 0))
-        now = int(time.time())
-        if raw_exp > now:
-            # 旧授权码从 raw_exp 反推剩余时长作为 duration_days（叠加逻辑退化为信任云端签发）
-            duration_days = max(1, (raw_exp - now) // 86400)
-        else:
-            # 旧码已过期（verify_code 不会走到这里），兜底拒绝
-            raise LicenseError("授权码已过期")
+        # 兼容旧版云端码：无 duration_days 字段时按签发有效期反推购买天数
+        duration_days = max(1, (raw_exp - int(time.time())) // 86400)
 
-    # ---- 计算最终到期时间 ----
-    final_exp, reason = _compute_final_exp(
-        new_plan, duration_days, old_plan, old_exp)
-
-    # ---- 业务合理性校验：叠加后至少应等于云端签发的 exp ----
-    # 如果叠加结果 < 云端下发的 exp（理论上不会发生），信任云端（防旧客户端逻辑缺陷）
-    raw_exp = int(payload.get("exp", 0))
-    if raw_exp and final_exp < raw_exp:
-        final_exp = raw_exp
-        reason += "（以云端签发时间为准）"
-
-    # ---- 叠加结果 >= 旧 exp：防止重复激活更短有效期 ----
-    if old_exp > 0 and final_exp <= old_exp:
-        raise LicenseError(
-            "该授权到期时间不超过当前授权，无法重复激活。"
-            "若为续费订单，请确认云端已按叠加规则签发")
-
-    # ---- 落库：payload 原文（签名完整） + metadata（叠加结果） ----
+    final_exp = raw_exp                   # 到期时间只由云端决定，本地仅展示
     _save_code(code)
     _save_meta({
         "final_exp": final_exp,
@@ -312,16 +274,15 @@ def apply_license_code(code: str) -> dict:
         "old_plan": old_plan,
         "old_exp": old_exp,
         "new_plan": new_plan,
-        "apply_reason": reason,
+        "apply_reason": "云端签发",
         "applied_at": int(time.time()),
         "order_id": payload.get("order_id", ""),
     })
 
-    # 返回 payload 时同步注入叠加后的 final_exp（供 status() 展示）
     payload["final_exp"] = final_exp
     _READONLY_CACHE.update({"at": 0.0, "value": False})
     payload["duration_days"] = duration_days
-    payload["apply_reason"] = reason
+    payload["apply_reason"] = "云端签发"
     return payload
 
 
@@ -362,6 +323,28 @@ def sync_license() -> dict:
     s = status()
     s["blacklisted"] = blacklisted
     return s
+
+
+# 后台自动联网校验间隔：远小于 15 天离线宽限，避免正常用户被误降级
+SYNC_INTERVAL = 6 * 3600
+
+
+def auto_sync(max_age: int = SYNC_INTERVAL) -> bool:
+    """后台自动同步（由启动线程周期调用）：已激活且距上次成功同步超过 max_age 才执行。
+
+    解决「付费用户从不点『同步授权状态』→ 超过 15 天离线宽限被误降级为免费版」。
+    任何异常都静默忽略，绝不影响主流程；有授权时同时刷新黑名单状态。
+    """
+    try:
+        if dev_mode() or not _load_code():
+            return False
+        last = _last_cloud_sync()
+        if last and int(time.time()) - last < max_age:
+            return False
+        sync_license()
+        return True
+    except Exception:
+        return False
 
 
 # ---------------------------------------------------------------- 在线支付（本地代理云端）
@@ -441,9 +424,15 @@ def pending_order() -> Optional[dict]:
         raw = kv_repo.get(conn, PENDING_ORDER_KV, "") or ""
     try:
         data = json.loads(raw)
-        return data if data.get("trade_order_id") else None
     except Exception:
         return None
+    if not data.get("trade_order_id"):
+        return None
+    # 超过有效期自动清理：只影响横幅提示，订单号仍可在云端查回授权
+    if int(time.time()) - int(data.get("created_at", 0) or 0) > PENDING_ORDER_TTL:
+        clear_pending_order()
+        return None
+    return data
 
 
 def clear_pending_order() -> None:
@@ -484,13 +473,7 @@ def _effective() -> tuple:
         # 过期属于正常降级，不当作"授权码非法"提示
         return raw, "" if expired else str(e), expired
 
-    # 叠加续期：如果有 metadata，用叠加后的 final_exp 覆盖原始 exp
-    meta = _load_meta()
-    final_exp = int(meta.get("final_exp", 0) or 0)
-    if final_exp > int(payload.get("exp", 0) or 0):
-        payload = dict(payload)          # 浅拷贝，避免修改签名原文
-        payload["exp"] = final_exp
-
+    # 到期时间一律以云端签名 exp 为准；历史 metadata 的 final_exp 仅用于展示，不参与判定
     if clock_tampered():
         return payload, "检测到系统时间异常，授权已暂停使用，请校准时间后重启软件", False
     if offline_grace_exceeded():

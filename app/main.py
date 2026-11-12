@@ -54,6 +54,18 @@ async def lifespan(app: FastAPI):
             from app.infra.logger import get_logger
             get_logger(__name__).warning("静默备份失败: %s", e)
     _th.Thread(target=_silent, name="silent-backup", daemon=True).start()
+    # 授权自动联网校验：每 30 分钟检查一次，距上次成功同步超过 6 小时才真正请求云端。
+    # 目的：避免付费用户从不点「同步授权状态」而被 15 天离线宽限误降级。
+    def _license_sync():
+        import time as _time
+        from app.service import license_service
+        while True:
+            try:
+                license_service.auto_sync()
+            except Exception:
+                pass
+            _time.sleep(1800)
+    _th.Thread(target=_license_sync, name="license-sync", daemon=True).start()
     yield
     # 正常关停（uvicorn should_exit / 进程退出前的优雅停止）：
     # 强制释放残留数据库连接，避免 WAL 未落盘或文件被占用导致下次启动异常

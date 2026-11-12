@@ -102,6 +102,11 @@
 .pay-count b{color:#dc2626;font-variant-numeric:tabular-nums;}
 .pay-status{font-size:13px;line-height:1.8;padding:10px 12px;border-radius:8px;
   background:#f8fafc;border:1px solid var(--border);color:#64748b;}
+/* 商户订单号：支付未完成/弹窗关闭后，用户可凭它找回授权 */
+.pay-oid{margin-top:10px;font-size:12px;color:#64748b;line-height:1.8;}
+.pay-oid span{font-family:ui-monospace,Consolas,monospace;color:#0f172a;word-break:break-all;
+  cursor:pointer;border-bottom:1px dashed #cbd5e1;}
+.pay-oid em{font-style:normal;color:#94a3b8;}
 .pay-refresh{margin-top:12px;width:100%;padding:10px;border:none;border-radius:8px;
   background:var(--primary);color:#fff;font-size:13px;font-weight:600;cursor:pointer;display:none;}
 .pay-refresh:disabled{opacity:.6;cursor:not-allowed;}
@@ -212,11 +217,11 @@
   <div class="pl-sec" id="activate">
     <h2>订单号激活（含找回）</h2>
     <div class="hint">
-      输入完整订单号，系统会加密上报本机机器码并自动换取授权码（全程约 1~3 秒）。<br>
-      若已付款但未自动激活（关掉了弹窗 / 重装 / 回调延迟），请在此输入完整订单号。
+      输入完整订单号（记不全可只输入后 6 位），系统会加密上报本机机器码并自动换取授权码（全程约 1~3 秒）。<br>
+      订单号可在支付弹窗中复制；若已付款但未自动激活（关掉了弹窗 / 重装 / 回调延迟），也请在此找回。
     </div>
     <div class="pl-row">
-      <input id="orderId" placeholder="请输入完整订单号，如 ORD-20261105-001" autocomplete="off">
+      <input id="orderId" placeholder="请输入完整订单号，如 FP1762951234A1B2C3D4" autocomplete="off">
       <button class="pl-btn" id="actBtn" type="button" onclick="activate()">验证并立即激活</button>
     </div>
     <div class="pl-msg" id="actMsg"></div>
@@ -292,6 +297,8 @@
         <div class="pay-count">支付剩余时间 <b id="payCount">05:00</b></div>
         <div class="pay-status" id="payStatus">等待支付…</div>
         <button class="pay-refresh" id="payRefresh" type="button" onclick="manualRefresh()">我已完成支付，点此手动刷新</button>
+        <div class="pay-oid">商户订单号：<span id="payOid" onclick="copyPayOid()" title="点击复制">—</span>
+          <em>（可复制保存，用于「订单号激活」找回授权）</em></div>
         <div class="pay-cs">支付遇到问题？联系客服微信：<strong>fapiao-support</strong>（请附机器码 {{ license.machine_code }}）</div>
       </div>
     </div>
@@ -404,6 +411,7 @@ async function openPay(btn){
     const d = await r.json();
     if(!r.ok || !d.ok){ toast(d.message || '下单失败，请稍后重试', false); return; }
     payTid = d.trade_order_id;
+    document.getElementById('payOid').textContent = payTid || '—';
     document.getElementById('payPlan').textContent = btn.dataset.name;
     document.getElementById('payAmt').textContent = d.amount;
     document.getElementById('payQrBox').className = 'img';
@@ -492,6 +500,18 @@ async function manualRefresh(tid){
     if(pBtn) pBtn.disabled = false;
   }
 }
+function copyPayOid(){
+  if(!payTid){ toast('暂无订单号', false); return; }
+  const ok = ()=>toast('订单号已复制，可用于找回授权');
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(payTid).then(ok).catch(()=>toast(payTid));
+    return;
+  }
+  const ta = document.createElement('textarea');
+  ta.value = payTid; document.body.appendChild(ta); ta.select();
+  try{ document.execCommand('copy'); ok(); }catch(e){ toast(payTid); }
+  document.body.removeChild(ta);
+}
 function closePay(){
   if(payTid && document.getElementById('payMask').classList.contains('show')){
     const ok = confirm('支付尚未完成，如已付款请等待自动激活，' +
@@ -500,6 +520,7 @@ function closePay(){
   }
   _payClearTimers();
   payTid = '';
+  document.getElementById('payOid').textContent = '—';
   document.getElementById('payMask').classList.remove('show');
   document.getElementById('payRefresh').style.display = 'none';
 }
