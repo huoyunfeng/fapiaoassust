@@ -56,7 +56,9 @@ _DATA_DIR = Path(os.getenv("CLOUD_DATA_DIR", str(Path(__file__).parent)))
 # 注意使用不可重入的 Lock，因此禁止在持锁期间再次调用会加锁的函数。
 _LOCK = threading.Lock()
 
-PLAN_DEVICES = {"personal": 0, "enterprise": 3}
+# 企业版共 3 台设备 = 主设备 1 台 + 子设备 2 台（此处只填「子设备」名额）
+# 注意：修改后需重新部署授权服务，仅影响新签发/续费的授权码
+PLAN_DEVICES = {"personal": 0, "enterprise": 2}
 PLAN_DAYS = {"personal": 365, "enterprise": 365}
 
 # ---------------------------------------------------------------- 支付配置（虎皮椒聚合支付）

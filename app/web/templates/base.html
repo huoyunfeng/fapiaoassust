@@ -269,11 +269,22 @@ tr.row-focus td{animation:focusFlash .7s ease-in-out 3;}
   border:1px solid var(--border-light);font-size:12px;color:var(--text-2);line-height:1.9;}
 .upgrade-meta b{color:var(--text);}
 .upgrade-actions{display:flex;justify-content:flex-end;gap:10px;margin-top:20px;}
+/* ===== 授权到期：全局只读模式（可读可导出，写入全部禁停） ===== */
+.readonly-banner{background:#fef2f2;border-bottom:1px solid #fecaca;color:#991b1b;
+  font-size:13px;line-height:1.6;padding:9px 20px;display:flex;gap:8px;
+  align-items:center;justify-content:center;flex-wrap:wrap;}
+.readonly-banner a{color:#b91c1c;font-weight:600;text-decoration:underline;}
+body.readonly-mode .btn:not(.allow-readonly),
+body.readonly-mode .pl-btn:not(.allow-readonly),
+body.readonly-mode .pl-buy:not(.allow-readonly),
+body.readonly-mode .tm-mini:not(.allow-readonly),
+body.readonly-mode .nav-user button{opacity:.45;cursor:not-allowed;pointer-events:none;}
 </style>
 </head>
-<body>
+<body{% if license_status().readonly %} class="readonly-mode"{% endif %}>
 {% set u = request.state.user %}
 {% set lic = license_status() %}
+{% set ro = lic.readonly %}
 <div class="nav">
   <span class="brand">发票报销核对助手</span>
   {% if u %}
@@ -281,14 +292,14 @@ tr.row-focus td{animation:focusFlash .7s ease-in-out 3;}
   <a href="/invoices" {% if request.url.path.startswith('/invoices') %}class="active"{% endif %}>{% if u.role=='employee' %}我的发票{% else %}发票{% endif %}</a>
   {% if u.role != 'employee' %}
   <a href="/reimburses" data-nav-feature="reimburse" data-nav-name="报销单管理"
-     class="{% if request.url.path.startswith('/reimburses') %}active{% endif %}{% if not lic.features.reimburse %} nav-locked{% endif %}"
-     {% if not lic.features.reimburse %}data-locked-feature="reimburse" data-locked-name="报销单管理" title="个人版及以上可用"{% endif %}>报销单{% if not lic.features.reimburse %}<span class="lock-tag">👑</span>{% endif %}</a>
+     class="{% if request.url.path.startswith('/reimburses') %}active{% endif %}{% if not ro and not lic.features.reimburse %} nav-locked{% endif %}"
+     {% if not ro and not lic.features.reimburse %}data-locked-feature="reimburse" data-locked-name="报销单管理" title="个人版及以上可用"{% endif %}>报销单{% if not ro and not lic.features.reimburse %}<span class="lock-tag">👑</span>{% endif %}</a>
   <a href="/matches" data-nav-feature="matching" data-nav-name="智能匹配中心"
-     class="{% if request.url.path.startswith('/matches') %}active{% endif %}{% if not lic.features.matching %} nav-locked{% endif %}"
-     {% if not lic.features.matching %}data-locked-feature="matching" data-locked-name="智能匹配中心" title="个人版及以上可用"{% endif %}>匹配中心{% if not lic.features.matching %}<span class="lock-tag">👑</span>{% endif %}</a>
+     class="{% if request.url.path.startswith('/matches') %}active{% endif %}{% if not ro and not lic.features.matching %} nav-locked{% endif %}"
+     {% if not ro and not lic.features.matching %}data-locked-feature="matching" data-locked-name="智能匹配中心" title="个人版及以上可用"{% endif %}>匹配中心{% if not ro and not lic.features.matching %}<span class="lock-tag">👑</span>{% endif %}</a>
   <a href="/report" data-nav-feature="report" data-nav-name="差异报告"
-     class="{% if request.url.path.startswith('/report') %}active{% endif %}{% if not lic.features.report %} nav-locked{% endif %}"
-     {% if not lic.features.report %}data-locked-feature="report" data-locked-name="差异报告" title="个人版及以上可用"{% endif %}>差异报告{% if not lic.features.report %}<span class="lock-tag">👑</span>{% endif %}</a>
+     class="{% if request.url.path.startswith('/report') %}active{% endif %}{% if not ro and not lic.features.report %} nav-locked{% endif %}"
+     {% if not ro and not lic.features.report %}data-locked-feature="report" data-locked-name="差异报告" title="个人版及以上可用"{% endif %}>差异报告{% if not ro and not lic.features.report %}<span class="lock-tag">👑</span>{% endif %}</a>
   {% endif %}
   <a href="/settings/rules" {% if request.url.path.startswith('/settings') %}class="active"{% endif %}>系统设置</a>
   <a href="/plans" {% if request.url.path.startswith('/plans') %}class="active"{% endif %}>升级 / 授权</a>
@@ -301,6 +312,12 @@ tr.row-focus td{animation:focusFlash .7s ease-in-out 3;}
   </div>
   {% endif %}
 </div>
+{% if lic.readonly %}
+<div class="readonly-banner" id="readonlyBanner">
+  <span>⚠️ 授权已到期。系统已进入只读模式，历史数据可查询与导出，写入操作已暂停。</span>
+  <a href="/plans">前往升级 / 授权中心续费激活 →</a>
+</div>
+{% endif %}
 <div class="container">{% block content %}{% endblock %}</div>
 <div class="modal-bg" id="modalBg" onclick="closeModal()"></div>
 <div class="modal" id="modal">{% block modal %}{% endblock %}</div>
@@ -313,7 +330,7 @@ tr.row-focus td{animation:focusFlash .7s ease-in-out 3;}
     <div class="upgrade-meta" id="upgradeMeta"></div>
     <div class="upgrade-actions">
       <button class="btn btn-outline" type="button" onclick="App.closeUpgrade()">暂不升级</button>
-      <a class="btn" id="upgradeGo" href="/plans" onclick="App.closeUpgrade()">立即升级</a>
+      <a class="btn" id="upgradeGo" href="/plans" onclick="App.goPlans(event)">立即升级</a>
     </div>
   </div>
 </div>
@@ -434,6 +451,7 @@ const PLAN = {
   type: LICENSE.plan || 'free',
   name: LICENSE.plan_name || '免费版',
   exp_date: LICENSE.exp_date || '',
+  readonly: !!LICENSE.readonly,
   features: Object.assign({}, LICENSE.features || {})
 };
 // 供各页面判断是否发起相关请求（激活后由 App.applyPlan 即时更新）
@@ -443,6 +461,7 @@ let EXPORT_ENABLED = !!PLAN.features.export;
 let LOCKED_PATHS = [];
 function _rebuildLockedPaths(){
   LOCKED_PATHS = [];
+  if(PLAN.readonly) return;   // 只读模式：读取全开，不做升级引导拦截
   const map = [['matching', ['/matches']], ['reimburse', ['/reimburses']],
                ['report', ['/report']],
                ['export', ['/api/invoices/export', '/api/report/export']]];
@@ -455,7 +474,7 @@ _rebuildLockedPaths();
 function _applyNavLocks(){
   document.querySelectorAll('[data-nav-feature]').forEach(a => {
     const f = a.getAttribute('data-nav-feature');
-    const allowed = !!PLAN.features[f];
+    const allowed = PLAN.readonly || !!PLAN.features[f];
     a.classList.toggle('nav-locked', !allowed);
     let tag = a.querySelector('.lock-tag');
     if(allowed){
@@ -495,7 +514,8 @@ const App = {
     const n = limit || ((LICENSE.quota && LICENSE.quota.limit) || 20);
     document.getElementById('upgradeTitle').textContent = '本月免费解析额度已用完';
     document.getElementById('upgradeDesc').textContent =
-      '您本月的 ' + n + ' 张免费解析额度已耗尽。升级个人版，无限量解析发票，每月仅需 8 元。';
+      '您本月的 ' + n + ' 张免费解析额度已耗尽。升级个人版，即可享受无限量解析，'
+      + '平均每天不到 3 毛钱（99元/年）。';
     document.getElementById('upgradeMeta').innerHTML =
       '当前套餐：<b>免费版</b><br>所需套餐：<b>个人版及以上</b>'
       + '<br>升级后<b>立即恢复</b>解析额度，已录入数据不受影响。';
@@ -504,6 +524,13 @@ const App = {
   },
   closeUpgrade(){
     document.getElementById('upgradeBg').classList.remove('on');
+  },
+  // 「立即升级」：先关闭弹窗，再平滑跳转到升级/授权页
+  goPlans(e){
+    if(e) e.preventDefault();
+    const href = (document.getElementById('upgradeGo').getAttribute('href') || '/plans');
+    this.closeUpgrade();
+    setTimeout(() => { location.href = href; }, 150);
   },
   // 拉取最新授权并应用到全局状态（激活/支付成功后调用，无需刷新页面）
   async refreshPlan(){
@@ -521,11 +548,18 @@ const App = {
     PLAN.name = st.plan_name || PLAN.name;
     PLAN.exp_date = st.exp_date || '';
     PLAN.features = Object.assign({}, st.features || {});
+    PLAN.readonly = !!st.readonly;
     Object.assign(LICENSE, st);
     MATCH_ENABLED = !!PLAN.features.matching;
     EXPORT_ENABLED = !!PLAN.features.export;
     _rebuildLockedPaths();
     _applyNavLocks();
+    // 续费激活后：红色只读横幅与按钮禁用态立即移除
+    if(!PLAN.readonly){
+      document.body.classList.remove('readonly-mode');
+      const b = document.getElementById('readonlyBanner');
+      if(b) b.remove();
+    }
     const badge = document.getElementById('navPlan');
     if(badge){
       badge.textContent = PLAN.name + (PLAN.exp_date ? ' · 至 ' + PLAN.exp_date : '');
@@ -760,6 +794,7 @@ function _watchUpgrade(res, url, isWrite){
   if(res && (res.status === 403 || res.status === 402) && typeof res.clone === 'function'){
     res.clone().json().then(j => {
       if(j && j.code === 'UPGRADE_REQUIRED') App.upgrade(j.feature || _featureFromUrl(url || ''));
+      else if(j && j.code === 'READONLY') toast(j.message || '授权已到期，当前为只读模式，请续费后再操作', false);
       else if(j && (j.code === 'LIMIT_EXCEEDED' || j.code === 'QUOTA_EXCEEDED')) App.quotaExhausted(j.limit);
     }).catch(()=>{});
   }

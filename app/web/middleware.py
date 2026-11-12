@@ -40,6 +40,11 @@ FREE_BLOCKED = (
     ("/api/audit", "audit"),
     ("/api/handover", "handover"),
 )
+# 只读模式下仍允许的写接口（续费激活、备份导出属于客户数据资产，绝不绑架）
+READONLY_WRITE_WHITELIST = (
+    "/api/auth/", "/api/license/", "/api/payment/", "/api/_shutdown",
+    "/api/backup",
+)
 # 会员能力的中文名（403 提示 / 升级引导用词一致）
 FREE_FEATURE_CN = {"matching": "智能匹配中心", "reimburse": "报销单管理",
                    "report": "差异报告", "export": "数据导出", "team": "团队与权限",
@@ -130,8 +135,21 @@ class AuthMiddleware(BaseHTTPMiddleware):
                     and not path.startswith("/settings"):
                 return _html_403("普通员工仅可访问仪表盘与我的发票")
 
+        # 4b. 授权到期只读模式：登录、查看、导出、备份全部放行，写操作统一拦截
+        readonly = license_service.readonly_mode()
+        request.state.readonly = readonly
+        if readonly and request.method not in ("GET", "HEAD", "OPTIONS") \
+                and not path.startswith(READONLY_WRITE_WHITELIST):
+            return JSONResponse(
+                {"ok": False, "code": "READONLY",
+                 "message": "授权已到期，系统处于只读模式。请前往「升级 / 授权」续费激活后再操作"},
+                status_code=403)
+
         # 5. 免费版受限功能：前端拦截 + 服务端兜底（防抓包绕过）
+        #    只读模式（授权到期）下不拦截读取类请求，客户数据资产必须随时可取
         for prefix, feature in FREE_BLOCKED:
+            if readonly and request.method in ("GET", "HEAD", "OPTIONS"):
+                break
             if path.startswith(prefix) and not license_service.feature_allowed(feature):
                 if _is_api(path):
                     return JSONResponse(

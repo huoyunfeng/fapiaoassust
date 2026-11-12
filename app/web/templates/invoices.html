@@ -192,8 +192,8 @@
     <div class="toolbar-actions">
       <span class="muted" id="selInfo">已选 0 张</span>
       <div class="col-settings" id="exportMenu">
-        <button class="btn btn-outline btn-sm{% if not lic.features.export %} locked-btn{% endif %}" type="button"
-                {% if not lic.features.export %}data-locked-feature="export" data-locked-name="发票导出" title="个人版及以上可用"{% else %}onclick="toggleExportPanel(event)"{% endif %}>{% if not lic.features.export %}🔒 {% endif %}导出 Excel ▾</button>
+        <button class="btn btn-outline btn-sm{% if not ro and not lic.features.export %} locked-btn{% endif %}{% if ro %} allow-readonly{% endif %}" type="button"
+                {% if not ro and not lic.features.export %}data-locked-feature="export" data-locked-name="发票导出" title="个人版及以上可用"{% else %}onclick="toggleExportPanel(event)"{% endif %}>{% if not ro and not lic.features.export %}🔒 {% endif %}导出 Excel ▾</button>
         <div class="col-settings-panel" id="exportPanel">
           <div onclick="exportSelected()" style="padding:6px 10px;cursor:pointer;border-radius:4px;" onmouseover="this.style.background='#f4f6f9'" onmouseout="this.style.background=''">📋 导出选中数据</div>
           <div onclick="exportAll()" style="padding:6px 10px;cursor:pointer;border-radius:4px;" onmouseover="this.style.background='#f4f6f9'" onmouseout="this.style.background=''">📊 导出全部数据</div>

@@ -68,11 +68,72 @@ def guard_file() -> Path:
     return registry_dir() / "guard.json"
 
 
-def load_guard() -> dict:
+# 额度物理防重置：除隐藏登记簿外，再把「机器码+月份」额度写入注册表，
+# 重装软件 / 删除数据库 / 清理 AppData 都无法清零。
+_REG_SUBKEY = r"Software\FapiaoAssistant"
+_REG_VALUE = "quota"
+
+
+def _registry_enabled() -> bool:
+    """只有使用默认登记簿目录（真实运行）时才读写注册表。
+
+    测试会 monkeypatch registry_dir 到临时目录，此时自动跳过注册表，
+    避免污染当前用户的真实额度记录。
+    """
+    if not sys.platform.startswith("win"):
+        return False
+    base = os.getenv("LOCALAPPDATA") or os.getenv("XDG_DATA_HOME")
+    if not base:
+        return False
     try:
-        return json.loads(guard_file().read_text(encoding="utf-8"))
+        return Path(registry_dir()).resolve() == (Path(base) / "FapiaoAssist").resolve()
+    except Exception:
+        return False
+
+
+def _registry_quota() -> dict:
+    if not _registry_enabled():
+        return {}
+    try:
+        import winreg
+
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, _REG_SUBKEY) as key:
+            raw, _type = winreg.QueryValueEx(key, _REG_VALUE)
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else {}
     except Exception:
         return {}
+
+
+def _save_registry_quota(quota: dict) -> None:
+    if not _registry_enabled():
+        return
+    try:
+        import winreg
+
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, _REG_SUBKEY) as key:
+            winreg.SetValueEx(key, _REG_VALUE, 0, winreg.REG_SZ,
+                              json.dumps(quota, ensure_ascii=False))
+    except Exception:
+        pass
+
+
+def load_guard() -> dict:
+    try:
+        data = json.loads(guard_file().read_text(encoding="utf-8"))
+    except Exception:
+        data = {}
+    # 合并注册表额度（取两者最大值）：删文件、删库都无法把已用额度清零
+    reg = _registry_quota()
+    if reg:
+        quota = data.get("quota") if isinstance(data.get("quota"), dict) else {}
+        for k, v in reg.items():
+            try:
+                quota[k] = max(int(v), int(quota.get(k, 0) or 0))
+            except Exception:
+                continue
+        data["quota"] = quota
+    return data
 
 
 def save_guard(data: dict) -> None:
@@ -81,6 +142,8 @@ def save_guard(data: dict) -> None:
         guard_file().write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
     except Exception:
         pass
+    if isinstance(data.get("quota"), dict):
+        _save_registry_quota(data["quota"])
 
 
 def month_key(machine: str, month: str) -> str:

@@ -21,6 +21,9 @@
 .pl-name{font-size:17px;font-weight:700;}
 .pl-price{font-size:24px;font-weight:800;color:var(--primary);margin:10px 0 4px;}
 .pl-price small{font-size:12px;color:#94a3b8;font-weight:500;}
+/* 个人版折算说明：与额度弹窗文案保持一致，避免「8 元 vs 99 元」的价格认知冲突 */
+.pl-monthly{display:inline-block;margin:2px 0 6px;padding:3px 10px;border-radius:999px;
+  background:#ecfdf5;border:1px solid #a7f3d0;color:#047857;font-size:12px;font-weight:600;}
 .pl-desc{font-size:12px;color:#94a3b8;margin-bottom:14px;min-height:34px;line-height:1.6;}
 .pl-feat{font-size:13px;color:var(--text-2);line-height:2.1;flex:1;}
 .pl-feat li{list-style:none;}
@@ -187,6 +190,9 @@
       {% if p.key == 'enterprise' %}<span class="tag">推荐 · 多设备 / 多账号</span>{% endif %}
       <div class="pl-name">{{ p.name }}</div>
       <div class="pl-price">{{ p.price }}</div>
+      {% if p.key == 'personal' %}
+      <div class="pl-monthly">折合每月仅需 8.25 元，平均每天不到 3 毛钱！</div>
+      {% endif %}
       <div class="pl-desc">{{ p.desc }}</div>
       <ul class="pl-feat">
         <li>✓ 每月发票额度：{{ '不限' if p.monthly_invoice_quota is none else p.monthly_invoice_quota ~ ' 张' }}</li>
@@ -371,8 +377,9 @@
       btnBox.innerHTML = `<div class="pl-now">付费后无需降级</div>`;
       return;
     }
-    // free 当前或已过期：全部【立即购买】
-    btnBox.innerHTML = `<button class="pl-buy" type="button" onclick="openPay(this)" data-plan="${p.key}" data-name="${p.name}">立即购买</button>`;
+    // free 当前或已过期：全部【立即购买】（个人版用更强的转化文案）
+    const buyText = p.key === 'personal' ? '立即解锁无限解析' : '立即购买';
+    btnBox.innerHTML = `<button class="pl-buy${p.key === 'personal' ? ' primary' : ''}" type="button" onclick="openPay(this)" data-plan="${p.key}" data-name="${p.name}">${buyText}</button>`;
   });
 })();
 

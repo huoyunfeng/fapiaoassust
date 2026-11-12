@@ -173,10 +173,32 @@ class TestAuth:
     def test_create_user_roles(self, env):
         a = env["auth"]
         a.create_first_admin("admin", "Admin@123")
+        # 免费版仅 1 个席位，先升级企业版（3 席位）再添加成员
+        env["lic"].apply_license_code(_license(env))
         uid = a.create_user("zhangsan", "12345678", "employee", "张三")
         assert a.get_user(uid)["role"] == "employee"
         with pytest.raises(a.AuthError):
             a.create_user("zhangsan", "12345678", "employee")
+
+    def test_seat_limit_and_release(self, env):
+        """免费版 1 席位：满员拒绝新增；删除账号后释放席位。"""
+        a = env["auth"]
+        a.create_first_admin("admin", "Admin@123")
+        with pytest.raises(a.AuthError):
+            a.create_user("lisi", "12345678", "employee")
+        # 升级企业版后 3 席位
+        env["lic"].apply_license_code(_license(env))
+        a.create_user("lisi", "12345678", "employee")
+        a.create_user("wangwu", "12345678", "employee")
+        with pytest.raises(a.AuthError):
+            a.create_user("zhaoliu", "12345678", "employee")
+        # 停用不释放席位
+        a.set_active(a.get_by_username("lisi")["id"], False)
+        with pytest.raises(a.AuthError):
+            a.create_user("zhaoliu", "12345678", "employee")
+        # 删除释放席位
+        a.delete_user(a.get_by_username("lisi")["id"])
+        a.create_user("zhaoliu", "12345678", "employee")
 
     def test_reset_by_recovery(self, env):
         a = env["auth"]
@@ -185,6 +207,19 @@ class TestAuth:
         assert a.authenticate("admin", "NewPass@123")["username"] == "admin"
         with pytest.raises(a.AuthError):
             a.authenticate("admin", "Admin@123")
+
+    def test_readonly_mode_after_expiry(self, env, monkeypatch):
+        """付费授权到期后进入只读模式：plan 回退 free，但 readonly=True。"""
+        lic = env["lic"]
+        lic.apply_license_code(_license(env))
+        assert lic.readonly_mode() is False
+        # 模拟系统时间推进到授权到期之后
+        future = int(time.time()) + 400 * 86400
+        monkeypatch.setattr(lic.time, "time", lambda: future)
+        lic._READONLY_CACHE.update({"at": 0.0, "value": False})
+        assert lic.readonly_mode() is True
+        st = lic.status()
+        assert st["readonly"] is True and st["plan"] == "free"
 
 
 # ---------------------------------------------------------------- 修复回归

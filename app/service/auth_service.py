@@ -156,6 +156,14 @@ def create_user(username: str, password: str, role: str = "employee",
     with db.tx() as conn:
         if user_repo.get_by_username(conn, name) is not None:
             raise AuthError("用户名已存在")
+        # 席位强拦截：停用账号同样占席位，删除后立即释放
+        from app.service import license_service      # 惰性导入，避免循环依赖
+        limit = license_service.seat_limit()
+        used = len(user_repo.list(conn))
+        if used >= limit:
+            raise AuthError(
+                f"当前设备席位已满（{used}/{limit}）。"
+                "请停用或删除已有账号释放席位，或升级企业版扩容")
         return user_repo.insert(conn, {
             "username": name,
             "display_name": (display_name or "").strip() or name,
@@ -212,14 +220,28 @@ def change_password(user_id: int, old_password: str, new_password: str) -> dict:
         return user_repo.get(conn, user_id)
 
 
-def delete_user(user_id: int) -> None:
+def delete_user(user_id: int) -> dict:
+    """删除账号并物理删除其名下数据，立即释放 1 个席位。
+
+    返回删除统计；不可恢复（前端必须二次确认）。
+    """
     with db.tx() as conn:
         user = user_repo.get(conn, user_id)
         if user is None:
             raise AuthError("账号不存在")
         if user.get("role") == "admin" and user_repo.count_admins(conn) <= 1:
             raise AuthError("不能删除唯一的管理员账号")
+        inv_count = conn.execute(
+            "SELECT COUNT(*) FROM invoice WHERE owner_user_id=?", (user_id,)
+        ).fetchone()[0]
+        rmb_count = conn.execute(
+            "SELECT COUNT(*) FROM reimburse WHERE owner_user_id=?", (user_id,)
+        ).fetchone()[0]
+        # 先清业务数据（匹配/分类/状态日志由外键级联删除）
+        conn.execute("DELETE FROM reimburse WHERE owner_user_id=?", (user_id,))
+        conn.execute("DELETE FROM invoice WHERE owner_user_id=?", (user_id,))
         user_repo.delete(conn, user_id)
+    return {"deleted_invoices": int(inv_count), "deleted_reimburses": int(rmb_count)}
 
 
 def regenerate_recovery(user_id: int) -> str:

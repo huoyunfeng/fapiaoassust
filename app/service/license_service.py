@@ -37,21 +37,21 @@ PLANS = {
     "free": {
         "name": "免费版", "price": "0 元/年", "monthly_invoice_quota": 20,
         "matching": False, "reimburse": False, "report": False,
-        "export": False, "team": False, "devices": 1,
+        "export": False, "team": False, "devices": 1, "seat_limit": 1,
         "rules": False, "audit": False, "handover": False, "custom_categories": False,
         "desc": "每月 20 张发票额度，仅基础台账",
     },
     "personal": {
         "name": "个人版", "price": "99 元/年", "monthly_invoice_quota": None,
         "matching": True, "reimburse": True, "report": True,
-        "export": True, "team": False, "devices": 1,
+        "export": True, "team": False, "devices": 1, "seat_limit": 1,
         "rules": True, "audit": False, "handover": False, "custom_categories": True,
         "desc": "不限额度，开放智能匹配、报销单、差异报告与基础风控",
     },
     "enterprise": {
         "name": "企业版", "price": "499 元/年", "monthly_invoice_quota": None,
         "matching": True, "reimburse": True, "report": True,
-        "export": True, "team": True, "devices": 3,
+        "export": True, "team": True, "devices": 3, "seat_limit": 3,
         "rules": True, "audit": True, "handover": True, "custom_categories": True,
         "desc": "多账号、多设备协同、审计日志与数据交接",
     },
@@ -124,6 +124,7 @@ def clear_license() -> None:
     with db.tx() as conn:
         kv_repo.delete(conn, LICENSE_KV_KEY)
         kv_repo.delete(conn, _LICENSE_META_KV)
+    _READONLY_CACHE.update({"at": 0.0, "value": False})
 
 
 # ---------------------------------------------------------------- 防时间篡改 + 离线宽限
@@ -318,6 +319,7 @@ def apply_license_code(code: str) -> dict:
 
     # 返回 payload 时同步注入叠加后的 final_exp（供 status() 展示）
     payload["final_exp"] = final_exp
+    _READONLY_CACHE.update({"at": 0.0, "value": False})
     payload["duration_days"] = duration_days
     payload["apply_reason"] = reason
     return payload
@@ -520,6 +522,32 @@ def features() -> dict:
     return PLANS[plan_key()]
 
 
+def seat_limit() -> int:
+    """本机当前套餐允许的本地账号席位（免费/个人 1，企业 3）。"""
+    return int(PLANS[plan_key()].get("seat_limit", 1) or 1)
+
+
+_READONLY_CACHE = {"at": 0.0, "value": False}
+
+
+def readonly_mode() -> bool:
+    """付费授权到期后的只读模式：登录与读取放行，写操作全部拦截。
+
+    只在「曾经激活过付费版但已过期」时成立；从未付费的免费版不属于只读。
+    结果缓存 30 秒，避免每个请求都读写防篡改登记簿。
+    """
+    if dev_mode():
+        return False
+    now = time.time()
+    if now - _READONLY_CACHE["at"] < 30:
+        return bool(_READONLY_CACHE["value"])
+    payload, _error, expired = _effective()
+    value = bool(payload) and bool(expired)
+    _READONLY_CACHE["at"] = now
+    _READONLY_CACHE["value"] = value
+    return value
+
+
 def status() -> dict:
     payload, error, expired = _effective()
     dev = dev_mode()
@@ -543,6 +571,9 @@ def status() -> dict:
         "exp": required,
         "exp_date": time.strftime("%Y-%m-%d", time.localtime(required)) if required else "",
         "expired": expired,
+        "readonly": readonly_mode(),
+        "seat_limit": seat_limit(),
+        "device_total": int(PLANS[current_plan].get("devices", 1) or 1),
         "error": error,
         "dev_mode": dev,
         "machine_code": machine_mod.machine_code(),

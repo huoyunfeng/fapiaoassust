@@ -434,6 +434,7 @@
             <h2 style="margin-bottom:6px;">团队与权限</h2>
             <p class="muted" style="margin-bottom:10px;">企业版专属能力。员工只能看到自己上传的发票与报销单，财务可见全部业务数据，管理员拥有全部权限。</p>
             <div class="tm-seat">
+              {% if device_role == 'sub' %}本机为子设备（授权共 {{ device_total }} 台）{% else %}第 1/{{ device_total }} 台授权设备{% endif %}，
               已使用席位：<b>{{ seat_used }}</b> / {{ seat_limit if seat_limit else '不限' }}
               {% if seat_limit and seat_used >= seat_limit %}<span class="badge badge-red" style="margin-left:6px;">席位已满</span>{% endif %}
             </div>
@@ -501,7 +502,7 @@
       <div class="tabs">
         <div class="tab active" onclick="sgSecTab(this,'sgTabBackup')">数据与备份</div>
         <div class="tab" onclick="sgSecTab(this,'sgTabStorage')">存储与回收</div>
-        <div class="tab" onclick="sgSecTab(this,'sgTabAudit');{% if lic.features.audit %}sgEnsureAudit();{% endif %}">审计日志</div>
+        <div class="tab" onclick="sgSecTab(this,'sgTabAudit');{% if lic.features.audit or ro %}sgEnsureAudit();{% endif %}">审计日志</div>
         <div class="tab" onclick="sgSecTab(this,'sgTabLicense')">授权与系统信息</div>
       </div>
 
@@ -515,7 +516,7 @@
             <h2>全局备份与恢复</h2>
             <p class="muted mb" style="font-size:12px;color:#909399;">本系统全部数据（发票、报销单、日志、配置）均保存在本机。恢复会覆盖当前系统全部数据。</p>
             <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
-              <button class="btn btn-green" id="btnBackupNow" onclick="sgStartBackup()">一键备份数据</button>
+              <button class="btn btn-green allow-readonly" id="btnBackupNow" onclick="sgStartBackup()">一键备份数据</button>
               <button class="btn btn-danger" id="btnRestoreNow" onclick="askRestore2()">恢复数据</button>
               <input type="file" id="restoreFile" accept=".zip" style="display:none" onchange="doRestoreAsync(this)">
             </div>
@@ -636,7 +637,7 @@
 
       <!-- ========= Tab 3：审计日志（全宽独立，防查账更清晰） ========= -->
       <div class="tabpane" id="sgTabAudit">
-        {% if lic.features.audit %}
+        {% if lic.features.audit or ro %}
         <div class="card" style="position:relative;">
           <h2>审计日志（不可篡改，仅供追溯）</h2>
           <p class="muted mb" style="font-size:12px;color:#909399;">凡字典增删、发票/报销单分类修改、冲突仲裁、解除匹配等关键操作均自动记录，建议每季度抽查。</p>
@@ -2662,13 +2663,15 @@ async function tmReset(id, name){
   toast('密码已重置');
 }
 async function tmDelete(id, name){
-  const ok = await confirmDlg(`确认删除账号 ${name}？该账号的历史数据仍保留。`);
+  const ok = await confirmDlg(`确认删除账号 ${name}？\n\n⚠️ 将物理删除该账号名下的所有发票与报销单，且不可恢复；删除后立即释放 1 个席位。`);
   if(!ok) return;
   try{
     const r = await fetch(`/api/team/users/${id}`, {method: 'DELETE'});
     const d = await r.json();
     if(!d.ok){ toast(d.message || '删除失败', false); return; }
-    location.reload();
+    const s = d.data || {};
+    toast(`已删除，释放 1 个席位（删除发票 ${s.deleted_invoices || 0} 张、报销单 ${s.deleted_reimburses || 0} 张）`);
+    setTimeout(()=>location.reload(), 800);
   }catch(e){ toast('网络异常', false); }
 }
 // 文本输入弹窗（内嵌浏览器不支持原生 prompt，复用站内模态框）

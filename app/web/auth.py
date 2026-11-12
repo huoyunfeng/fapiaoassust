@@ -291,7 +291,14 @@ async def api_license_invite():
 # ---------------------------------------------------------------- 团队管理
 @auth.get("/api/team/users")
 async def api_team_users():
-    return JSONResponse({"ok": True, "data": auth_service.list_users()})
+    users = auth_service.list_users()
+    lic = license_service.status()
+    return JSONResponse({
+        "ok": True, "data": users,
+        "seats": {"used": len(users), "limit": lic.get("seat_limit", 1)},
+        "device": {"total": lic.get("device_total", 1),
+                   "role": lic.get("role", "master")},
+    })
 
 
 @auth.post("/api/team/users")
@@ -326,10 +333,11 @@ async def api_team_reset(user_id: int, body: dict):
 @auth.delete("/api/team/users/{user_id}")
 async def api_team_delete(user_id: int):
     try:
-        auth_service.delete_user(user_id)
+        stats = auth_service.delete_user(user_id)
     except auth_service.AuthError as e:
         return _err(str(e))
-    return JSONResponse({"ok": True})
+    return JSONResponse({"ok": True, "message": "账号及其名下数据已删除，席位已释放",
+                         "data": stats})
 
 
 # ---------------------------------------------------------------- 数据交接包

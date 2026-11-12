@@ -607,12 +607,14 @@ def settings_page(request: Request, section: str):
     if section == "team":
         users = auth_service.list_users()
         lic = license_service.status()
-        # 席位上限取自授权（sub_limit）；未下发时按「不限」展示，不阻断操作
+        # 席位按套餐账号数（免费/个人 1，企业 3），与设备数（devices）是两个维度
         context.update({
             "users": users,
             "license": lic,
             "seat_used": len(users),
-            "seat_limit": int(lic.get("sub_limit") or 0),
+            "seat_limit": int(lic.get("seat_limit", 1) or 1),
+            "device_total": int(lic.get("device_total", 1) or 1),
+            "device_role": lic.get("role", "master"),
         })
     return templates.TemplateResponse(request, "settings.html", context)
 
