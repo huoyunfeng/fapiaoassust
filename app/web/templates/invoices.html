@@ -245,7 +245,9 @@
     {% for i in rows %}
     <tr id="row-{{ i.id }}"{% if i.status == 'NORMAL' %} class="row-unmatched"{% endif %} onclick="openInvDrawer({{ i.id }})">
       <td class="col-check fixed-left" onclick="event.stopPropagation()">{% if request.state.user.role != 'employee' %}<input type="checkbox" class="chk-inv" value="{{ i.id }}" onchange="refreshSel()">{% endif %}</td>
-      <td class="col-invoice_no fixed-left" title="{{ i.invoice_no or '' }}">{{ i.invoice_no or '—' }}</td>
+      <td class="col-invoice_no fixed-left" title="{{ i.invoice_no or '' }}">{{ i.invoice_no or '—' }}
+        {% for it in i.risk_items %}<span class="risk-tag" title="{{ it.text }}">{{ it.tag }}</span>{% endfor %}
+      </td>
       <td class="col-invoice_date">{{ i.invoice_date or '—' }}</td>
       <td class="col-buyer">
         <div class="cell-dual">
@@ -292,7 +294,12 @@
       <td class="col-tax_amount col-number cell-amount">{% if i.tax_amount %}{{ '%.2f'|format(i.tax_amount|float) }}{% else %}—{% endif %}</td>
       <td class="col-total_amount col-number cell-amount"><b>{% if i.total_amount %}{{ '%.2f'|format(i.total_amount|float) }}{% else %}—{% endif %}</b></td>
       <td class="col-status fixed-right col-state">
+        {% if i.status == 'MATCHED' or i.is_closed %}
+        <span class="badge badge-green"
+              title="已报销金额 ¥{{ '%.2f'|format((i.matched_amount or 0)|float) }}；已闭环，不再参与匹配">已闭环</span>
+        {% else %}
         <span class="badge {% if i.status == 'NORMAL' %}badge-red{% else %}{{ i.status|badge }}{% endif %}">{{ i.status|status_cn }}</span>
+        {% endif %}
         {% if i.category_conflict %}<div style="margin-top:4px;"><span class="badge badge-yellow" title="{{ i.category_conflict_detail }}">⚠️ 分类差异</span></div>{% endif %}
       </td>
       <td class="col-action fixed-right" onclick="event.stopPropagation()">

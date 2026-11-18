@@ -17,6 +17,7 @@ from app.service import (audit_service, auth_service, backup_service,
                          report_service)
 from app.service.mapping_service import mapping_service
 from app.service.template_service import template_service
+from app.domain.states import InvalidTransition
 from app.infra.logger import get_logger
 
 logger = get_logger(__name__)
@@ -388,6 +389,26 @@ async def set_recycle_days(days: int = Form(...)):
     return _j(recycle_service.set_auto_clean_days(days))
 
 
+@api.get("/settings/risk")
+async def get_risk_settings():
+    from app.service import risk_service
+    return _j(risk_service.get_settings())
+
+
+@api.post("/settings/risk")
+async def save_risk_settings(seq: str = Form("0"), word: str = Form("0"),
+                             words: str = Form("")):
+    from app.service import risk_service
+    try:
+        lst = json.loads(words) if words.strip() else []
+        if not isinstance(lst, list):
+            raise ValueError
+    except Exception:
+        return {"ok": False, "message": "敏感词必须是 JSON 数组"}
+    return _j(risk_service.save_settings(seq == "1", word == "1",
+                                         [str(w) for w in lst]))
+
+
 @api.get("/reimburses/batch/{batch_id}/ids")
 async def list_batch_ids(batch_id: str):
     """批次内报销单 id 列表（前端逐条删除、显示进度用）。"""
@@ -436,6 +457,9 @@ async def confirm_match(match_id: int, operator: str = Form("admin"),
                                         reason_option, exempt == "1"))
     except match_service.StaleError as e:
         return _stale(e)
+    except InvalidTransition as e:
+        return JSONResponse(status_code=409,
+                            content={"ok": False, "code": "INVOICE_LOCKED", "message": str(e)})
 
 
 @api.post("/match/{match_id}/reject")
@@ -468,16 +492,23 @@ async def manual_match(invoice_id: int = Form(...), reimburse_id: int = Form(...
                        operator: str = Form("admin"),
                        reason_option: str = Form(""), reason: str = Form(""),
                        exempt: str = Form("")):
-    return _j(match_service.manual_match(invoice_id, reimburse_id, operator,
-                                         reason_option, reason, exempt == "1"))
+    try:
+        return _j(match_service.manual_match(invoice_id, reimburse_id, operator,
+                                            reason_option, reason, exempt == "1"))
+    except InvalidTransition as e:
+        return JSONResponse(status_code=409,
+                            content={"ok": False, "code": "INVOICE_LOCKED", "message": str(e)})
 
 
 @api.post("/matches/{match_id}/exempt")
 async def exempt_match(match_id: int, operator: str = Form("admin"),
                        reason: str = Form("")):
     """临时豁免：管理员强制绑定被规则阻断的匹配（理由必填，强制审计）。"""
-    return _j(match_service.exempt_match(match_id, operator, reason))
-
+    try:
+        return _j(match_service.exempt_match(match_id, operator, reason))
+    except InvalidTransition as e:
+        return JSONResponse(status_code=409,
+                            content={"ok": False, "code": "INVOICE_LOCKED", "message": str(e)})
 
 # ---------------------------------------------------------------- 报告
 @api.get("/report/data")
@@ -500,20 +531,44 @@ def report_data(filter: str = "", q: str = "", page_size: int = 20, dpage: int =
 
 @api.get("/report/options")
 def report_options(q: str = ""):
-    """差异报告绑定向导下拉：未占用报销单（支持关键词搜索）。"""
+    """差异报告绑定/选票向导下拉：未占用报销单与未报销发票（支持关键词搜索）。"""
     keyword = (q or "").strip().lower()
-    reb_rows = match_service.matchable_options()["reimburses"]
+    opts = match_service.matchable_options()
+    reb_rows, inv_rows = opts["reimburses"], opts["invoices"]
     if keyword:
         reb_rows = [r for r in reb_rows
                     if keyword in " ".join(str(r.get(k) or "") for k in
                                            ("reimburse_no", "submitter", "expense_type", "amount")).lower()]
+        inv_rows = [r for r in inv_rows
+                    if keyword in " ".join(str(r.get(k) or "") for k in
+                                           ("invoice_no", "seller_name", "item_summary",
+                                            "total_amount")).lower()]
     return _j({
         "reimburses": [{"id": r["id"], "reimburse_no": r["reimburse_no"],
                         "amount": _num_or_none(r.get("amount")),
                         "submitter": r.get("submitter") or "",
                         "expense_type": r.get("expense_type") or ""}
                        for r in reb_rows],
+        "invoices": [{"id": r["id"], "invoice_no": r.get("invoice_no") or "",
+                      "total_amount": _num_or_none(r.get("total_amount")),
+                      "invoice_date": r.get("invoice_date") or "",
+                      "seller_name": r.get("seller_name") or "",
+                      "item_summary": r.get("item_summary") or ""}
+                     for r in inv_rows],
     })
+
+
+@api.post("/report/fix-reb-no")
+async def report_fix_reb_no(reimburse_id: int = Form(...), invoice_no: str = Form(...),
+                            operator: str = Form("admin")):
+    """盲区快捷修正：改写报销单登记发票号（可用时立即局部重匹配）。"""
+    try:
+        return _j(match_service.fix_registered_invoice_no(reimburse_id, invoice_no, operator))
+    except match_service.StaleError as e:
+        return _stale(e)
+    except InvalidTransition as e:
+        return JSONResponse(status_code=409,
+                            content={"ok": False, "code": "INVOICE_LOCKED", "message": str(e)})
 
 
 def _num_or_none(v):
@@ -558,6 +613,9 @@ async def report_quick_fix(
             reason_option=reason_option))
     except match_service.StaleError as e:
         return _stale(e)
+    except InvalidTransition as e:
+        return JSONResponse(status_code=409,
+                            content={"ok": False, "code": "INVOICE_LOCKED", "message": str(e)})
 
 
 @api.post("/report/batch-bind")
@@ -570,6 +628,9 @@ async def report_batch_bind(invoice_ids: str = Form(""), reimburse_id: int = For
         return _j(match_service.manual_batch_bind(ids, reimburse_id, operator, reason_option, reason))
     except match_service.StaleError as e:
         return _stale(e)
+    except InvalidTransition as e:
+        return JSONResponse(status_code=409,
+                            content={"ok": False, "code": "INVOICE_LOCKED", "message": str(e)})
 
 
 @api.get("/invoices/export")

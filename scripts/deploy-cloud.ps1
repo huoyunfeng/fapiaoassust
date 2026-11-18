@@ -1,4 +1,4 @@
-﻿# 部署云端授权服务：上传 license_server.py → 语法检查 → 热重启 → 健康校验（失败自动回滚）
+﻿﻿# 部署云端授权服务：上传 license_server.py → 语法检查 → 热重启 → 健康校验（失败自动回滚）
 # 用法（在项目根目录执行，首次会提示输入服务器密码）：
 #   powershell -ExecutionPolicy Bypass -File scripts\deploy-cloud.ps1
 #   powershell -ExecutionPolicy Bypass -File scripts\deploy-cloud.ps1 -Server root@1.2.3.4

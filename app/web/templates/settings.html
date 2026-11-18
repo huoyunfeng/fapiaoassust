@@ -206,6 +206,27 @@
         <div id="companyListArea" style="margin-top:16px;"></div>
       </div>
 
+      <!-- 风控预警：默认关闭，只做轻量提示，不阻断匹配 -->
+      <div class="card" id="riskCard">
+        <h2>风控预警（轻量提示，不阻断匹配）</h2>
+        <p class="muted">开启后，发票入库时自动扫描，在列表与匹配中心以极小标签提示；确认匹配时温和提醒一次。</p>
+        <div style="display:flex;gap:28px;flex-wrap:wrap;margin-top:4px;">
+          <label class="sg-switch"><input type="checkbox" id="riskSeq"><span>开启发票连号与跳号预警</span></label>
+          <label class="sg-switch"><input type="checkbox" id="riskWord"><span>开启敏感词与商户预警</span></label>
+        </div>
+        <div style="margin-top:14px;">
+          <label style="font-size:13px;font-weight:600;">敏感词库</label>
+          <div id="riskTagBox" style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:8px;
+               padding:8px;border:1px solid var(--border);border-radius:8px;min-height:44px;"></div>
+          <input id="riskTagInput" placeholder="输入词汇后回车添加，如：烟"
+                 style="margin-top:8px;width:260px;padding:8px 10px;border:1px solid var(--border);border-radius:8px;">
+        </div>
+        <div style="margin-top:14px;display:flex;align-items:center;gap:10px;">
+          <button class="btn btn-primary" type="button" onclick="saveRisk()">保存风控设置</button>
+          <span class="muted" id="riskMsg" style="font-size:12px;"></span>
+        </div>
+      </div>
+
       <!-- 2. 核心高频规则 -->
       <div class="card">
         <h2>核心高频规则（固定最高优先级）</h2>
@@ -2692,6 +2713,76 @@ function sgPrompt(msg, placeholder){
     document.getElementById('modalBg').onclick = ()=>done(null);
   });
 }
+
+/* ===== 风控预警：两个独立开关 + 敏感词标签输入（默认关闭，只提示不阻断） ===== */
+let SG_RISK_WORDS = [];
+function renderRiskTags(){
+  const box = document.getElementById('riskTagBox');
+  if(!box) return;
+  if(!SG_RISK_WORDS.length){
+    box.innerHTML = '<span class="muted" style="font-size:12px;">暂无敏感词</span>';
+    return;
+  }
+  box.innerHTML = SG_RISK_WORDS.map(function(w, i){
+    return '<span class="sg-tag">' + _escHtml(w)
+      + '<button type="button" title="删除" onclick="delRiskWord(' + i + ')">×</button></span>';
+  }).join('');
+}
+function addRiskWord(){
+  const el = document.getElementById('riskTagInput');
+  if(!el) return;
+  const v = el.value.trim();
+  if(!v) return;
+  if(SG_RISK_WORDS.indexOf(v) < 0) SG_RISK_WORDS.push(v);
+  el.value = '';
+  renderRiskTags();
+}
+function delRiskWord(i){
+  SG_RISK_WORDS.splice(i, 1);
+  renderRiskTags();
+}
+async function loadRisk(){
+  try{
+    const r = await fetch('/api/settings/risk');
+    const j = await r.json();
+    const d = (j && j.data) ? j.data : j;
+    const seq = document.getElementById('riskSeq');
+    const word = document.getElementById('riskWord');
+    if(seq) seq.checked = !!d.seq;
+    if(word) word.checked = !!d.word;
+    SG_RISK_WORDS = Array.isArray(d.words) ? d.words.slice() : [];
+    renderRiskTags();
+  }catch(e){ /* 设置读取失败不打扰用户 */ }
+}
+async function saveRisk(){
+  const seq = document.getElementById('riskSeq');
+  const word = document.getElementById('riskWord');
+  const fd = new FormData();
+  fd.append('seq', seq && seq.checked ? '1' : '0');
+  fd.append('word', word && word.checked ? '1' : '0');
+  fd.append('words', JSON.stringify(SG_RISK_WORDS));
+  try{
+    const r = await fetch('/api/settings/risk', {method: 'POST', body: fd});
+    const j = await r.json();
+    const ok = j && j.ok === true && !(j.data && j.data.ok === false);
+    if(ok){
+      const msg = document.getElementById('riskMsg');
+      if(msg) msg.textContent = '已保存，下次发票入库时自动扫描';
+      toast('风控设置已保存');
+    }else{
+      toast((j && j.message) || '保存失败', false);
+    }
+  }catch(e){ toast('网络异常', false); }
+}
+document.addEventListener('DOMContentLoaded', function(){
+  const inp = document.getElementById('riskTagInput');
+  if(inp){
+    inp.addEventListener('keydown', function(e){
+      if(e.key === 'Enter'){ e.preventDefault(); addRiskWord(); }
+    });
+  }
+  if(document.getElementById('riskCard')) loadRisk();
+});
 
 // 页面加载时读取授权与附件路径
 loadLicense();

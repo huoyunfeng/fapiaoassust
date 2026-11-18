@@ -1,6 +1,25 @@
 {% extends "base.html" %}
 {% from "_pager.html" import render_pager %}
 {% block content %}
+<script>
+// 列表排序轮换：第一次进入「最早的在前」，第二次「最新的在前」，依次交替。
+// 方向固化到 URL 的 sort 参数：删除后 reload 沿用当前方向，不会突然翻转。
+(function(){
+  const sp = new URLSearchParams(location.search);
+  if(sp.has('sort')){
+    sessionStorage.setItem('rb_sort_dir', sp.get('sort'));
+    return;
+  }
+  const nav = performance.getEntriesByType && performance.getEntriesByType('navigation')[0];
+  const isReload = nav && nav.type === 'reload';
+  const prev = sessionStorage.getItem('rb_sort_dir') || 'desc';
+  const dir = isReload ? prev : (prev === 'desc' ? 'asc' : 'desc');
+  sessionStorage.setItem('rb_sort_dir', dir);
+  const u = new URL(location.href);
+  u.searchParams.set('sort', dir);
+  location.replace(u.toString());
+})();
+</script>
 <style>
 .wiz-steps{display:flex;gap:8px;margin-bottom:18px;}
 .wiz-step{flex:1;text-align:center;padding:8px;border-radius:8px;background:var(--bg);color:var(--muted);font-size:13px;}
@@ -540,18 +559,27 @@ function clearWizAlert(){ wizAlert(''); }
 // 模板加载 / 列表
 // ============================================================
 async function loadTemplates(){
+  const sel = document.getElementById('wizTemplateId');
+  const prev = sel ? sel.value : '';
   try{
     const r = await fetch('/api/reimburses/templates');
     const j = await r.json();
     currentTemplates = j.data || [];
   }catch(e){ currentTemplates = []; }
-  const sel = document.getElementById('wizTemplateId');
   sel.innerHTML = currentTemplates.length
     ? currentTemplates.map(t => `<option value="${t.id}">${esc(t.name)}${t.is_default?'（默认）':''}</option>`).join('')
     : '<option value="">（暂无模板）</option>';
-  // 默认选中经典模板
-  const classic = currentTemplates.find(t => t.is_system);
-  if(classic) sel.value = classic.id;
+  // 删除/新增模板后保持当前选择，不再强制跳回第一个模板
+  const keep = currentTemplates.find(t => String(t.id) === String(prev));
+  if(keep){
+    sel.value = keep.id;
+  }else{
+    // 原选择已被删除：优先默认模板，其次系统内置模板
+    const def = currentTemplates.find(t => t.is_default);
+    const classic = currentTemplates.find(t => t.is_system);
+    if(def) sel.value = def.id;
+    else if(classic) sel.value = classic.id;
+  }
   renderTemplateList();
 }
 
@@ -1037,6 +1065,16 @@ async function delReimburse(id){
   if(!await confirmDlg('确认删除该报销单？关联匹配将级联删除，已匹配发票回到 NORMAL。')) return;
   const j = await post(`/api/reimburses/${id}/delete`, null, {title:'正在删除报销单…'});
   if(j && j.data && j.data.ok !== false) stashUndo('reimburse', [id], '已删除 1 条报销单');
+  // 按当前排序刷新：下一张自然顶上来；若删掉的是本页最后一张且不在第一页，
+  // 回到第一页显示第一张；全部删完则停在当前空状态
+  const left = document.querySelectorAll('td.col-action button').length;
+  const u = new URL(location.href);
+  const page = parseInt(u.searchParams.get('page') || '1', 10);
+  if(left <= 1 && page > 1){
+    u.searchParams.set('page', '1');
+    location.href = u.toString();
+    return;
+  }
   location.reload();
 }
 async function delBatch(bid){

@@ -28,7 +28,7 @@ class InvoiceRepo:
         "invoice_date", "buyer_name", "buyer_tax_no", "seller_name", "seller_tax_no",
         "amount", "tax_amount", "total_amount", "tax_rate", "item_summary",
         "check_code", "raw_json", "parse_engine", "parse_confidence", "status",
-        "is_red_flush", "owner_user_id",
+        "is_red_flush", "owner_user_id", "risk_note",
     ]
 
     def insert(self, conn: sqlite3.Connection, data: dict) -> int:
@@ -782,6 +782,25 @@ class MatchRepo:
         """清理上一轮的评估痕迹（非生效态记录），生效记录保留。"""
         cur = conn.execute(
             "DELETE FROM match_result WHERE status NOT IN ('MATCHED','CONFIRMED','REJECTED')"
+        )
+        return cur.rowcount
+
+    def delete_orphan_candidates(self, conn: sqlite3.Connection) -> int:
+        """清理失效候选：发票或报销单已经存在生效匹配时，其余待人工候选已无意义。
+
+        这些残留行会让用户看到「待人工确认」却点确认失败（该发票已存在生效匹配），
+        只删除非生效态，REJECTED 保留用于留痕。
+        """
+        cur = conn.execute(
+            """DELETE FROM match_result
+               WHERE status IN ('UNMATCHED','SUSPICIOUS','CONFLICT')
+                 AND (
+                   invoice_id IN (SELECT invoice_id FROM match_result
+                                  WHERE status IN ('MATCHED','CONFIRMED'))
+                   OR reimburse_id IN (SELECT reimburse_id FROM match_result
+                                       WHERE status IN ('MATCHED','CONFIRMED')
+                                         AND reimburse_id IS NOT NULL)
+                 )"""
         )
         return cur.rowcount
 

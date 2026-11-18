@@ -43,6 +43,19 @@ async def lifespan(app: FastAPI):
     except Exception as e:  # 清理失败不阻塞启动
         from app.infra.logger import get_logger
         get_logger(__name__).warning("回收站自动清理启动失败: %s", e)
+    # 启动时清理失效候选：发票/报销单已生效匹配后遗留的待人工候选，
+    # 会显示为「待人工确认」但点确认必然失败（该发票已存在生效匹配）
+    try:
+        from app.repository import db as _db
+        from app.repository.repos import match_repo as _match_repo
+        with _db.tx() as _conn:
+            _removed = _match_repo.delete_orphan_candidates(_conn)
+        if _removed:
+            from app.infra.logger import get_logger
+            get_logger(__name__).info("已清理失效匹配候选 %s 条", _removed)
+    except Exception as e:
+        from app.infra.logger import get_logger
+        get_logger(__name__).warning("清理失效匹配候选失败: %s", e)
     # 静默备份：启动时后台线程检查一次，若距上次 > 24h 则打包 DB+config（不含附件）
     # 采用 LRU 只保留最新 3 个包，避免磁盘膨胀；失败不影响主流程。
     import threading as _th

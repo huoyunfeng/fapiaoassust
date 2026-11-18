@@ -104,6 +104,10 @@ td.num{font-variant-numeric:tabular-nums;}
 .badge-purple{background:#f4f0ff;color:#5b21b6;border-color:#e4d9ff;}
 .badge-gray{background:#f4f4f5;color:var(--text-2);border-color:#e9e9eb;}
 .badge-yellow{background:var(--warning-bg);color:var(--warning-text);border-color:var(--warning-border);}
+/* 风控标签：极小、浅橙、不抢视线，仅悬停时展示完整描述 */
+.risk-tag{display:inline-block;margin-left:4px;padding:0 5px;border-radius:999px;
+  font-size:10px;line-height:16px;font-weight:600;cursor:help;
+  background:#fff7ed;color:#c2410c;border:1px solid #fed7aa;vertical-align:middle;}
 /* 写操作按钮 Loading：点击后立即禁用并显示转圈，直到接口返回 */
 .btn.is-loading,.btn.is-loading:hover{opacity:.75;cursor:progress;filter:none;}
 .btn-spin{display:inline-block;width:10px;height:10px;margin-right:6px;vertical-align:-1px;
@@ -413,8 +417,17 @@ const FilterCache = {
     const cached = sessionStorage.getItem(this.KEY_PREFIX + pageKey);
     if(!cached) return false;
     // 有缓存但 URL 干净 → redirect 带上缓存参数
-    const sep = location.search ? '&' : '?';
-    const target = location.pathname + sep + cached + location.hash;
+    // 注意：cached 是纯 query string（不含 ?），必须在 pathname 后固定用 ? 拼接；
+    // 否则当 URL 已带 ?sort=… 时会拼出 /reimburses&batch_id=… 这类 404 路径
+    const cachedQs = (cached || '').replace(/^\?/, '');
+    // sort 由下面 extra 统一追加，避免缓存里也有 sort 时出现重复参数
+    const cachedParams = new URLSearchParams(cachedQs);
+    cachedParams.delete('sort');
+    const cleanQs = cachedParams.toString();
+    // 保留列表排序方向（sort 不是筛选条件，但重定向时必须带上，否则会再次触发翻转）
+    const cur = new URLSearchParams(location.search);
+    const extra = cur.get('sort') ? '&sort=' + encodeURIComponent(cur.get('sort')) : '';
+    const target = location.pathname + (cleanQs ? '?' + cleanQs : '') + extra + location.hash;
     // 用 replace 避免产生多余历史记录
     history.replaceState(null, '', target);
     // 让服务端用带参数的 URL 重新渲染

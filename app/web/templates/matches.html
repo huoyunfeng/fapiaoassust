@@ -4,6 +4,39 @@
 /* 警告放行（规则 action=warn）：黄色提示条，不阻断匹配 */
 .sg-warn{background:var(--warning-bg);border:1px solid var(--warning-border);color:var(--warning-text);border-radius:var(--radius);
   padding:4px 8px;margin-bottom:4px;white-space:normal;line-height:1.5;}
+/* 操作列：极简文字链 + 「更多」下拉（与差异报告保持一致） */
+.mc-ops{display:flex;align-items:center;justify-content:center;gap:12px;white-space:nowrap;}
+.txt-btn{border:none;background:transparent;padding:0;margin:0;font-size:13px;line-height:1.5;
+  cursor:pointer;white-space:nowrap;text-decoration:none;transition:color .15s;}
+.txt-btn:hover{text-decoration:underline;}
+.txt-link{color:#409EFF;}
+.txt-link:hover{color:#7cbcf5;}
+.txt-danger{color:#F56C6C;}
+.txt-danger:hover{color:#f89898;}
+.txt-confirm{color:#67C23A;font-weight:700;}
+.txt-confirm:hover{color:#95d475;}
+.txt-more{color:#409EFF;}
+.txt-more:hover{color:#7cbcf5;}
+.txt-primary{color:#409EFF;font-weight:700;}   /* 核心处理入口 */
+.txt-primary:hover{color:#7cbcf5;}
+/* 无候选/已匹配：小号实心/描边按钮（唯一动作） */
+.btn-soft-blue{border:none;background:#409EFF;color:#fff;border-radius:6px;font-size:12px;
+  padding:4px 10px;cursor:pointer;white-space:nowrap;transition:background .15s;}
+.btn-soft-blue:hover{background:#66b1ff;}
+.btn-soft-red{border:1px solid #fbc4c4;background:#fef0f0;color:#F56C6C;border-radius:6px;
+  font-size:12px;padding:4px 10px;cursor:pointer;white-space:nowrap;transition:background .15s;}
+.btn-soft-red:hover{background:#fde2e2;}
+.txt-btn.is-loading{opacity:.5;pointer-events:none;}
+.ops-pop{position:fixed;z-index:3000;min-width:120px;background:#fff;border:1px solid var(--border);
+  border-radius:8px;box-shadow:0 12px 30px rgba(15,23,42,.18);padding:4px;display:flex;flex-direction:column;}
+.ops-item{border:none;background:transparent;text-align:left;padding:7px 10px;font-size:13px;
+  color:#303133;cursor:pointer;border-radius:6px;text-decoration:none;display:block;
+  white-space:nowrap;line-height:1.5;}
+.ops-item:hover{background:#f5f7fa;text-decoration:underline;}
+.ops-item-confirm{color:#67C23A;}
+.ops-item-blue{color:#409EFF;}
+.ops-item-danger{color:#F56C6C;}
+.ops-sep{height:1px;background:var(--border-light);margin:4px 2px;}
 </style>
 <div class="page-head">
   <h1>匹配中心</h1>
@@ -46,21 +79,18 @@
         <td>{% if m.reimburse_no %}{{ m.reimburse_no }}{% elif m.pair_reimburses %}汇总: {% for r in m.pair_reimburses %}{{ r.reimburse_no }} {% endfor %}{% else %}—{% endif %}</td>
         <td class="num">{{ m.reimburse_amount or '—' }}</td>
         <td class="wrap muted">
+          {% for it in m.risk_items %}<span class="risk-tag" title="{{ it.text }}">{{ it.tag }}</span>{% endfor %}
           {% if m.warning_msg %}<div class="sg-warn" title="{{ m.warning_msg }}">⚠️ {{ m.warning_msg }}</div>{% endif %}
           {{ m.message }}
+          {% if m.pair_invoice_nos %}
+          <div style="margin-top:4px;font-size:12px;color:#475569;">
+            组合 {{ m.pair_invoice_nos|length }} 张：{{ m.pair_invoice_nos|join('、') }}
+          </div>
+          {% endif %}
         </td>
         <td class="center">
-          <div class="dropdown">
-            <button class="btn btn-sm btn-outline action-btn" onclick="toggleDropdown(this)">操作 ▾</button>
-            <div class="dropdown-menu">
-              <button onclick="window.open('/matches/{{ m.id }}/compare','_blank')">并排比对</button>
-              <button onclick="autoCorrect({{ m.id }})">一键更正</button>
-              {% if m.status in ('UNMATCHED','SUSPICIOUS') %}
-              <button class="danger" onclick="exemptFn({{ m.id }})">临时豁免</button>
-              {% endif %}
-              <button class="danger" onclick="act('reject',{{ m.id }})">拒绝</button>
-            </div>
-          </div>
+          <button class="txt-btn txt-primary"
+                  onclick="showOpsMenu(event,{{ m.id }},'{{ '1' if m.has_diff else '0' }}',{{ m.total_amount or 0 }},{{ m.reimburse_amount or 0 }},'{{ m.match_type }}','{{ m.risk_tags|join(',') }}')">操作 ˅</button>
         </td>
       </tr>
       {% endfor %}
@@ -84,7 +114,7 @@
         <td>{{ m.invoice_no }}</td><td class="num">{{ m.total_amount }}</td>
         <td>{% if m.reimburse_no %}{{ m.reimburse_no }}{% elif m.pair_reimburses %}汇总: {% for r in m.pair_reimburses %}{{ r.reimburse_no }} {% endfor %}{% endif %}</td>
         <td>{{ m.confirmed_by or 'system' }}</td><td class="muted">{{ m.confirmed_at or m.created_at }}</td>
-        <td class="center"><button class="btn btn-sm btn-danger" onclick="unmatchFn({{ m.id }})">解除</button></td>
+        <td class="center"><button class="btn-soft-red" onclick="unmatchFn({{ m.id }})">解除匹配</button></td>
       </tr>
       {% endfor %}
     </table>
@@ -132,11 +162,12 @@
   <div class="card">
     {% if unmatched %}
     <table>
-      <tr><th>发票号</th><th class="num">价税合计</th><th>开票日期</th><th>购买方</th><th>说明</th></tr>
+      <tr><th>发票号</th><th class="num">价税合计</th><th>开票日期</th><th>购买方</th><th>说明</th><th class="center">操作</th></tr>
       {% for m in unmatched %}
       <tr id="row-{{ m.id }}"><td>{{ m.invoice_no or '—' }}</td><td class="num">{{ m.total_amount or '—' }}</td>
           <td>{{ m.invoice_date or '—' }}</td><td class="wrap">{{ m.buyer_name }}</td>
-          <td class="wrap muted">{{ m.message }}</td></tr>
+          <td class="wrap muted">{{ m.message }}</td>
+          <td class="center"><button class="btn-soft-blue" onclick="gotoManual({{ m.invoice_id }})">手动关联</button></td></tr>
       {% endfor %}
     </table>
     <p class="muted mt">可在"人工指定匹配"中为这些发票手动配对。</p>
@@ -165,6 +196,41 @@
     <p class="muted mt">提示：可先在输入框过滤。若下拉为空，请先导入数据并确保发票为 NORMAL 状态。</p>
   </div>
 </div>
+
+<!-- 风控提示：连号/跳号/敏感词，温和确认后放行 -->
+<div id="riskMask" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,.5);
+     z-index:3000;align-items:center;justify-content:center;padding:20px;">
+  <div style="background:#fff;border-radius:14px;padding:24px 26px;width:440px;max-width:94vw;
+       box-shadow:0 24px 64px rgba(0,0,0,.2);">
+    <h3 style="font-size:16px;color:#b45309;margin:0 0 10px;">🔔 风控提示</h3>
+    <div id="riskTip" style="font-size:13px;color:#475569;line-height:1.9;margin-bottom:16px;"></div>
+    <div style="display:flex;justify-content:flex-end;gap:10px;">
+      <button type="button" class="btn btn-ghost" onclick="riskResolve(false)">取消</button>
+      <button type="button" class="btn btn-primary" onclick="riskResolve(true)">确认无误并匹配</button>
+    </div>
+  </div>
+</div>
+
+<!-- 超额报销确认：必须勾选「已核实」才能提交，说明写入审计 -->
+<div id="overMask" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,.5);
+     z-index:3000;align-items:center;justify-content:center;padding:20px;">
+  <div style="background:#fff;border-radius:14px;padding:24px 26px;width:460px;max-width:94vw;
+       box-shadow:0 24px 64px rgba(0,0,0,.2);">
+    <h3 style="font-size:16px;color:#dc2626;margin:0 0 10px;">⚠️ 超额报销风险确认</h3>
+    <div id="overTip" style="font-size:13px;color:#475569;line-height:1.8;margin-bottom:12px;"></div>
+    <label style="display:flex;gap:8px;font-size:13px;color:#0f172a;align-items:flex-start;margin-bottom:10px;">
+      <input type="checkbox" id="overChk" style="margin-top:3px;">
+      <span>我已核实金额差异，确认本次报销金额真实有效，并自行承担税务合规责任。</span>
+    </label>
+    <textarea id="overNote" rows="2" placeholder="核实说明（选填，将写入审计日志）"
+      style="width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid var(--border);
+      border-radius:8px;font-size:13px;resize:vertical;"></textarea>
+    <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:14px;">
+      <button type="button" class="btn btn-ghost" onclick="overResolve(false)">取消</button>
+      <button type="button" class="btn btn-danger" onclick="overResolve(true)">确认绑定</button>
+    </div>
+  </div>
+</div>
 {% endblock %}
 
 {% block scripts %}
@@ -186,17 +252,127 @@ async function resolveCf(rid, mode){
     if(d && d.ok !== false) setTimeout(()=>location.reload(), 700);
   });
 }
-async function act(action, id){
+async function act(action, id, btn, extraNote){
+  // 点击即锁定，避免弹窗阶段重复点击
+  if(btn && btn.dataset.busy === '1') return;
+  if(btn){ btn.dataset.busy = '1'; btn.disabled = true; btn.classList.add('is-loading'); }
+  const release = () => { if(btn){ btn.dataset.busy = ''; btn.disabled = false; btn.classList.remove('is-loading'); } };
   const r = await reasonModal(action==='confirm' ? '确认匹配' : '拒绝匹配');
-  if(!r) return;
+  if(!r){ release(); return; }
   const fd=new FormData();
-  fd.set('note', r.reason);
+  fd.set('note', [r.reason, extraNote].filter(Boolean).join('；'));
   fd.set('reason_option', r.reason_option);
   fd.set('operator','admin');
-  post(`/api/match/${id}/${action}`,fd).then(()=>location.reload());
+  post(`/api/match/${id}/${action}`, fd,
+       {title: action === 'confirm' ? '正在确认匹配…' : '正在拒绝匹配…'})
+    .then(()=>location.reload());
 }
+
+// 金额差异防呆：少报提示差额作废；超报必须勾选「已核实」后才允许提交
+async function confirmMatch(id, invAmt, rebAmt, risks){
+  // 风控提示（不阻断）：连号/跳号/敏感词 → 温和确认后放行
+  if(risks){
+    const ok = await riskDlg(risks.split(',').filter(Boolean));
+    if(!ok) return;
+  }
+  const diff = +((Number(rebAmt || 0) - Number(invAmt || 0)).toFixed(2));
+  let extra = '';
+  if(Math.abs(diff) > 0.005){
+    if(diff < 0){
+      if(!await confirmDlg(`当前报销金额小于发票总额，差额（¥${Math.abs(diff).toFixed(2)}）将被视为放弃。\n绑定后该发票将直接作废闭环，不可再次报销。\n\n是否确认？`)) return;
+    }else{
+      const note = await overReportDlg(diff);
+      if(note === null) return;
+      extra = note || '已核实金额差异';
+    }
+  }
+  await act('confirm', id, null, extra);
+}
+
+// 风控温和确认框：只提示、不阻断
+let _riskResolve = null;
+function riskDlg(tags){
+  return new Promise(resolve => {
+    _riskResolve = resolve;
+    document.getElementById('riskTip').innerHTML =
+      `系统检测到本次报销包含（<b>${tags.join(' / ')}</b>）发票。为防范财务风险，请确认已核实员工业务凭证。`;
+    document.getElementById('riskMask').style.display = 'flex';
+  });
+}
+function riskResolve(ok){
+  document.getElementById('riskMask').style.display = 'none';
+  const r = _riskResolve; _riskResolve = null;
+  if(r) r(!!ok);
+}
+
+// 超额报销确认弹窗：勾选「已核实」是硬性前置，未勾选不允许提交
+let _overResolve = null;
+function overReportDlg(diff){
+  return new Promise(resolve => {
+    _overResolve = resolve;
+    document.getElementById('overTip').innerHTML =
+      `报销金额大于发票总额（<b style="color:#dc2626;">超报 ¥${diff.toFixed(2)}</b>），存在税务违规风险。`;
+    document.getElementById('overChk').checked = false;
+    document.getElementById('overNote').value = '';
+    document.getElementById('overMask').style.display = 'flex';
+  });
+}
+function overResolve(ok){
+  const chk = document.getElementById('overChk').checked;
+  const note = (document.getElementById('overNote').value || '').trim();
+  if(ok && !chk){ toast('请先勾选「我已核实」', false); return; }
+  document.getElementById('overMask').style.display = 'none';
+  const r = _overResolve; _overResolve = null;
+  if(r) r(ok ? note : null);
+}
+
+// ---------------- 「更多」下拉（body 级弹层，避免被表格裁剪） ----------------
+let _opsPop = null;
+function closeOpsMenu(){
+  if(_opsPop){ _opsPop.remove(); _opsPop = null; }
+}
+function gotoManual(invoiceId){
+  activateTab('paneManual');
+  const sel = document.querySelector('#paneManual select[name="invoice_id"]');
+  if(sel){ sel.value = String(invoiceId); sel.focus(); }
+}
+function showOpsMenu(ev, id, hasDiff, invAmt, rebAmt, mtype, risks){
+  ev.preventDefault(); ev.stopPropagation();
+  closeOpsMenu();
+  // 分组：视图区 / 决策区 / 危险区，避免平级动作干扰财务判断
+  const items = [
+    `<button class="ops-item" onclick="closeOpsMenu();window.open('/matches/${id}/compare','_blank')">🔍 并排比对</button>`
+  ];
+  if(mtype === 'many_to_one')
+    items.push(`<button class="ops-item" onclick="closeOpsMenu();window.open('/matches/${id}/compare','_blank')">🧾 查看组合明细</button>`);
+  items.push('<div class="ops-sep"></div>');
+  items.push(`<button class="ops-item ops-item-confirm" onclick="closeOpsMenu();confirmMatch(${id},${invAmt},${rebAmt},'${risks||''}')">✓ 确认匹配</button>`);
+  if(hasDiff === '1')
+    items.push(`<button class="ops-item ops-item-blue" onclick="closeOpsMenu();autoCorrect(${id})">✎ 一键更正</button>`);
+  items.push(`<button class="ops-item" onclick="closeOpsMenu();exemptFn(${id})">🛡 临时豁免</button>`);
+  items.push('<div class="ops-sep"></div>');
+  items.push(`<button class="ops-item ops-item-danger" onclick="closeOpsMenu();act('reject',${id})">✕ 拒绝</button>`);
+
+  const pop = document.createElement('div');
+  pop.className = 'ops-pop';
+  pop.innerHTML = items.join('');
+  document.body.appendChild(pop);
+  const r = ev.currentTarget.getBoundingClientRect();
+  const pr = pop.getBoundingClientRect();
+  const left = Math.max(8, Math.min(r.right - pr.width, window.innerWidth - pr.width - 8));
+  let top = r.bottom + 6;
+  if(top + pr.height > window.innerHeight - 8)
+    top = Math.max(8, r.top - pr.height - 6);
+  pop.style.left = left + 'px';
+  pop.style.top = top + 'px';
+  _opsPop = pop;
+}
+document.addEventListener('click', closeOpsMenu);
+window.addEventListener('resize', closeOpsMenu);
+window.addEventListener('scroll', closeOpsMenu, true);
 async function autoCorrect(id){
   closeAllDropdowns();
+  if(!await confirmDlg('将按发票金额修复报销单，并重新评估匹配结果。是否继续？')) return;
   const fd=new FormData();fd.set('match_id',id);fd.set('operator','admin');
   const r = await fetch('/api/match/auto-correct',{method:'POST',body:fd});
   const j = await r.json();
@@ -211,7 +387,15 @@ async function unmatchFn(id){
   fd.set('reason', r.reason);
   fd.set('reason_option', r.reason_option);
   fd.set('operator','admin');
-  post(`/api/match/${id}/unmatch`,fd).then(()=>location.reload());
+  post(`/api/match/${id}/unmatch`,fd).then(j=>{
+    const d = (j && j.data) ? j.data : j;
+    const rq = (d && d.requeue) || {};
+    toast(rq.auto_matched
+      ? `解绑成功。系统已自动为 ${rq.auto_matched} 张排队单据完成重新匹配`
+      : '解绑成功');
+    // 静默刷新列表与顶部统计（整页重载，保留用户当前页签）
+    setTimeout(()=>location.reload(), 700);
+  });
 }
 // 临时豁免：强制绑定被业务规则阻断的匹配，理由必填（后端强制写审计日志）
 async function exemptFn(id){

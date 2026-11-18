@@ -558,19 +558,35 @@ def manual_create(fields: dict, operator: str = None) -> dict:
 
 
 def _release_active_matches(conn, reimburse_ids: List[int], operator: str) -> List[int]:
-    """删除报销单前，把关联的 MATCHED 发票转回 NORMAL。"""
+    """删除报销单前，释放其占用的全部发票（含一对多组合的兄弟发票）。
+
+    只重置发票状态，不删除发票记录。
+    """
     released: List[int] = []
     for rid in reimburse_ids:
-        active = match_repo.active_for_reimburse(conn, rid)
-        if active:
-            from app.service.status_flow import change_invoice_status
-            reb_no = (reimburse_repo.get(conn, rid) or {}).get("reimburse_no") or "—"
+        inv_ids: List[int] = []
+        # 直接匹配（一对一行 / 汇总父记录的直接发票）
+        for r in conn.execute(
+                "SELECT DISTINCT invoice_id FROM match_result "
+                "WHERE reimburse_id = ? AND status IN ('MATCHED','CONFIRMED') "
+                "AND invoice_id IS NOT NULL", (rid,)):
+            inv_ids.append(r["invoice_id"])
+        # 一对多组合：按 match_pair 找到同组全部发票
+        for r in conn.execute(
+                "SELECT DISTINCT mp.invoice_id FROM match_pair mp "
+                "JOIN match_result mr ON mr.id = mp.match_id "
+                "WHERE mp.reimburse_id = ? AND mr.status IN ('MATCHED','CONFIRMED')",
+                (rid,)):
+            inv_ids.append(r["invoice_id"])
+        reb_no = (reimburse_repo.get(conn, rid) or {}).get("reimburse_no") or "—"
+        from app.service.status_flow import change_invoice_status
+        for iid in dict.fromkeys(inv_ids):
             try:
-                change_invoice_status(conn, active["invoice_id"], "NORMAL",
+                change_invoice_status(conn, iid, "NORMAL",
                                       f"报销单 {reb_no} 删除，解除匹配", operator)
-                released.append(active["invoice_id"])
+                released.append(iid)
             except Exception as e:
-                logger.warning("释放发票 #%s 匹配失败: %s", active["invoice_id"], e)
+                logger.warning("释放发票 #%s 匹配失败: %s", iid, e)
     return released
 
 
@@ -585,7 +601,7 @@ def delete_reimburse(reimburse_id: int, operator: str = None) -> dict:
         row = reimburse_repo.get(conn, reimburse_id)
         if row is None or row.get("deleted_at"):
             return {"ok": False, "message": f"报销单 #{reimburse_id} 不存在"}
-        _release_active_matches(conn, [reimburse_id], operator)
+        released = _release_active_matches(conn, [reimburse_id], operator)
         n_match = match_repo.delete_for_reimburse(conn, reimburse_id)
         reimburse_repo.soft_delete(conn, reimburse_id)
         # 汇总匹配的 match_pair 删空后，清理悬空的父级 match_result，防脏数据
@@ -594,9 +610,17 @@ def delete_reimburse(reimburse_id: int, operator: str = None) -> dict:
         audit_service.log(conn, "delete", "reimburse", reimburse_id,
                           row.get("reimburse_no") or f"#{reimburse_id}",
                           "有效", "已删除（移入回收站）", operator, "删除报销单")
+        # 资源释放后：同一事务内唤醒因「发票被占用」失败的单据
+        from app.service import match_service
+        requeue = match_service.release_invoices_and_requeue(
+            conn, released, operator,
+            f"删除报销单 {row.get('reimburse_no') or reimburse_id}")
         logger.info("报销单 #%s 已移入回收站 (清理匹配记录 %s 条、孤儿汇总匹配 %s 条, by %s)",
                     reimburse_id, n_match, n_orphan, operator)
-        return {"ok": True, "message": "报销单已移入回收站（可在 20 秒内撤销）",
+        msg = "报销单已移入回收站（可在 20 秒内撤销）"
+        if requeue["auto_matched"]:
+            msg += f"；已自动为 {requeue['auto_matched']} 张排队单据完成重新匹配"
+        return {"ok": True, "message": msg, "requeue": requeue,
                 "ids": [reimburse_id], "batch_id": batch_id}
 
 
@@ -606,7 +630,7 @@ def delete_batch(batch_id: str, operator: str = None) -> dict:
     undo_id = uuid.uuid4().hex
     with db.tx() as conn:
         ids = [r["id"] for r in reimburse_repo.list(conn, batch_id=batch_id, limit=100000)]
-        _release_active_matches(conn, ids, operator)
+        released = _release_active_matches(conn, ids, operator)
         n_match = 0
         for rid in ids:
             n_match += match_repo.delete_for_reimburse(conn, rid)
@@ -616,9 +640,16 @@ def delete_batch(batch_id: str, operator: str = None) -> dict:
         audit_service.log(conn, "delete", "reimburse_batch", batch_id,
                           batch_id, "有效", "已删除（移入回收站）", operator,
                           f"删除批次 {n} 行")
+        # 资源释放后：同一事务内唤醒因「发票被占用」失败的单据
+        from app.service import match_service
+        requeue = match_service.release_invoices_and_requeue(
+            conn, released, operator, f"删除导入批次 {batch_id}")
         logger.info("批次 %s 已移入回收站 %s 行 (清理匹配记录 %s 条、孤儿汇总匹配 %s 条, by %s)",
                     batch_id, n, n_match, n_orphan, operator)
-        return {"ok": True, "message": f"批次 {batch_id} 已删除 {n} 行（可在 20 秒内撤销）",
+        msg = f"批次 {batch_id} 已删除 {n} 行（可在 20 秒内撤销）"
+        if requeue["auto_matched"]:
+            msg += f"；已自动为 {requeue['auto_matched']} 张排队单据完成重新匹配"
+        return {"ok": True, "message": msg, "requeue": requeue,
                 "ids": ids, "batch_id": undo_id}
 
 

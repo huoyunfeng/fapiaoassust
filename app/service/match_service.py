@@ -464,6 +464,9 @@ def run_matching(operator: str = None, progress=None) -> dict:
             _persist_unmatched(conn, inv_id, inv_rows[inv_id], block_notes.get(inv_id, ""))
             summary["unmatched"] += 1
 
+        # ---- 收尾：清理本轮被占用后残留的候选，避免出现「点确认必然失败」的行 ----
+        summary["cleared"] += match_repo.delete_orphan_candidates(conn)
+
     if progress:
         progress(total, total, "匹配完成")
     logger.info("匹配完成: %s (by %s)", summary, operator)
@@ -550,18 +553,44 @@ def confirm(match_id: int, operator: str = None, note: str = "",
             if blocked:
                 return {"ok": False, "message": f"{RULE_BLOCK_PREFIX}{blocked}"}
 
+        # 闭环强约束：该发票已被任何单据占用（含部分报销）即不可再次绑定
+        if inv_row and int(inv_row.get("is_closed") or 0):
+            return {"ok": False, "message": "该发票已被其他单据占用，系统严禁拆分报销。"}
+
+        # 一单多票（汇总匹配）：组合内所有发票必须同时闭环，任一被占用则整组拒绝
+        combo_siblings = _combo_siblings(conn, match_id, reb_id) \
+            if m["match_type"] == T_MANY_TO_ONE else []
+        for sib in combo_siblings:
+            sib_inv = invoice_repo.get(conn, sib["invoice_id"])
+            if (sib_inv is None or sib_inv["status"] != "NORMAL"
+                    or int(sib_inv.get("is_closed") or 0)
+                    or match_repo.active_for_invoice(conn, sib["invoice_id"])):
+                return {"ok": False,
+                        "message": "组合中的发票已被其他单据占用，系统严禁拆分报销。"}
+
         match_repo.update_status(conn, match_id, "CONFIRMED", operator)
         if note:
             _append_message(conn, match_id, f"确认备注: {note}")
         if reb_id:
             change_invoice_status(conn, m["invoice_id"], "MATCHED",
-                                  f"人工确认匹配 (match#{match_id})", operator)
+                                  f"人工确认匹配 (match#{match_id})", operator,
+                                  matched_amount=((inv_row or {}).get("total_amount")
+                                                  if m["match_type"] == T_MANY_TO_ONE
+                                                  else (reb_row or {}).get("amount")))
             # 匹配生效瞬间校验双方分类（模块四）
             _detect_conflict(conn, reb_id)
             # 已生效匹配：清掉报销单备注里的不匹配说明
             reb_row = reimburse_repo.get(conn, reb_id)
             if reb_row:
                 _write_note(conn, reb_row, [])
+        # 组合匹配：同组其余发票一并闭环（同一事务内，任一失败整组回滚）
+        for sib in combo_siblings:
+            sib_inv = invoice_repo.get(conn, sib["invoice_id"]) or {}
+            change_invoice_status(conn, sib["invoice_id"], "MATCHED",
+                                  f"组合匹配随 match#{match_id} 闭环", operator,
+                                  matched_amount=sib_inv.get("total_amount"))
+            match_repo.update_status(conn, sib["id"], "CONFIRMED", operator)
+            _append_message(conn, sib["id"], "组合匹配：随主记录一并确认闭环")
         # 人工终裁：踢出同发票其他候选 + 同报销单未选中的候选
         _finalize_binding(conn, match_id, m["invoice_id"], reb_id, operator)
         from app.service import audit_service
@@ -792,6 +821,9 @@ def manual_match(invoice_id: int, reimburse_id: int, operator: str = None,
             return {"ok": False, "message": "该发票已存在生效匹配"}
         if match_repo.active_for_reimburse(conn, reimburse_id):
             return {"ok": False, "message": "该报销单已存在生效匹配"}
+        # 闭环强约束：发票一旦匹配过（含部分报销）即作废，禁止拆分报销
+        if int(inv.get("is_closed") or 0):
+            return {"ok": False, "message": "该发票已被其他单据占用，系统严禁拆分报销。"}
 
         # 业务规则安检（阻断优先；临时豁免须填理由并写审计）
         blocked = _rule_guard(conn, inv, reb, exempt, operator, reason,
@@ -834,7 +866,8 @@ def manual_match(invoice_id: int, reimburse_id: int, operator: str = None,
         manual_detail["match_id"] = mid
         match_repo.update_detail(conn, mid, manual_detail)
         change_invoice_status(conn, invoice_id, "MATCHED",
-                              f"人工指定匹配 (match#{mid})", operator)
+                              f"人工指定匹配 (match#{mid})", operator,
+                              matched_amount=reb.get("amount"))
         # 匹配生效瞬间校验双方分类（模块四）
         _detect_conflict(conn, reimburse_id)
         # 已生效匹配：清掉报销单备注里的不匹配说明
@@ -887,6 +920,8 @@ def manual_batch_bind(invoice_ids: List[int], reimburse_id: int,
             if inv["status"] != "NORMAL":
                 return {"ok": False,
                         "message": f"发票 #{iid} 当前状态为 {inv['status']}，仅 NORMAL 可绑定"}
+            if int(inv.get("is_closed") or 0):
+                return {"ok": False, "message": "该发票已被其他单据占用，系统严禁拆分报销。"}
             if match_repo.active_for_invoice(conn, iid) is not None:
                 return {"ok": False, "message": f"发票 #{iid} 已被占用，请先解绑"}
             # 业务规则安检：任一张被阻断则整批不写入（临时豁免须填理由）
@@ -973,6 +1008,46 @@ def manual_batch_bind(invoice_ids: List[int], reimburse_id: int,
         }
 
 
+def fix_registered_invoice_no(reimburse_id: int, invoice_no: str,
+                              operator: str = None) -> dict:
+    """盲区快捷修正：改写报销单登记的发票号。
+
+    库中存在可用（NORMAL 且未被占用）的同号发票时，立即对该报销单做一次局部重匹配；
+    否则仅保存登记号，等发票导入后重新匹配。
+    """
+    no = (invoice_no or "").strip()
+    if not no:
+        return {"ok": False, "message": "请填写正确的发票号"}
+    operator = operator or settings.default_operator
+    with db.read() as conn:
+        reb = reimburse_repo.get(conn, reimburse_id)
+        if reb is None:
+            return {"ok": False, "message": "报销单不存在"}
+        if match_repo.active_for_reimburse(conn, reimburse_id):
+            return {"ok": False, "message": "该报销单已存在生效匹配，请先解除后再修正"}
+        inv = conn.execute(
+            "SELECT id, status, is_closed FROM invoice WHERE invoice_no = ? "
+            "AND deleted_at IS NULL ORDER BY id LIMIT 1", (no,)).fetchone()
+
+    if inv is not None:
+        if inv["status"] != "NORMAL" or int(inv["is_closed"] or 0):
+            return {"ok": False, "message": "该发票号对应的发票已被占用或不可用"}
+        return quick_fix(match_id=None, invoice_id=inv["id"], reimburse_id=reimburse_id,
+                         reb_fields={"invoice_no": no}, operator=operator,
+                         reason="盲区修正登记发票号",
+                         reason_option="票号填错已核实")
+
+    old = (reb.get("invoice_no") or "")
+    with db.tx() as conn:
+        conn.execute("UPDATE reimburse SET invoice_no = ? WHERE id = ?", (no, reimburse_id))
+        from app.service import audit_service
+        audit_service.log(conn, "reimburse_fix_invoice_no", "reimburse", reimburse_id,
+                          reb.get("reimburse_no") or "", old or "-", no, operator,
+                          "差异报告盲区：修正登记发票号")
+    return {"ok": True,
+            "message": f"登记发票号已改为 {no}（库中暂无该发票，导入后可点击重算匹配）"}
+
+
 def exempt_match(match_id: int, operator: str = None, reason: str = "") -> dict:
     """临时豁免：管理员强制绑定被规则阻断的匹配。
 
@@ -997,6 +1072,8 @@ def exempt_match(match_id: int, operator: str = None, reason: str = "") -> dict:
             return {"ok": False, "message": "发票或报销单不存在，无法豁免"}
         if inv["status"] != "NORMAL":
             return {"ok": False, "message": f"仅 NORMAL 发票可豁免绑定（当前: {inv['status']}）"}
+        if int(inv.get("is_closed") or 0):
+            return {"ok": False, "message": "该发票已被其他单据占用，系统严禁拆分报销。"}
         if match_repo.active_for_invoice(conn, m["invoice_id"]):
             return {"ok": False, "message": "该发票已存在生效匹配"}
         if match_repo.active_for_reimburse(conn, reb_id):
@@ -1307,11 +1384,29 @@ def unmatch(match_id: int, operator: str = None, reason: str = "",
 
         match_repo.update_status(conn, match_id, "REJECTED", operator)
         _append_message(conn, match_id, f"解除匹配: {reason or '无备注'}")
+        released_ids = [m["invoice_id"]]
         try:
             change_invoice_status(conn, m["invoice_id"], "NORMAL",
                                   f"解除匹配 (match#{match_id}): {reason or '无备注'}", operator)
         except Exception as e:
             logger.warning("解除匹配时发票状态回转失败: %s", e)
+        # 组合匹配：同组其余已生效发票一并释放，避免残留闭环
+        if m["match_type"] == T_MANY_TO_ONE and reb_id:
+            active_rows = [r for r in match_repo.list(
+                conn, statuses=["MATCHED", "CONFIRMED"], limit=10000)
+                if r["id"] != match_id and r["match_type"] == T_MANY_TO_ONE]
+            pairs = match_repo.pairs_of(conn, [r["id"] for r in active_rows])
+            for sib in active_rows:
+                if not any(p["reimburse_id"] == reb_id for p in pairs.get(sib["id"], [])):
+                    continue
+                match_repo.update_status(conn, sib["id"], "REJECTED", operator)
+                _append_message(conn, sib["id"], f"组合解除：随 match#{match_id} 释放")
+                released_ids.append(sib["invoice_id"])
+                try:
+                    change_invoice_status(conn, sib["invoice_id"], "NORMAL",
+                                          f"组合解除 (match#{match_id})", operator)
+                except Exception as e:
+                    logger.warning("组合解除时发票状态回转失败: %s", e)
         unm_detail = {
             "why": reason or "无备注",
             "reason_option": reason_option or "",
@@ -1334,7 +1429,16 @@ def unmatch(match_id: int, operator: str = None, reason: str = "",
                           "已匹配", "已解除", operator,
                           (reason or "无备注") + "；" + detail,
                           detail_json=unm_detail)
-        return {"ok": True, "message": "匹配已解除，发票回到 NORMAL；双方分类各自保留"}
+        # 资源释放后：同一事务内唤醒因「发票被占用」失败的单据
+        # 排除本次被解除的单据自身，避免刚解除就被队列立刻重新占用
+        requeue = release_invoices_and_requeue(
+            conn, released_ids, operator,
+            f"解除匹配 {reb_no or ('#' + str(match_id))}",
+            exclude_ids=[reb_id] if reb_id else None)
+        msg = "匹配已解除，发票回到 NORMAL；双方分类各自保留"
+        if requeue["auto_matched"]:
+            msg += f"；已自动为 {requeue['auto_matched']} 张排队单据完成重新匹配"
+        return {"ok": True, "message": msg, "requeue": requeue}
 
 
 def _append_message(conn, match_id: int, text: str) -> None:
@@ -1342,6 +1446,20 @@ def _append_message(conn, match_id: int, text: str) -> None:
     msg = (m["message"] + " | " + text) if m.get("message") else text
     conn.execute("UPDATE match_result SET message = ?, updated_at = datetime('now','localtime') WHERE id = ?",
                  (msg, match_id))
+
+
+def _combo_siblings(conn, match_id: int, reb_id: Optional[int],
+                    statuses=("SUSPICIOUS", "CONFLICT", "UNMATCHED")) -> List[dict]:
+    """同一报销单的 many_to_one 组合兄弟记录：确认时整组闭环，解除时整组释放。"""
+    if not reb_id:
+        return []
+    rows = [r for r in match_repo.list(conn, statuses=list(statuses), limit=10000)
+            if r["match_type"] == T_MANY_TO_ONE and r["id"] != match_id]
+    if not rows:
+        return []
+    pairs = match_repo.pairs_of(conn, [r["id"] for r in rows])
+    return [r for r in rows
+            if any(p["reimburse_id"] == reb_id for p in pairs.get(r["id"], []))]
 
 
 def _finalize_binding(conn, match_id: int, invoice_id: int,
@@ -1374,6 +1492,153 @@ def _finalize_binding(conn, match_id: int, invoice_id: int,
     return len(kicked)
 
 
+# ---------------------------------------------------------------- 资源释放与排队重算
+def release_invoices_and_requeue(conn, invoice_ids, operator: str,
+                                 trigger: str = "",
+                                 exclude_ids: Optional[List[int]] = None) -> dict:
+    """释放发票后，在同一事务内唤醒「因占用失败」的报销单（先到先得）。
+
+    - 只重置发票状态，绝不物理删除发票记录；
+    - 扫描未匹配且失败原因含「占用」的报销单，二次实时校验其当前发票号；
+    - 按 id 升序逐条分配：前置状态复核 + 同号可用发票复核 + 规则安检；
+    - SQLite 无 SELECT ... FOR UPDATE：外层 db.tx() 为 BEGIN IMMEDIATE 独占写锁，
+      配合处理瞬间的实时复核与条件更新，达到行级排他效果。
+    """
+    ids = [int(i) for i in dict.fromkeys(invoice_ids or []) if i]
+    if not ids:
+        return {"released": 0, "auto_matched": 0, "allocated": []}
+
+    pool: Dict[int, str] = {}
+    for iid in ids:
+        row = conn.execute(
+            "SELECT id, invoice_no, deleted_at FROM invoice WHERE id = ?", (iid,)).fetchone()
+        if row is None or row["deleted_at"]:
+            continue
+        pool[iid] = (row["invoice_no"] or "").strip()
+        # 重置为「未使用」：状态、闭环标记、已报销金额全部清零
+        conn.execute(
+            "UPDATE invoice SET status = 'NORMAL', is_closed = 0, matched_amount = '0.00'"
+            " WHERE id = ?", (iid,))
+    if not pool:
+        return {"released": 0, "auto_matched": 0, "allocated": []}
+    logger.info("释放发票 %s 张（%s）", len(pool), trigger or "未命名操作")
+
+    no_to_ids: Dict[str, List[int]] = {}
+    for iid, no in pool.items():
+        if no:
+            no_to_ids.setdefault(no, []).append(iid)
+
+    # 候选队列：未匹配 + 失败原因含占用，按创建时间/主键升序（先到先得）
+    candidates = conn.execute(
+        "SELECT id FROM reimburse WHERE deleted_at IS NULL "
+        "AND (remark LIKE '%发票已被占用%' OR remark LIKE '%已被其他报销单占用%' "
+        "OR remark LIKE '%前序排队单据%') "
+        "ORDER BY COALESCE(created_at, ''), id").fetchall()
+    active_rebs = match_repo.active_reimburse_ids(conn)
+    skip_ids = set(exclude_ids or [])
+
+    allocated: List[dict] = []
+    consumed: Dict[str, str] = {}
+    for cand in candidates:
+        rid = cand["id"]
+        if rid in active_rebs or rid in skip_ids:
+            continue
+        # 二次实时校验：读取单据「当前」填写的发票号（防止期间被人工改号）
+        fresh = conn.execute(
+            "SELECT id, reimburse_no, invoice_no, amount, remark, deleted_at "
+            "FROM reimburse WHERE id = ?", (rid,)).fetchone()
+        if fresh is None or fresh["deleted_at"]:
+            continue
+        no = (fresh["invoice_no"] or "").strip()
+        cand_ids = no_to_ids.get(no) if no else None
+        if not cand_ids:
+            continue
+        # 前置状态拦截：处理瞬间仍须是未匹配（且没有被其他线程占用）
+        if match_repo.active_for_reimburse(conn, rid) is not None:
+            continue
+        target = None
+        for iid in cand_ids:
+            inv = conn.execute(
+                "SELECT id, status, is_closed, deleted_at FROM invoice WHERE id = ?",
+                (iid,)).fetchone()
+            if (inv is not None and not inv["deleted_at"]
+                    and inv["status"] == "NORMAL" and not int(inv["is_closed"] or 0)):
+                target = iid
+                break
+        if target is None:
+            if no in consumed:
+                _write_note(conn, dict(fresh),
+                            [f"发票已被前序排队单据 {consumed[no]} 重新占用"])
+            continue
+        mid = _bind_from_release_pool(conn, target, dict(fresh), operator, trigger)
+        if mid is None:
+            continue
+        consumed[no] = fresh["reimburse_no"] or f"#{rid}"
+        allocated.append({"reimburse_no": fresh["reimburse_no"] or "",
+                          "invoice_no": no, "match_id": mid})
+
+    if allocated:
+        logger.info("排队重算完成 %s 张：%s", len(allocated),
+                    "、".join(a["reimburse_no"] or "?" for a in allocated))
+    return {"released": len(pool), "auto_matched": len(allocated),
+            "allocated": allocated}
+
+
+def _bind_from_release_pool(conn, invoice_id: int, reb_row: dict,
+                            operator: str, trigger: str) -> Optional[int]:
+    """把释放池中的发票绑定给排队报销单（单事务内直接生效）。"""
+    inv = invoice_repo.get(conn, invoice_id)
+    if inv is None or reb_row.get("deleted_at"):
+        return None
+    reb_dto = _reb_dto(reb_row)
+    inv_dto = _inv_dto(inv)
+    # 规则安检：阻断则不占用（交人工处理），避免排队绕过业务规则
+    blocks, warns = _pair_rules(inv_dto, reb_dto, _load_rules(conn))
+    if blocks:
+        _write_note(conn, reb_row, [f"规则阻断：{blocks}"])
+        return None
+
+    gap = _amount_gap([inv], reb_row.get("amount"))
+    inv_no = inv.get("invoice_no") or ""
+    reb_no = reb_row.get("reimburse_no") or ""
+    msg = (f"占用释放后排队自动匹配 [发票:{inv_no or '（无号）'}] "
+           f"至 [报销单:{reb_no or '—'}]（触发：{trigger or '资源释放'}）")
+    detail = {
+        "why": msg,
+        "reason_option": "",
+        "invoice_id": invoice_id,
+        "invoice_no": inv_no,
+        "reimburse_id": reb_row["id"],
+        "reimburse_no": reb_no,
+        "match_id": None,
+        "queue": True,
+        "changes": [{"field": "触发原因", "old": "未匹配（发票被占用）",
+                     "new": "前序单据释放后排队自动匹配"}],
+    }
+    mid = match_repo.insert(conn, {
+        "invoice_id": invoice_id, "reimburse_id": reb_row["id"],
+        "match_type": T_EXACT, "match_score": 1.0, "status": "CONFIRMED",
+        "diff_fields": ["amount"] if gap else [], "message": msg,
+        "warning_msg": warns, "detail": detail,
+        "confirmed_by": operator, "confirmed_at": None,
+    })
+    detail["match_id"] = mid
+    match_repo.update_detail(conn, mid, detail)
+    change_invoice_status(conn, invoice_id, "MATCHED",
+                          f"排队自动匹配 (match#{mid})", operator,
+                          matched_amount=reb_row.get("amount"))
+    _detect_conflict(conn, reb_row["id"])
+    latest = reimburse_repo.get(conn, reb_row["id"]) or reb_row
+    _write_note(conn, latest, [])
+    _finalize_binding(conn, mid, invoice_id, reb_row["id"], operator)
+    from app.service import audit_service
+    audit_service.log(conn, "match_queue_rebind", "match", mid,
+                      f"发票:{inv_no or '（无号）'} / 报销单:{reb_no or '—'}",
+                      "未匹配（发票被占用）", "已确认", operator, msg,
+                      detail_json=detail)
+    return mid
+
+
 # ---------------------------------------------------------------- 查询
 def list_matches(statuses: List[str] = None) -> List[dict]:
     with db.read() as conn:
@@ -1388,6 +1653,24 @@ def list_matches(statuses: List[str] = None) -> List[dict]:
         for r in rows:
             r["pair_reimburses"] = [reb_names.get(p["reimburse_id"]) for p in pairs.get(r["id"], [])]
             r["pair_reimburses"] = [x for x in r["pair_reimburses"] if x]
+        # 组合匹配：列出该组涉及的全部发票号，便于在说明列直接核对；同时带上风控标签
+        inv_ids = {p["invoice_id"] for ps in pairs.values() for p in ps} | {r["invoice_id"] for r in rows}
+        inv_nos, inv_risk = {}, {}
+        if inv_ids:
+            q = ",".join("?" * len(inv_ids))
+            for row in conn.execute(
+                    f"SELECT id, invoice_no, risk_note FROM invoice WHERE id IN ({q})",
+                    list(inv_ids)):
+                inv_nos[row["id"]] = row["invoice_no"] or ""
+                inv_risk[row["id"]] = row["risk_note"] or ""
+        from app.service.risk_service import decode_note
+        for r in rows:
+            if r.get("match_type") == "many_to_one":
+                nos = [inv_nos.get(p["invoice_id"]) for p in pairs.get(r["id"], [])]
+                r["pair_invoice_nos"] = [n for n in nos if n]
+            else:
+                r["pair_invoice_nos"] = []
+            r["risk_tags"], r["risk_items"] = decode_note(inv_risk.get(r["invoice_id"], ""))
         # 软占用标记：同一发票被多张报销单同时列为候选（待人工终裁，模块一.2）
         pending_rebs: Dict[int, set] = {}
         for r in rows:

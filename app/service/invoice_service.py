@@ -255,6 +255,7 @@ def _import_one(file_name: str, content: bytes, operator: str) -> dict:
                                   f"解析成功（engine={result.engine}）", operator)
             t_v = time.perf_counter()
             status, message = _validate_and_dedup(conn, invoice_id, operator)
+            _scan_risk(conn, invoice_id)
             logger.info("导入分段 %s: 存盘=%.0fms 解析=%.0fms 落库=%.0fms (update=%.0f "
                         "status=%.0f validate=%.0f)", file_name, save_ms, parse_ms,
                         (time.perf_counter() - t_write) * 1000, (t_s - t_u) * 1000,
@@ -273,6 +274,15 @@ def _import_one(file_name: str, content: bytes, operator: str) -> dict:
         return {"file_name": file_name, "ok": False, "invoice_id": invoice_id,
                 "status": InvoiceStatus.ABNORMAL.value,
                 "message": _friendly_parse_error(file_type, result.error)}
+
+
+def _scan_risk(conn, invoice_id: int) -> None:
+    """导入完成后执行轻量风控扫描；开关关闭时内部直接跳过，异常不影响导入。"""
+    try:
+        from app.service import risk_service
+        risk_service.scan_invoice(conn, invoice_id)
+    except Exception as e:
+        logger.warning("风控扫描失败（不影响导入）: %s", e)
 
 
 def _validate_and_dedup(conn, invoice_id: int, operator: str) -> tuple[str, str]:
@@ -371,6 +381,7 @@ def manual_create(fields: dict, operator: str = None) -> dict:
         change_invoice_status(conn, invoice_id, InvoiceStatus.PARSED.value,
                               "人工录入", operator)
         status, message = _validate_and_dedup(conn, invoice_id, operator)
+        _scan_risk(conn, invoice_id)
         return {"ok": status == InvoiceStatus.NORMAL.value, "invoice_id": invoice_id,
                 "status": status, "message": message}
 
@@ -501,9 +512,22 @@ def delete_invoice(invoice_id: int, operator: str = None) -> dict:
         row = invoice_repo.get(conn, invoice_id)
         if row is None or row.get("deleted_at"):
             return {"ok": False, "message": f"发票 #{invoice_id} 不存在"}
+        # 生效匹配（人工确认/自动匹配）先快照：若存在同号重复发票，删除后应由其接管
+        active_snaps = []
+        for a in conn.execute(
+                "SELECT * FROM match_result WHERE invoice_id=? "
+                "AND status IN ('MATCHED','CONFIRMED')", (invoice_id,)).fetchall():
+            active_snaps.append({
+                "row": dict(a),
+                "pairs": [p[0] for p in conn.execute(
+                    "SELECT reimburse_id FROM match_pair WHERE match_id=?", (a["id"],)).fetchall()],
+            })
         # 规则 1：同一事务内显式清理匹配记录（回收站恢复时发票回到未匹配）
         n_match = match_repo.delete_for_invoice(conn, invoice_id)
         invoice_repo.soft_delete(conn, invoice_id)
+        # 删除即退出闭环：清空闭环标记，避免回收站里的发票仍被计为已闭环
+        conn.execute("UPDATE invoice SET is_closed = 0, matched_amount = '0.00' WHERE id = ?",
+                     (invoice_id,))
         audit_service.log(conn, "delete", "invoice", invoice_id,
                           row.get("invoice_no") or f"#{invoice_id}",
                           "有效", "已删除（移入回收站）", operator,
@@ -528,11 +552,46 @@ def delete_invoice(invoice_id: int, operator: str = None) -> dict:
                 logger.info("删除发票 #%s 后，孤儿 DUPLICATE #%s 恢复为 %s",
                             invoice_id, dup_id, new_status)
 
+        # 重复发票接管：被删的是已确认/自动匹配的发票时，同号重复票继承该生效匹配，
+        # 避免报销单被释放、重复票却停在未匹配（账实不符）
+        takeover = None
+        if active_snaps:
+            cand_id = next((i for i, s in recovered if s == "NORMAL"), None)
+            no = (row.get("invoice_no") or "").strip()
+            if cand_id is None and no:
+                cand = conn.execute(
+                    "SELECT id FROM invoice WHERE id<>? AND deleted_at IS NULL "
+                    "AND status='NORMAL' AND invoice_no=? ORDER BY id LIMIT 1",
+                    (invoice_id, no)).fetchone()
+                cand_id = cand[0] if cand else None
+            if cand_id:
+                for snap in active_snaps:
+                    m = snap["row"]
+                    cur = conn.execute(
+                        "INSERT INTO match_result(invoice_id, reimburse_id, match_type, match_score,"
+                        " status, diff_fields, match_points, message, warning_msg, detail,"
+                        " confirmed_by, confirmed_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                        (cand_id, m["reimburse_id"], m["match_type"], m["match_score"],
+                         m["status"], m["diff_fields"], m["match_points"],
+                         (m["message"] or "") +
+                         f"\n[接管] 原发票 #{invoice_id} 已删除，由重复发票 #{cand_id} 承接该匹配",
+                         m["warning_msg"], m["detail"], m["confirmed_by"], m["confirmed_at"]))
+                    for rid in snap["pairs"]:
+                        conn.execute(
+                            "INSERT OR IGNORE INTO match_pair(match_id, invoice_id, reimburse_id)"
+                            " VALUES(?,?,?)", (cur.lastrowid, cand_id, rid))
+                change_invoice_status(conn, cand_id, "MATCHED",
+                                      f"重复发票承接 #{invoice_id} 的生效匹配", operator)
+                takeover = cand_id
+                logger.info("发票 #%s 删除后，重复发票 #%s 接管其生效匹配", invoice_id, cand_id)
+
     msg = "发票已移入回收站（匹配记录已清理，可在 20 秒内撤销）"
+    if takeover:
+        msg += f"；重复发票 #{takeover} 已接管原匹配关系"
     if recovered:
         msg += f"；{len(recovered)} 张重复发票已自动恢复: " + \
                ", ".join(f"#{i}->{s}" for i, s in recovered)
-    return {"ok": True, "message": msg, "recovered": recovered,
+    return {"ok": True, "message": msg, "recovered": recovered, "takeover": takeover,
             "ids": [invoice_id], "batch_id": batch_id}
 
 
@@ -570,8 +629,12 @@ def restore_invoices(invoice_ids: List[int], operator: str = None) -> dict:
                     "SELECT 1 FROM match_result WHERE invoice_id = ? "
                     "AND status IN ('MATCHED','CONFIRMED') LIMIT 1", (invoice_id,)).fetchone()
                 if not active:
-                    conn.execute("UPDATE invoice SET status = 'NORMAL' WHERE id = ?",
-                                 (invoice_id,))
+                    conn.execute("UPDATE invoice SET status = 'NORMAL', is_closed = 0, "
+                                 "matched_amount = '0.00' WHERE id = ?", (invoice_id,))
+            else:
+                # 恢复的发票重新进入候选池：闭环标记必须清零
+                conn.execute("UPDATE invoice SET is_closed = 0, matched_amount = '0.00' "
+                             "WHERE id = ?", (invoice_id,))
             restored.append(invoice_id)
             audit_service.log(conn, "restore", "invoice", invoice_id,
                               row.get("invoice_no") or f"#{invoice_id}",

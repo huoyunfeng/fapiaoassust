@@ -44,6 +44,15 @@ templates.env.globals["license_status"] = license_service.status
 # 模板内可直接判断某个付费能力是否开通（导航锁定态 / 按钮置灰 / 升级引导）
 templates.env.globals["feature_allowed"] = license_service.feature_allowed
 templates.env.filters["fromjson"] = lambda s: (json.loads(s) if isinstance(s, str) and s else (s if isinstance(s, dict) else {}))
+def _attach_risk(rows: list) -> None:
+    """把 risk_note 解码成模板可直接使用的标签与明细（坏数据安全降级）。"""
+    from app.service import risk_service
+    for r in rows:
+        if isinstance(r, dict):
+            tags, items = risk_service.decode_note(r.get("risk_note") or "")
+            r["risk_tags"], r["risk_items"] = tags, items
+
+
 # 业务规则中文展示（设置页规则列表）
 RULE_TYPE_CN = {
     "buyer_tax_no": "购买方税号白名单", "seller_blacklist": "销方黑名单",
@@ -256,6 +265,7 @@ def invoices_page(request: Request, status: str = "", q: str = "",
                                          date_from=date_from_f, date_to=date_to_f,
                                          limit=page_size, offset=(page - 1) * page_size,
                                          since=None, owner_user_id=owner)
+    _attach_risk(rows)
     return templates.TemplateResponse(request, "invoices.html", {
         "request": request, "rows": rows,
         "status": status, "q": q,
@@ -286,6 +296,7 @@ def invoice_detail_page(request: Request, invoice_id: int):
 def reimburses_page(request: Request, batch_id: Optional[str] = None, q: str = "",
                     status: str = "", date_from: str = "", date_to: str = "",
                     range_: str = Query("", alias="range"),
+                    sort: str = "",
                     page: int = 1, page_size: int = 20, focus_id: int = 0):
     batches = reimburse_service.list_batches()
     # 默认激活最新批次：仅在 URL 完全没有 batch_id 参数时生效；
@@ -332,6 +343,7 @@ def reimburses_page(request: Request, batch_id: Optional[str] = None, q: str = "
                                              since=since_f,
                                              date_from=date_from_f,
                                              date_to=date_to_f)
+    # 列表排序轮换：详见下方 _assign_seq 的 reverse 参数
     # 路由联动语义参数：按匹配状态过滤（matched 口径与差异报告一致）
     if status == "unmatched":
         rows = [r for r in rows if not r.get("matched")]
@@ -346,7 +358,10 @@ def reimburses_page(request: Request, batch_id: Optional[str] = None, q: str = "
         tpl_names = {t["id"]: t["name"] for t in template_service.list()}
         for r in rows:
             r["_template_name"] = tpl_names.get(r.get("template_id")) or "手动录入"
-    _assign_seq(rows, batches if all_batches else None)
+    # 列表排序轮换：asc = 最早的在前（首次进入），desc = 最新的在前（再次进入）。
+    # 方向固化到 URL 的 sort 参数，删除后刷新沿用当前方向，不会突然翻转。
+    _assign_seq(rows, batches if all_batches else None,
+                reverse=(sort or "").lower() == "desc")
     for r in rows:
         r["cells"] = [_cell_value(r, c) for c in columns]
     # 分页（focus 定位先算目标行所在页码）
@@ -374,19 +389,21 @@ def reimburses_page(request: Request, batch_id: Optional[str] = None, q: str = "
     })
 
 
-def _assign_seq(rows: list, batches: list = None) -> None:
+def _assign_seq(rows: list, batches: list = None, reverse: bool = False) -> None:
     """视觉序号：与 Excel / 数据库主键完全无关，只按当前展示顺序生成。
 
     - 具体批次：1,2,3… 全量连续（翻页自动衔接，如第二页 21 起）；
     - 全部批次：先按批次分组排序，每个批次各自从 1 开始。
+    - reverse=True 时整体倒序（用于列表排序轮换），序号仍按展示顺序重排。
     """
     if batches is None:
-        rows.sort(key=lambda r: r.get("id") or 0)
+        rows.sort(key=lambda r: r.get("id") or 0, reverse=reverse)
         for i, r in enumerate(rows, start=1):
             r["_seq"] = i
         return
     order = {b["batch_id"]: i for i, b in enumerate(batches)}
-    rows.sort(key=lambda r: (order.get(r.get("batch_id"), 999), r.get("id") or 0))
+    rows.sort(key=lambda r: (order.get(r.get("batch_id"), 999), r.get("id") or 0),
+              reverse=reverse)
     counts = {}
     for r in rows:
         b = r.get("batch_id") or ""
@@ -514,6 +531,19 @@ def _category_payload(row: dict) -> dict:
     }
 
 
+def _pending_has_diff(m: dict) -> bool:
+    """待人工行是否存在金额/分类差异（决定操作列是否提供「一键更正」）。"""
+    from decimal import Decimal
+    a, b = m.get("reimburse_amount"), m.get("total_amount")
+    if a is not None and b is not None:
+        try:
+            if abs(Decimal(str(a)) - Decimal(str(b))) > Decimal("0.005"):
+                return True
+        except Exception:
+            pass
+    return "分类" in (m.get("message") or "")
+
+
 @pages.get("/matches", response_class=HTMLResponse)
 def matches_page(request: Request):
     # 待人工处理：有报销单关联的 CONFLICT / UNMATCHED（含存量 SUSPICIOUS）；
@@ -522,6 +552,9 @@ def matches_page(request: Request):
     pending = [m for m in evals if m["reimburse_id"] is not None or m["pair_reimburses"]]
     unmatched = [m for m in evals if m["reimburse_id"] is None and not m["pair_reimburses"]]
     active = match_service.list_matches(["MATCHED", "CONFIRMED"])
+    # 操作列分流：有差异走「去处理」下拉（确认/一键更正/豁免/拒绝），无差异直接「确认匹配」
+    for m in pending:
+        m["has_diff"] = _pending_has_diff(m)
     options = match_service.matchable_options()
     return templates.TemplateResponse(request, "matches.html", {
         "request": request,

@@ -311,6 +311,37 @@ def _apply_q(items: List[dict], q: str, keys: tuple) -> List[dict]:
     return [r for r in items if _hit(_haystack(*[r.get(k) for k in keys]), q)]
 
 
+def _unmatched_reb_reasons(conn, rows: List[dict]) -> Dict[int, dict]:
+    """未匹配报销单的「未匹配原因」（业务话术，不暴露技术日志）。
+
+    - 未登记发票号：未填发票号且无金额匹配组合
+    - 票号在库中不存在：填写的发票号在库中不存在
+    - 票号已被生效匹配占用：发票号已被其他单据占用
+    - 其余：发票号存在但暂无可用组合
+    """
+    active = match_repo.active_invoice_ids(conn)
+    out: Dict[int, dict] = {}
+    for r in rows:
+        no = (r.get("invoice_no") or "").strip()
+        if not no:
+            out[r["id"]] = {"code": "no_number", "level": "muted",
+                            "text": "未填发票号且无金额匹配组合"}
+            continue
+        hit = conn.execute(
+            "SELECT id FROM invoice WHERE invoice_no = ? AND deleted_at IS NULL "
+            "ORDER BY id LIMIT 1", (no,)).fetchone()
+        if hit is None:
+            out[r["id"]] = {"code": "not_found", "level": "danger",
+                            "text": "填写的发票号在库中不存在"}
+        elif hit["id"] in active:
+            out[r["id"]] = {"code": "occupied", "level": "danger",
+                            "text": "发票号已被其他单据占用"}
+        else:
+            out[r["id"]] = {"code": "no_combo", "level": "muted",
+                            "text": "发票号存在，暂无可匹配组合"}
+    return out
+
+
 ALLOWED_PAGE_SIZES = (20, 50, 100)
 
 
@@ -347,6 +378,7 @@ def report_payload(filter: str = "", q: str = "", page_size: int = 20,
     with db.read() as conn:
         categories = category_dict_repo.names(conn)
         pending = _pending_total(conn)
+        reb_reasons = _unmatched_reb_reasons(conn, unmatched_rebs)
 
     # 左侧导航红点数量：全局口径（不受关键词搜索影响）
     badges = {
@@ -385,7 +417,9 @@ def report_payload(filter: str = "", q: str = "", page_size: int = 20,
         "unmatched_reimburses": [
             {"id": r["id"], "reimburse_no": r["reimburse_no"], "amount": _num(r["amount"]),
              "submitter": r.get("submitter") or "", "invoice_no": r.get("invoice_no") or "",
-             "expense_type": r.get("expense_type") or ""}
+             "expense_type": r.get("expense_type") or "",
+             "reason": (reb_reasons.get(r["id"]) or {}).get("text", ""),
+             "reason_level": (reb_reasons.get(r["id"]) or {}).get("level", "muted")}
             for r in r_rows],
         "unmatched_invoices": [
             {"id": r["id"], "invoice_no": r.get("invoice_no") or "",

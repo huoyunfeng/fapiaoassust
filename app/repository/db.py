@@ -69,6 +69,10 @@ CREATE TABLE IF NOT EXISTS invoice (
     status           TEXT NOT NULL DEFAULT 'PARSING'
                      CHECK(status IN ('PARSING','PARSED','NORMAL','ABNORMAL','DUPLICATE','MATCHED')),
     is_red_flush     INTEGER NOT NULL DEFAULT 0,
+    -- 闭环标记：一旦匹配生效（无论是否部分报销），置 1 并永久退出候选池
+    matched_amount   TEXT NOT NULL DEFAULT '0.00',
+    is_closed        INTEGER NOT NULL DEFAULT 0,
+    risk_note        TEXT NOT NULL DEFAULT '',
     -- 归属员工（数据隔离：员工只能看到自己上传的数据；财务/管理员不受限）
     owner_user_id    INTEGER,
     -- 软删除标记：常规删除只写 deleted_at，物理删除仅在回收站「彻底删除」/自动清理时发生
@@ -473,6 +477,20 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if "is_attachment_deleted" not in inv_cols:
         conn.execute("ALTER TABLE invoice ADD COLUMN is_attachment_deleted INTEGER NOT NULL DEFAULT 0")
         logger.info("迁移: invoice 表新增列 is_attachment_deleted")
+    # 1a1a. 闭环字段：已报销金额 + 是否闭环（严禁一票多报/拆分报销）
+    if "matched_amount" not in inv_cols:
+        conn.execute("ALTER TABLE invoice ADD COLUMN matched_amount TEXT NOT NULL DEFAULT '0.00'")
+        logger.info("迁移: invoice 表新增列 matched_amount")
+    if "is_closed" not in inv_cols:
+        conn.execute("ALTER TABLE invoice ADD COLUMN is_closed INTEGER NOT NULL DEFAULT 0")
+        logger.info("迁移: invoice 表新增列 is_closed")
+    if "risk_note" not in inv_cols:
+        conn.execute("ALTER TABLE invoice ADD COLUMN risk_note TEXT NOT NULL DEFAULT ''")
+        logger.info("迁移: invoice 表新增列 risk_note")
+    # 历史数据补齐：已匹配发票一律视为闭环（金额缺失时按价税合计回填）
+    conn.execute("UPDATE invoice SET is_closed = 1 WHERE status = 'MATCHED' AND is_closed = 0")
+    conn.execute("UPDATE invoice SET matched_amount = COALESCE(total_amount, '0.00') "
+                 "WHERE status = 'MATCHED' AND matched_amount = '0.00'")
     # 1a1b. 数据隔离：发票/报销单增加归属员工列
     if "owner_user_id" not in inv_cols:
         conn.execute("ALTER TABLE invoice ADD COLUMN owner_user_id INTEGER")
