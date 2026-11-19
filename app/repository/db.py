@@ -126,6 +126,7 @@ CREATE TABLE IF NOT EXISTS reimburse (
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     batch_id       TEXT NOT NULL,
     template_id    INTEGER,
+    source_file    TEXT NOT NULL DEFAULT '',
     reimburse_no   TEXT NOT NULL,
     submitter      TEXT NOT NULL DEFAULT '',
     reimburse_date TEXT,
@@ -445,6 +446,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
     cols = {r[1] for r in conn.execute("PRAGMA table_info(reimburse)").fetchall()}
     for col, ddl in [
         ("template_id", "ALTER TABLE reimburse ADD COLUMN template_id INTEGER"),
+        ("source_file", "ALTER TABLE reimburse ADD COLUMN source_file TEXT NOT NULL DEFAULT ''"),
         ("extra_data",  "ALTER TABLE reimburse ADD COLUMN extra_data TEXT NOT NULL DEFAULT '{}'"),
         ("source_row",  "ALTER TABLE reimburse ADD COLUMN source_row INTEGER"),
         ("parent_id",   "ALTER TABLE reimburse ADD COLUMN parent_id INTEGER"),

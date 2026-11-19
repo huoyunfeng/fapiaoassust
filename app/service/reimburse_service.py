@@ -262,7 +262,7 @@ def _dup_summary(row: dict) -> str:
 
 
 def detect_duplicates(rows: List[dict], template_id: Optional[int],
-                      months: int = 3) -> List[dict]:
+                      months: int = 3, exclude_batch_id: str = None) -> List[dict]:
     """双层查重：Excel 内部重复 + 同模板历史记录（默认近 3 个月）。
 
     命中的行会被就地标记 `_dup` / `_dup_refs`，供导入阶段跳过或打标入库。
@@ -293,12 +293,15 @@ def detect_duplicates(rows: List[dict], template_id: Optional[int],
     hist: List[dict] = []
     if template_id is not None:
         since = (datetime.now() - timedelta(days=months * 30)).strftime("%Y-%m-%d")
+        sql = ("SELECT id, reimburse_no, reimburse_date, period_start, period_end, "
+               "amount, invoice_no, submitter, extra_data, created_at "
+               "FROM reimburse WHERE created_at >= ? AND template_id = ? AND deleted_at IS NULL")
+        params: list = [since, template_id]
+        if exclude_batch_id:
+            sql += " AND batch_id != ?"
+            params.append(exclude_batch_id)
         with db.read() as conn:
-            hist = [dict(r) for r in conn.execute(
-                "SELECT id, reimburse_no, reimburse_date, period_start, period_end, "
-                "amount, invoice_no, submitter, extra_data, created_at "
-                "FROM reimburse WHERE created_at >= ? AND template_id = ?",
-                (since, template_id)).fetchall()]
+            hist = [dict(r) for r in conn.execute(sql, params).fetchall()]
     hist_map: dict = {}
     for h in hist:
         hist_map.setdefault(_dup_key(h), h)
@@ -336,21 +339,42 @@ def _attach_dup(row: dict) -> None:
     row["dup_items"] = refs
 
 
+def _normalize_source_file(file_name: str) -> str:
+    """仅保留文件名，统一 Windows / POSIX 路径并去除首尾空白。"""
+    return re.split(r"[/\\]", (file_name or "").strip())[-1].strip()
+
+
 def import_excel(file_name: str, content: bytes, batch_id: str = None,
                  operator: str = None, template_id: int = None,
                  fields_config: dict = None, remember_mapping: bool = True,
                  enterprise_id: int = None, user_id: int = None,
-                 on_duplicate: str = None) -> dict:
-    """导入报销单 Excel。
-
-    Args:
-        template_id:  指定模板 id（优先）。为 None 时取默认模板。
-        fields_config: 临时字段映射（映射向导传入）。优先级高于 template_id。
-        remember_mapping: 导入成功后是否回写映射缓存。
-        on_duplicate:  查重处置：None=先返回确认；"skip"=只导入不重复行；
-                       "force"=全部导入并打「疑似重复」标记。
-    """
+                 on_duplicate: str = None, overwrite_batch_id: str = None) -> dict:
+    """导入报销单 Excel；同名覆盖时，旧批次替换与新行写入共用同一事务。"""
     operator = operator or settings.default_operator
+    source_file = _normalize_source_file(file_name)
+    overwrite_batch_id = (overwrite_batch_id or "").strip() or None
+
+    # 同名预检只读，不在用户确认覆盖前触碰旧批次。
+    if source_file:
+        with db.read() as conn:
+            existing = reimburse_repo.find_batch_by_source_file(conn, source_file)
+        if overwrite_batch_id:
+            if existing is None or existing["batch_id"] != overwrite_batch_id:
+                return {"ok": False, "message": "覆盖目标不存在、已删除或与当前文件名不一致",
+                        "overwrite_performed": False}
+        elif existing:
+            return {"ok": True, "need_file_confirm": True,
+                    "message": f"检测到同名文件 {source_file}，请选择放弃导入或覆盖旧批次",
+                    "existing_batch": existing, "imported": 0,
+                    "parsed_count": 0, "skipped_count": 0,
+                    "overwrite_performed": False}
+    elif overwrite_batch_id:
+        return {"ok": False, "message": "缺少有效文件名，无法覆盖旧批次",
+                "overwrite_performed": False}
+
+    # 覆盖必须使用新批次 ID，避免软删除旧行仍参与批次内唯一索引。
+    if overwrite_batch_id and batch_id == overwrite_batch_id:
+        batch_id = None
     batch_id = batch_id or f"batch_{datetime.now().strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:4]}"
 
     # ---- 解析模板 / 字段配置 ----
@@ -386,17 +410,15 @@ def import_excel(file_name: str, content: bytes, batch_id: str = None,
     rows: List[dict] = []
     for record in records:
         dto = _to_dto(record, batch_id, template_id)
-        # 锚点校验：金额必填（设计 §3.3 原则 1）
         if dto.amount is None:
             errors.append({"row_index": dto.row_index,
                            "message": f"金额无效（原始值: {record.get('amount')}），已跳过"})
             continue
-        # 报销单号缺失时，延迟到事务内生成全局递增的 BX-YYYYMMDD-NNNN
-        # （用户显式填了号就保留，做唯一性校验）
         rows.append({
             "batch_id": dto.batch_id,
             "template_id": dto.template_id,
-            "reimburse_no": dto.reimburse_no or "",   # 空串占位，事务内统一补
+            "source_file": source_file,
+            "reimburse_no": dto.reimburse_no or "",
             "submitter": dto.submitter,
             "reimburse_date": dto.reimburse_date,
             "biz_date": dto.biz_date,
@@ -415,10 +437,11 @@ def import_excel(file_name: str, content: bytes, batch_id: str = None,
             "row_index": dto.row_index,
         })
 
-    # ---- 模块三/四：落库前双层查重（内部 + 历史），重复需用户确认处置 ----
-    duplicates = detect_duplicates(rows, template_id) if rows else []
+    parsed_count = len(rows) + len(errors)
+
+    # 覆盖时排除旧批次自身；其他有效批次与 Excel 内部重复仍正常拦截。
+    duplicates = detect_duplicates(rows, template_id, exclude_batch_id=overwrite_batch_id) if rows else []
     if duplicates and on_duplicate not in ("skip", "force"):
-        # 阻断式提示：先不入库，返回重复明细供前端弹窗确认
         return {
             "ok": True,
             "need_confirm": True,
@@ -426,8 +449,11 @@ def import_excel(file_name: str, content: bytes, batch_id: str = None,
             "duplicates": duplicates,
             "batch_id": batch_id,
             "imported": 0,
+            "parsed_count": parsed_count,
+            "skipped_count": len(errors),
             "errors": errors,
             "template_id": template_id,
+            "overwrite_performed": False,
         }
     dup_skipped = 0
     if duplicates and on_duplicate == "skip":
@@ -435,23 +461,72 @@ def import_excel(file_name: str, content: bytes, batch_id: str = None,
         dup_skipped = len(rows) - len(kept)
         rows = kept
 
-    with db.tx() as conn:
-        imported = 0
-        for r in rows:
-            # 空号 -> 原子生成；用户填了号 -> 保留
-            if not r["reimburse_no"]:
-                r["reimburse_no"] = _next_reimburse_no(conn)
-            refs = r.get("_dup_refs") or []
-            r["dup_flag"] = 1 if refs else 0
-            r["dup_source"] = json.dumps(refs, ensure_ascii=False) if refs else ""
-            try:
-                reimburse_repo.insert(conn, r)
-                imported += 1
-            except Exception as e:
-                errors.append({"row_index": r["row_index"],
-                               "message": f"落库失败: {e}"})
-        logger.info("报销单导入: batch=%s file=%s 模板=%s 成功 %s 行, 错误 %s 行 (by %s)",
-                    batch_id, file_name, template_id, imported, len(errors), operator)
+    # 无有效行或全部重复跳过：直接返回，覆盖目标保持原样。
+    if not rows:
+        if dup_skipped:
+            message = f"已跳过 {dup_skipped} 条重复数据，未导入新数据"
+            if overwrite_batch_id:
+                message += "，旧批次保持不变"
+            return {"ok": True, "message": message, "batch_id": batch_id,
+                    "imported": 0, "parsed_count": parsed_count,
+                    "skipped_count": parsed_count, "errors": errors,
+                    "template_id": template_id, "duplicates_skipped": dup_skipped,
+                    "duplicates_forced": 0, "match": None, "noop": True,
+                    "overwrite_performed": False}
+        detail = errors[0]["message"] if errors else "未解析到任何数据行"
+        return {"ok": False, "message": f"导入失败：{detail}", "batch_id": batch_id,
+                "imported": 0, "parsed_count": parsed_count,
+                "skipped_count": parsed_count, "errors": errors,
+                "template_id": template_id, "can_fallback_classic": True,
+                "can_manual_entry": True, "overwrite_performed": False}
+
+    imported = 0
+    try:
+        with db.tx() as conn:
+            # 写事务内再次校验，防止预检后目标被删除或同名批次发生变化。
+            if source_file:
+                current = reimburse_repo.find_batch_by_source_file(conn, source_file)
+                if overwrite_batch_id:
+                    if current is None or current["batch_id"] != overwrite_batch_id:
+                        return {"ok": False,
+                                "message": "覆盖目标已发生变化，请刷新后重新导入",
+                                "batch_id": batch_id, "imported": 0,
+                                "parsed_count": parsed_count, "skipped_count": parsed_count,
+                                "errors": errors, "overwrite_performed": False}
+                    _delete_batch_in_tx(conn, overwrite_batch_id, operator,
+                                        requeue=False, strict=True)
+                elif current:
+                    return {"ok": True, "need_file_confirm": True,
+                            "message": f"检测到同名文件 {source_file}，请选择放弃导入或覆盖旧批次",
+                            "existing_batch": current, "imported": 0,
+                            "parsed_count": parsed_count, "skipped_count": len(errors),
+                            "errors": errors, "overwrite_performed": False}
+
+            for r in rows:
+                if not r["reimburse_no"]:
+                    r["reimburse_no"] = _next_reimburse_no(conn)
+                refs = r.get("_dup_refs") or []
+                r["dup_flag"] = 1 if refs else 0
+                r["dup_source"] = json.dumps(refs, ensure_ascii=False) if refs else ""
+                try:
+                    reimburse_repo.insert(conn, r)
+                    imported += 1
+                except Exception as e:
+                    errors.append({"row_index": r["row_index"],
+                                   "message": f"落库失败: {e}"})
+                    if overwrite_batch_id:
+                        raise
+            logger.info("报销单导入: batch=%s file=%s 模板=%s 成功 %s 行, 错误 %s 行 (by %s)",
+                        batch_id, file_name, template_id, imported, len(errors), operator)
+    except Exception as e:
+        if not overwrite_batch_id:
+            raise
+        logger.warning("覆盖导入失败，旧批次及新数据已整体回滚: %s", e)
+        return {"ok": False, "message": f"覆盖导入失败，旧批次保持不变：{e}",
+                "batch_id": batch_id, "imported": 0, "parsed_count": parsed_count,
+                "skipped_count": parsed_count, "errors": errors,
+                "template_id": template_id, "can_fallback_classic": True,
+                "can_manual_entry": True, "overwrite_performed": False}
 
     # ---- 仅在导入成功后才创建自动模板（避免失败时留下无用模板）----
     if imported > 0 and pending_template_name and template_id is None:
@@ -476,43 +551,35 @@ def import_excel(file_name: str, content: bytes, batch_id: str = None,
         except Exception as e:
             logger.warning("映射缓存回写失败: %s", e)
 
-    # ---- 结果判定：无成功行时返回失败，前端需给出降级选项（设计 §12.4）----
     if imported == 0:
-        if dup_skipped:
-            # 全部行都是重复且用户选择跳过：不算失败，明确告知未导入新数据
-            return {"ok": True, "message": f"已跳过 {dup_skipped} 条重复数据，未导入新数据",
-                    "batch_id": batch_id, "imported": 0, "errors": errors,
-                    "template_id": template_id, "duplicates_skipped": dup_skipped,
-                    "duplicates_forced": 0, "match": None}
         detail = errors[0]["message"] if errors else "未解析到任何数据行"
-        return {
-            "ok": False,
-            "message": f"导入失败：{detail}",
-            "batch_id": batch_id,
-            "imported": 0,
-            "errors": errors,
-            "template_id": template_id,
-            "can_fallback_classic": True,   # 可改用经典模板重试
-            "can_manual_entry": True,       # 可转手动录入
-        }
-    # ---- 导入成功后自动执行一轮匹配，避免用户忘记手动执行而一直显示"未匹配" ----
+        return {"ok": False, "message": f"导入失败：{detail}", "batch_id": batch_id,
+                "imported": 0, "parsed_count": parsed_count,
+                "skipped_count": parsed_count, "errors": errors,
+                "template_id": template_id, "can_fallback_classic": True,
+                "can_manual_entry": True, "overwrite_performed": False}
+
+    # 覆盖提交后才统一自动匹配，避免释放的发票在事务内被其他排队单据抢占。
     match_summary = None
     try:
         from app.service import match_service
         match_summary = match_service.run_matching(operator)
     except Exception as e:
         logger.warning("报销单导入后自动匹配失败: %s", e)
-    message = f"导入成功：{imported} 行"
+    message = f"{'覆盖导入' if overwrite_batch_id else '导入'}成功：{imported} 行"
     if dup_skipped:
         message += f"；已跳过重复 {dup_skipped} 行"
     if match_summary is not None:
         message += (f"；自动匹配 {match_summary['auto_matched']} 对"
                     f"，待人工确认 {match_summary['pending'] + match_summary['conflict']} 对")
-    return {"ok": True, "message": message,
-            "batch_id": batch_id, "imported": imported, "errors": errors,
+    return {"ok": True, "message": message, "batch_id": batch_id,
+            "imported": imported, "parsed_count": parsed_count,
+            "skipped_count": parsed_count - imported, "errors": errors,
             "template_id": template_id, "match": match_summary,
             "duplicates_skipped": dup_skipped,
-            "duplicates_forced": sum(1 for r in rows if r.get("dup_flag"))}
+            "duplicates_forced": sum(1 for r in rows if r.get("dup_flag")),
+            "noop": False, "overwrite_performed": bool(overwrite_batch_id),
+            "overwritten_batch_id": overwrite_batch_id}
 
 
 def manual_create(fields: dict, operator: str = None) -> dict:
@@ -557,21 +624,17 @@ def manual_create(fields: dict, operator: str = None) -> dict:
             "batch_id": batch_id, "reimburse_no": row["reimburse_no"]}
 
 
-def _release_active_matches(conn, reimburse_ids: List[int], operator: str) -> List[int]:
-    """删除报销单前，释放其占用的全部发票（含一对多组合的兄弟发票）。
-
-    只重置发票状态，不删除发票记录。
-    """
+def _release_active_matches(conn, reimburse_ids: List[int], operator: str,
+                            strict: bool = False) -> List[int]:
+    """删除报销单前释放关联发票；覆盖模式下释放失败必须回滚整个事务。"""
     released: List[int] = []
     for rid in reimburse_ids:
         inv_ids: List[int] = []
-        # 直接匹配（一对一行 / 汇总父记录的直接发票）
         for r in conn.execute(
                 "SELECT DISTINCT invoice_id FROM match_result "
                 "WHERE reimburse_id = ? AND status IN ('MATCHED','CONFIRMED') "
                 "AND invoice_id IS NOT NULL", (rid,)):
             inv_ids.append(r["invoice_id"])
-        # 一对多组合：按 match_pair 找到同组全部发票
         for r in conn.execute(
                 "SELECT DISTINCT mp.invoice_id FROM match_pair mp "
                 "JOIN match_result mr ON mr.id = mp.match_id "
@@ -586,6 +649,8 @@ def _release_active_matches(conn, reimburse_ids: List[int], operator: str) -> Li
                                       f"报销单 {reb_no} 删除，解除匹配", operator)
                 released.append(iid)
             except Exception as e:
+                if strict:
+                    raise
                 logger.warning("释放发票 #%s 匹配失败: %s", iid, e)
     return released
 
@@ -624,33 +689,49 @@ def delete_reimburse(reimburse_id: int, operator: str = None) -> dict:
                 "ids": [reimburse_id], "batch_id": batch_id}
 
 
+def _delete_batch_in_tx(conn, batch_id: str, operator: str,
+                        requeue: bool = True, strict: bool = False) -> Optional[dict]:
+    """在调用方事务内软删除批次；覆盖导入禁用提前重排队。"""
+    ids = [r["id"] for r in reimburse_repo.list(conn, batch_id=batch_id, limit=100000)]
+    if not ids:
+        return None
+    released = _release_active_matches(conn, ids, operator, strict=strict)
+    n_match = 0
+    for rid in ids:
+        n_match += match_repo.delete_for_reimburse(conn, rid)
+    n = reimburse_repo.soft_delete_batch(conn, batch_id)
+    n_orphan = match_repo.delete_unpaired_summary(conn)
+    from app.service import audit_service
+    audit_service.log(conn, "delete", "reimburse_batch", batch_id,
+                      batch_id, "有效", "已删除（移入回收站）", operator,
+                      f"删除批次 {n} 行")
+    requeue_result = None
+    if requeue:
+        from app.service import match_service
+        requeue_result = match_service.release_invoices_and_requeue(
+            conn, released, operator, f"删除导入批次 {batch_id}")
+    return {"ids": ids, "released": released, "deleted": n,
+            "match_deleted": n_match, "orphan_deleted": n_orphan,
+            "requeue": requeue_result}
+
+
 def delete_batch(batch_id: str, operator: str = None) -> dict:
     """软删除导入批次：连带清理批次内全部报销单产生的匹配记录。"""
     operator = operator or settings.default_operator
     undo_id = uuid.uuid4().hex
     with db.tx() as conn:
-        ids = [r["id"] for r in reimburse_repo.list(conn, batch_id=batch_id, limit=100000)]
-        released = _release_active_matches(conn, ids, operator)
-        n_match = 0
-        for rid in ids:
-            n_match += match_repo.delete_for_reimburse(conn, rid)
-        n = reimburse_repo.soft_delete_batch(conn, batch_id)
-        n_orphan = match_repo.delete_unpaired_summary(conn)
-        from app.service import audit_service
-        audit_service.log(conn, "delete", "reimburse_batch", batch_id,
-                          batch_id, "有效", "已删除（移入回收站）", operator,
-                          f"删除批次 {n} 行")
-        # 资源释放后：同一事务内唤醒因「发票被占用」失败的单据
-        from app.service import match_service
-        requeue = match_service.release_invoices_and_requeue(
-            conn, released, operator, f"删除导入批次 {batch_id}")
+        result = _delete_batch_in_tx(conn, batch_id, operator)
+        if result is None:
+            return {"ok": False, "message": "批次不存在或已删除"}
+        requeue = result["requeue"]
         logger.info("批次 %s 已移入回收站 %s 行 (清理匹配记录 %s 条、孤儿汇总匹配 %s 条, by %s)",
-                    batch_id, n, n_match, n_orphan, operator)
-        msg = f"批次 {batch_id} 已删除 {n} 行（可在 20 秒内撤销）"
+                    batch_id, result["deleted"], result["match_deleted"],
+                    result["orphan_deleted"], operator)
+        msg = f"批次 {batch_id} 已删除 {result['deleted']} 行（可在 20 秒内撤销）"
         if requeue["auto_matched"]:
             msg += f"；已自动为 {requeue['auto_matched']} 张排队单据完成重新匹配"
         return {"ok": True, "message": msg, "requeue": requeue,
-                "ids": ids, "batch_id": undo_id}
+                "ids": result["ids"], "batch_id": undo_id}
 
 
 def restore_reimburses(ids: List[int], operator: str = None) -> dict:
@@ -811,6 +892,15 @@ def _attach_category(row: dict, invoice_ids: List[int], decisions: dict,
 def list_batches() -> List[dict]:
     with db.read() as conn:
         return reimburse_repo.batches(conn)
+
+
+def batch_delete_summary(batch_id: str) -> dict:
+    """批次删除确认所需的行数、匹配记录数与释放发票数。"""
+    with db.read() as conn:
+        summary = reimburse_repo.batch_delete_summary(conn, batch_id)
+    if summary is None:
+        return {"ok": False, "message": "批次不存在或已删除"}
+    return summary
 
 
 def batch_template_id(batch_id: str) -> Optional[int]:

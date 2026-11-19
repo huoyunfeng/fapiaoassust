@@ -99,30 +99,94 @@
 .reb-table .col-action{border-left:1px solid var(--border-light);}
 .reb-table .col-state,.reb-table .col-action{text-align:center;white-space:nowrap;}
 
-/* ===== 批次卡片条：横向滚动 + 选中高亮 ===== */
-.list-batches{padding:16px var(--space) 10px;background:#fff;}
-.batch-strip{display:flex;gap:12px;overflow-x:auto;padding:8px 2px 4px;}
-.batch-card{position:relative;flex:0 0 230px;border:1px solid var(--border);border-radius:var(--radius-card);
-  padding:12px 14px;cursor:pointer;background:#fff;
-  box-shadow:0 2px 8px rgba(0,0,0,.04);transition:var(--transition);}
-.batch-card:hover{border-color:var(--primary-border);box-shadow:var(--shadow-hover);}
-.batch-card.on{border-color:var(--primary);background:var(--primary-light);box-shadow:0 4px 14px rgba(37,99,235,.18);}
-.batch-check{position:absolute;top:-9px;right:-9px;width:22px;height:22px;border-radius:50%;
+/* ===== 最近批次卡片：白底、轻悬浮、选中描边 ===== */
+.list-batches{padding:16px var(--space) 12px;background:#fff;}
+.batch-section-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:4px;}
+.batch-section-title{font-size:13px;font-weight:600;color:var(--text-2);}
+.batch-section-actions{display:flex;align-items:center;gap:14px;}
+.batch-link{border:0;background:transparent;padding:4px 0;color:var(--primary);font-size:12px;cursor:pointer;}
+.batch-link:hover{text-decoration:underline;}
+.batch-strip{display:flex;gap:12px;overflow-x:auto;padding:10px 4px 8px;}
+.batch-card{position:relative;flex:0 0 230px;border:1px solid var(--border);border-radius:8px;
+  padding:12px 14px;cursor:pointer;background:#fff;box-shadow:0 2px 8px rgba(15,23,42,.04);
+  transition:transform .18s ease,box-shadow .18s ease,border-color .18s ease;}
+.batch-card:hover{transform:translateY(-2px);border-color:var(--primary-border);box-shadow:0 8px 20px rgba(15,23,42,.10);}
+.batch-card.on{border-color:var(--primary);background:#fff;box-shadow:0 4px 14px rgba(37,99,235,.14);}
+.batch-card.on:hover{transform:translateY(-2px);border-color:var(--primary);box-shadow:0 8px 20px rgba(37,99,235,.20);}
+.batch-check{position:absolute;top:-8px;right:-8px;width:22px;height:22px;border-radius:50%;
   background:var(--success);color:#fff;font-size:13px;line-height:22px;text-align:center;
-  box-shadow:0 1px 4px rgba(0,0,0,.25);z-index:2;}
+  box-shadow:0 1px 4px rgba(0,0,0,.20);z-index:2;}
 .batch-head{display:flex;justify-content:space-between;align-items:flex-start;gap:6px;}
 .batch-title{font-weight:600;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;}
-.batch-del{border:none;background:none;color:#d1d5db;font-size:16px;cursor:pointer;
-  padding:0 2px;line-height:1.2;}
-.batch-card:hover .batch-del{color:#9ca3af;}
-.batch-del:hover{color:#dc2626;}
+.batch-del{width:24px;height:24px;margin:-5px -6px 0 0;border:0;border-radius:6px;background:transparent;
+  color:#9ca3af;font-size:17px;line-height:24px;cursor:pointer;padding:0;opacity:0;pointer-events:none;
+  transition:opacity .15s,color .15s,background .15s;}
+.batch-card:hover .batch-del,.batch-card:focus-within .batch-del{opacity:1;pointer-events:auto;}
+.batch-del:hover{color:var(--danger-text);background:var(--danger-bg);}
 .batch-no{font-size:11px;color:var(--muted);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .batch-stats{display:flex;gap:22px;margin-top:10px;}
-.bs-num{font-size:20px;font-weight:700;font-variant-numeric:tabular-nums;}
-.bs-num.bs-bad{color:#b91c1c;background:#fee2e2;border-radius:6px;padding:0 6px;}
+.bs-num{font-size:20px;font-weight:700;color:var(--primary);font-variant-numeric:tabular-nums;}
+.bs-num.bs-bad{color:var(--danger-text);}
+.bs-num.bs-zero{color:var(--success-text);}
 .bs-label{font-size:11px;color:var(--muted);margin-top:2px;}
 
+/* ===== 历史批次右侧抽屉 ===== */
+.reb-drawer-bg{display:none;position:fixed;inset:0;z-index:80;background:rgba(15,23,42,.36);}
+.reb-drawer-bg.on{display:block;}
+.reb-drawer{position:fixed;top:0;right:0;bottom:0;z-index:81;width:460px;max-width:94vw;background:#fff;
+  box-shadow:-12px 0 36px rgba(15,23,42,.16);transform:translateX(102%);transition:transform .22s ease;
+  display:flex;flex-direction:column;}
+.reb-drawer.on{transform:translateX(0);}
+.reb-drawer-head{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding:20px 22px 16px;
+  border-bottom:1px solid var(--border-light);}
+.reb-drawer-head h2{font-size:17px;margin:0 0 4px;}
+.reb-drawer-close{width:30px;height:30px;border:0;border-radius:6px;background:transparent;color:var(--muted);
+  font-size:22px;line-height:1;cursor:pointer;}
+.reb-drawer-close:hover{background:var(--bg);color:var(--text);}
+.reb-drawer-tools{padding:14px 18px;border-bottom:1px solid var(--border-light);}
+.reb-history-search{width:100%;height:36px;padding:0 12px;border:1px solid var(--border);border-radius:6px;background:#fff;}
+.reb-history-list{flex:1;overflow-y:auto;padding:10px 14px 20px;}
+.reb-history-item{position:relative;display:flex;align-items:center;gap:12px;padding:13px 12px;margin-bottom:6px;
+  border:1px solid var(--border-light);border-radius:8px;background:#fff;cursor:pointer;transition:var(--transition);}
+.reb-history-item:hover{border-color:var(--primary-border);box-shadow:0 3px 10px rgba(15,23,42,.06);}
+.reb-history-item.on{border-color:var(--primary);background:#f8faff;}
+.reb-history-main{flex:1;min-width:0;}
+.reb-history-name{font-size:13px;font-weight:600;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.reb-history-time{font-size:11px;color:var(--muted);margin-top:4px;}
+.reb-history-meta{display:flex;gap:14px;margin-top:9px;font-size:12px;color:var(--text-2);}
+.reb-history-meta b{font-variant-numeric:tabular-nums;color:var(--text);}
+.reb-history-meta .bad,.reb-history-meta .bad b{color:var(--danger-text);}
+.reb-history-meta .zero,.reb-history-meta .zero b{color:var(--success-text);}
+.reb-history-del{flex:none;align-self:flex-start;}
+.reb-history-empty{padding:46px 0;}
+
+/* ===== 导入反馈与高风险确认 ===== */
+.dup-preview-row td{background:#f8fafc !important;color:#94a3b8 !important;}
+.dup-preview-badge{display:inline-block;margin-left:6px;padding:1px 6px;border-radius:4px;
+  background:#e5e7eb;color:#6b7280;font-size:11px;font-weight:600;}
+.same-file-card{margin-top:14px;padding:13px 14px;border:1px solid var(--border-light);border-radius:8px;
+  background:#f8fafc;font-size:13px;line-height:1.9;color:var(--text-2);}
+.same-file-card b{color:var(--text);}
+.batch-delete-warning{padding:14px 16px;border:1px solid var(--danger-border);border-radius:8px;
+  background:#fff;color:var(--danger-text);font-size:14px;line-height:1.9;font-weight:600;}
+.batch-delete-meta{display:flex;gap:10px;margin-top:12px;}
+.batch-delete-meta>div{flex:1;padding:10px 8px;border:1px solid var(--border-light);border-radius:8px;text-align:center;}
+.batch-delete-meta b{display:block;font-size:20px;color:var(--text);font-variant-numeric:tabular-nums;}
+.batch-delete-meta span{font-size:11px;color:var(--muted);}
+.import-result-card{padding:20px;border:1px solid var(--border-light);border-radius:10px;background:#fff;
+  box-shadow:0 4px 16px rgba(15,23,42,.05);text-align:center;}
+.import-result-icon{width:42px;height:42px;margin:0 auto 10px;color:var(--success);}
+.import-result-title{font-size:17px;font-weight:700;color:var(--text);}
+.import-result-sub{margin-top:5px;font-size:12px;color:var(--muted);}
+.import-result-stats{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:20px;}
+.import-result-stats>div{padding:14px 8px;border-radius:8px;background:#f8fafc;}
+.import-result-stats b{display:block;font-size:26px;line-height:1.2;color:var(--primary);font-variant-numeric:tabular-nums;}
+.import-result-stats>div:nth-child(2) b{color:var(--success-text);}
+.import-result-stats>div:nth-child(3) b{color:var(--text-2);}
+.import-result-stats span{display:block;margin-top:6px;font-size:12px;color:var(--muted);}
+
 /* ===== 表格加载遮罩 ===== */
+.list-body{position:relative;}
 .table-loading{position:absolute;inset:0;background:rgba(255,255,255,.88);z-index:20;
   display:none;flex-direction:column;align-items:center;justify-content:center;gap:10px;
   border-radius:var(--radius-card);font-size:13px;color:var(--muted);}
@@ -143,17 +207,25 @@
 
 <div class="card list-card table-card" style="position:relative;">
 {% if batches %}
-<!-- 批次卡片区：与搜索区、表格区同处一张白底大卡片 -->
+<!-- 最近 5 个批次：与搜索区、表格区同处一张白底大卡片 -->
 <div class="list-batches">
+  <div class="batch-section-head">
+    <span class="batch-section-title">最近批次</span>
+    <div class="batch-section-actions">
+      <button type="button" class="batch-link" onclick="gotoBatch('')">全部批次</button>
+      <button type="button" class="batch-link" onclick="openBatchDrawer()">更多历史批次（{{ batches|length }}）</button>
+    </div>
+  </div>
   <div class="batch-strip">
-    {% for b in batches %}
+    {% for b in batches[:5] %}
+    {% set batch_title = b.source_file or b.template_name or '手动录入' %}
     <div class="batch-card{% if batch_id == b.batch_id %} on{% endif %}"
-         data-batch="{{ b.batch_id }}" title="点击只查看该批次"
-         onclick="gotoBatch('{{ b.batch_id }}')">
-      {% if batch_id == b.batch_id %}<span class="batch-check">✓</span>{% endif %}
+         data-batch="{{ b.batch_id }}" title="点击只查看该批次" tabindex="0"
+         onclick="gotoBatch('{{ b.batch_id }}')" onkeydown="if(event.key==='Enter')gotoBatch('{{ b.batch_id }}')">
+      {% if batch_id == b.batch_id %}<span class="batch-check" title="当前视图">✓</span>{% endif %}
       <div class="batch-head">
-        <div class="batch-title" title="{{ b.template_name or '手动录入' }}">{{ b.template_name or '手动录入' }}</div>
-        <button class="batch-del" title="删除该批次"
+        <div class="batch-title" title="{{ batch_title }}">{{ batch_title }}</div>
+        <button type="button" class="batch-del" title="删除该批次" aria-label="删除批次 {{ batch_title }}"
                 onclick="event.stopPropagation();delBatch('{{ b.batch_id }}')">×</button>
       </div>
       <div class="batch-no" title="{{ b.batch_id }}">{{ b.batch_id }}</div>
@@ -163,7 +235,7 @@
           <div class="bs-label">总条数</div>
         </div>
         <div class="bs">
-          <div class="bs-num{% if b.unmatched_count %} bs-bad{% endif %}">{{ b.unmatched_count or 0 }}</div>
+          <div class="bs-num{% if b.unmatched_count %} bs-bad{% else %} bs-zero{% endif %}">{{ b.unmatched_count or 0 }}</div>
           <div class="bs-label">未匹配</div>
         </div>
       </div>
@@ -177,10 +249,7 @@
 <!-- 搜索条件区：与发票管理页同构（左侧=批次/状态/搜索，右侧=时间+筛选+重置） -->
 <div class="list-filter">
   <form class="inline filter-form" method="get" id="rebFilterForm">
-    <select name="batch_id" onchange="gotoBatch(this.value)">
-      <option value="">全部批次</option>
-      {% for b in batches %}<option value="{{ b.batch_id }}" {% if batch_id==b.batch_id %}selected{% endif %}>{{ b.template_name or '手动录入' }} · {{ b.batch_id }}</option>{% endfor %}
-    </select>
+    <input type="hidden" name="batch_id" value="{{ batch_id }}">
     <select name="status">
       <option value="" {% if not status %}selected{% endif %}>全部状态</option>
       <option value="unmatched" {% if status=='unmatched' %}selected{% endif %}>未匹配</option>
@@ -319,6 +388,20 @@
   </div>
 </div>
 
+<!-- ===================== 历史批次抽屉 ===================== -->
+<div id="batchDrawerBg" class="reb-drawer-bg" onclick="closeBatchDrawer()"></div>
+<aside id="batchDrawer" class="reb-drawer" aria-hidden="true" aria-label="历史批次">
+  <div class="reb-drawer-head">
+    <div><h2>历史批次</h2><div class="muted">共 {{ batches|length }} 个批次，点击即可切换当前视图</div></div>
+    <button type="button" class="reb-drawer-close" aria-label="关闭" onclick="closeBatchDrawer()">×</button>
+  </div>
+  <div class="reb-drawer-tools">
+    <input id="batchHistorySearch" class="reb-history-search" type="search"
+           placeholder="搜索文件名称、模板或批次号" oninput="renderBatchHistory()">
+  </div>
+  <div id="batchHistoryList" class="reb-history-list"></div>
+</aside>
+
 <!-- ===================== 导入向导 ===================== -->
 <div id="importWizard" class="modal" style="width:780px;">
   <h2 style="margin-bottom:12px;">导入报销单 Excel</h2>
@@ -414,6 +497,30 @@
   </div>
 </div>
 
+<!-- ===================== 同名文件覆盖确认 ===================== -->
+<div id="sameFileConfirm" class="modal" style="width:520px;top:50%;transform:translate(-50%,-50%);">
+  <h2 style="margin-bottom:10px;">检测到同名文件</h2>
+  <p class="muted" style="line-height:1.8;">系统已拦截本次导入，请选择放弃或覆盖。覆盖只会在新文件校验通过后执行，失败时旧批次保持不变。</p>
+  <div id="sameFileSummary" class="same-file-card"></div>
+  <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:18px;">
+    <button type="button" class="btn btn-outline" onclick="abandonSameFileImport()">放弃导入</button>
+    <button type="button" class="btn btn-danger" onclick="confirmSameFileOverwrite()">覆盖旧批次</button>
+  </div>
+</div>
+
+<!-- ===================== 批次删除强确认 ===================== -->
+<div id="batchDeleteModal" class="modal" style="width:540px;top:50%;transform:translate(-50%,-50%);">
+  <h2 style="margin-bottom:14px;color:var(--danger-text);">删除批次</h2>
+  <div id="batchDeleteText" class="batch-delete-warning">正在读取批次信息…</div>
+  <div id="batchDeleteMeta" class="batch-delete-meta"></div>
+  <div id="batchDeleteError" class="alert alert-red" style="display:none;margin-top:12px;"></div>
+  <p class="muted" style="margin-top:12px;line-height:1.7;">批次数据将移入回收站，可在 20 秒内撤销；原匹配关系不会随恢复而原样还原。</p>
+  <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:18px;">
+    <button type="button" class="btn btn-outline" onclick="closeBatchDelete()">取消</button>
+    <button type="button" class="btn btn-danger" id="confirmBatchDeleteBtn" onclick="confirmBatchDelete()" disabled>确认删除</button>
+  </div>
+</div>
+
 <!-- ===================== 手动录入 ===================== -->
 <div id="manualEntry" class="modal" style="width:560px;">
   <h2 style="margin-bottom:12px;">手动录入报销单</h2>
@@ -480,16 +587,76 @@ const CUSTOM_OPT = '__custom__';
 
 // ===== 批次三向联动的唯一事实源：URL 上的 batch_id（服务端渲染时注入）=====
 const CURRENT_BATCH = {{ batch_id | tojson }};
+const BATCHES = {{ batches | tojson }};
 
-// 点击卡片 / 切换下拉框 -> 出 Loading -> 跳转（卡片高亮、下拉框、表格全部由新 URL 渲染，天然一致）
+function batchDisplayName(b){ return b.source_file || b.template_name || '手动录入'; }
+function formatBatchTime(value){
+  const text = String(value || '').replace('T', ' ');
+  return text ? text.slice(0, 16) : '时间未知';
+}
+function openBatchDrawer(){
+  renderBatchHistory();
+  document.getElementById('batchDrawerBg').classList.add('on');
+  const drawer = document.getElementById('batchDrawer');
+  drawer.classList.add('on');
+  drawer.setAttribute('aria-hidden', 'false');
+  document.body.style.overflow = 'hidden';
+  setTimeout(() => document.getElementById('batchHistorySearch').focus(), 120);
+}
+function closeBatchDrawer(){
+  document.getElementById('batchDrawerBg').classList.remove('on');
+  const drawer = document.getElementById('batchDrawer');
+  drawer.classList.remove('on');
+  drawer.setAttribute('aria-hidden', 'true');
+  document.body.style.overflow = '';
+}
+function renderBatchHistory(){
+  const list = document.getElementById('batchHistoryList');
+  const kw = document.getElementById('batchHistorySearch').value.trim().toLowerCase();
+  const filtered = BATCHES.filter(b => [batchDisplayName(b), b.template_name, b.batch_id, b.created_at]
+    .some(v => String(v || '').toLowerCase().includes(kw)));
+  if(!filtered.length){
+    list.innerHTML = `<div class="empty-state reb-history-empty">
+      <svg class="empty-icon" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 13h32v27H8z"/><path d="M8 28h10l3 5h6l3-5h10M16 13l3-7h10l3 7"/></svg>
+      <p>没有找到相关批次</p></div>`;
+    return;
+  }
+  list.innerHTML = filtered.map(b => {
+    const unmatched = Number(b.unmatched_count || 0);
+    return `<div class="reb-history-item${b.batch_id === CURRENT_BATCH ? ' on' : ''}" data-batch-item="${esc(b.batch_id)}" tabindex="0">
+      <div class="reb-history-main">
+        <div class="reb-history-name" title="${esc(batchDisplayName(b))}">${esc(batchDisplayName(b))}</div>
+        <div class="reb-history-time">导入时间：${esc(formatBatchTime(b.created_at))}</div>
+        <div class="reb-history-meta">
+          <span>总条数 <b>${Number(b.row_count || 0)}</b></span>
+          <span class="${unmatched ? 'bad' : 'zero'}">未匹配 <b>${unmatched}</b></span>
+        </div>
+      </div>
+      <button type="button" class="btn-text-danger reb-history-del" data-delete-batch="${esc(b.batch_id)}">删除</button>
+    </div>`;
+  }).join('');
+  list.querySelectorAll('[data-batch-item]').forEach(item => {
+    const open = () => gotoBatch(item.dataset.batchItem);
+    item.addEventListener('click', e => { if(!e.target.closest('[data-delete-batch]')) open(); });
+    item.addEventListener('keydown', e => { if(e.key === 'Enter' && !e.target.closest('[data-delete-batch]')) open(); });
+  });
+  list.querySelectorAll('[data-delete-batch]').forEach(btn => {
+    btn.addEventListener('click', e => { e.stopPropagation(); delBatch(btn.dataset.deleteBatch); });
+  });
+}
+document.addEventListener('keydown', e => {
+  if(e.key === 'Escape' && document.getElementById('batchDrawer').classList.contains('on')) closeBatchDrawer();
+});
+
+// 卡片 / 抽屉 -> Loading -> 新 URL，卡片与表格由服务端统一渲染
 function gotoBatch(bid){
-  if(bid === CURRENT_BATCH) return;   // 已选中，不重复加载
+  closeBatchDrawer();
+  if(bid === CURRENT_BATCH) return;   // 已选中，仅关闭抽屉
   showTableLoading();
   const u = new URL(location.href);
   u.searchParams.set('batch_id', bid);   // 空串 = 全部批次
   u.searchParams.delete('page');          // 切批次回到第 1 页
   u.searchParams.delete('focus_id');
-  // 批次切换也是筛选变化，保存当前条件
   FilterCache.save('reimburses', u.searchParams.toString());
   location.href = u.toString();
 }
@@ -536,7 +703,8 @@ function batchDelete(){ toast('批量删除功能暂未开放', 'warn'); }
 
 let currentTemplates = [];
 let wizState = { mode:'template', templateId:null, file:null, headerRow:1,
-                 headers:[], mapping:{}, fromCache:false, lastErrors:[] };
+                 headers:[], mapping:{}, fromCache:false, lastErrors:[],
+                 overwriteBatchId:'', sameFileConflict:null, submitting:false };
 
 function esc(s){ return String(s ?? '').replace(/[&<>"']/g, c =>
   ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
@@ -614,7 +782,8 @@ function setStep(n){
 
 function openImportWizard(){
   wizState = { mode:'template', templateId:null, file:null, headerRow:1,
-               headers:[], mapping:{}, fromCache:false, lastErrors:[] };
+               headers:[], mapping:{}, fromCache:false, lastErrors:[],
+                 overwriteBatchId:'', sameFileConflict:null, submitting:false };
   document.getElementById('wizTplFile').value = '';
   document.getElementById('wizFile').value = '';
   document.getElementById('wizMappingArea').innerHTML = '';
@@ -762,6 +931,8 @@ async function buildFieldsConfig(headers, mapping, headerRow){
 }
 
 async function wizConfirm(onDuplicate){
+  if(wizState.submitting || !wizState.file) return;
+  wizState.submitting = true;
   const btn = document.getElementById('wizConfirmBtn');
   btn.disabled = true; btn.textContent = '导入中…';
   busyIndet('正在导入报销单…', wizState.mode === 'template' ? '使用模板导入' : '使用自定义映射导入');
@@ -775,13 +946,14 @@ async function wizConfirm(onDuplicate){
       fd.append('fields_config', JSON.stringify(fc));
     }
     if(onDuplicate) fd.append('on_duplicate', onDuplicate);
+    if(wizState.overwriteBatchId) fd.append('overwrite_batch_id', wizState.overwriteBatchId);
     const r = await fetch('/api/reimburses/import', { method:'POST', body:fd });
     let j;
     try{ j = await r.json(); }
     catch(e){ throw new Error('服务返回非 JSON（HTTP ' + r.status + '），请检查文件格式'); }
 
     const d = j.data || j;
-    // 模块四：命中重复 -> 阻断入库，弹出重复数据确认弹窗
+    if(d.need_file_confirm){ showSameFileConfirm(d.existing_batch || {}); return; }
     if(d.need_confirm){ showDupConfirm(d, onDuplicate); return; }
     if(d.ok){ renderSuccess(d); }
     else{ renderFailure(d.message || '导入失败', d.errors || []); }
@@ -789,8 +961,35 @@ async function wizConfirm(onDuplicate){
     renderFailure('导入过程出错：' + e.message, []);
   }finally{
     busyDone();
+    wizState.submitting = false;
     btn.disabled = false; btn.textContent = '确认导入';
   }
+}
+
+function showSameFileConfirm(existing){
+  wizState.sameFileConflict = existing;
+  document.getElementById('sameFileSummary').innerHTML =
+    `<div>旧文件：<b>${esc(existing.file_name || wizState.file.name)}</b></div>
+     <div>导入时间：${esc(formatBatchTime(existing.created_at))}</div>
+     <div>旧批次包含 <b>${Number(existing.row_count || 0)}</b> 条报销单</div>`;
+  hideEl('importWizard');
+  showEl('sameFileConfirm');
+}
+function abandonSameFileImport(){
+  wizState.overwriteBatchId = '';
+  wizState.sameFileConflict = null;
+  hideEl('sameFileConfirm');
+  closeWizard();
+  toast('已放弃导入，旧批次未做修改');
+}
+function confirmSameFileOverwrite(){
+  const existing = wizState.sameFileConflict || {};
+  if(!existing.batch_id){ toast('未找到可覆盖的旧批次', false); return; }
+  wizState.overwriteBatchId = existing.batch_id;
+  hideEl('sameFileConfirm');
+  showEl('importWizard');
+  setStep(2);
+  wizConfirm();
 }
 
 // ============================================================
@@ -808,8 +1007,8 @@ function showDupConfirm(d, lastAction){
     const src = x.type === 'history'
       ? `<span style="color:var(--danger-text);font-weight:600;">${esc(x.no || '—')}</span>`
       : `<span>本次导入第 ${x.ref_row} 行</span>`;
-    return `<tr>
-      <td>${x.row}</td>
+    return `<tr class="dup-preview-row">
+      <td>${x.row}<span class="dup-preview-badge">重复</span></td>
       <td>${esc(x.summary || '—')}</td>
       <td>${src}</td>
       <td>${esc(x.date || '')}</td>
@@ -834,27 +1033,41 @@ function doDupImport(mode){
 
 function renderSuccess(d){
   clearWizAlert();
-  let html = `<div class="alert alert-green"><b>导入成功</b>，共 ${d.imported} 行。</div>`;
-  if(d.duplicates_forced){
-    html += `<div class="alert alert-warn">
-     已强制导入疑似重复数据 ${d.duplicates_forced} 行，列表已打「⚠️ 疑似重复」标签，可悬浮查看查重来源。</div>`;
-  }
+  const imported = Number(d.imported || 0);
+  const skipped = Number(d.skipped_count ?? ((d.errors || []).length + Number(d.duplicates_skipped || 0)));
+  const parsed = Number(d.parsed_count ?? (imported + skipped));
+  const noop = !!d.noop || imported === 0;
+  const title = noop ? '未导入新数据' : (skipped ? '导入完成，部分数据已跳过' : '导入完成');
+  let html = `<div class="import-result-card">
+    <svg class="import-result-icon" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" ${noop ? 'style="color:#94a3b8;"' : ''}><circle cx="24" cy="24" r="19"/><path d="m15 24 6 6 13-14"/></svg>
+    <div class="import-result-title">${title}</div>
+    <div class="import-result-sub">${noop ? '所有数据均已跳过，原批次保持不变' : '本次导入明细如下'}</div>
+    <div class="import-result-stats">
+      <div><b>${parsed}</b><span>共解析</span></div>
+      <div><b>${imported}</b><span>成功导入</span></div>
+      <div><b>${skipped}</b><span>跳过</span></div>
+    </div>
+  </div>`;
   if(d.duplicates_skipped){
-    html += `<div class="alert alert-gray">
-     已跳过重复数据 ${d.duplicates_skipped} 行。</div>`;
+    html += `<div class="alert alert-gray" style="margin-top:12px;">其中重复跳过 ${Number(d.duplicates_skipped)} 条。</div>`;
+  }
+  if(d.duplicates_forced){
+    html += `<div class="alert alert-warn" style="margin-top:12px;">
+     已强制导入疑似重复数据 ${Number(d.duplicates_forced)} 条，列表已打「疑似重复」标签，可悬浮查看查重来源。</div>`;
   }
   if(d.errors && d.errors.length){
-    html += `<p class="muted mb">以下 ${d.errors.length} 行被跳过：</p>
+    html += `<p class="muted mb" style="margin-top:12px;">以下 ${d.errors.length} 行被跳过：</p>
              <div class="err-list">` + d.errors.map(e =>
              `第 ${e.row_index} 行：${esc(e.message)}`).join('<br>') + '</div>';
   }
   document.getElementById('wizResult').innerHTML = html;
   const done = document.getElementById('wizDoneBtn');
-  done.style.display = 'inline-block';
-  // 导入成功 -> 「查看结果」直接定位到新批次（卡片/下拉/表格三处同步高亮该批次）
-  done.onclick = () => { location.href = '/reimburses?batch_id=' + encodeURIComponent(d.batch_id); };
+  const returnBatch = noop ? wizState.overwriteBatchId : d.batch_id;
+  done.style.display = returnBatch ? 'inline-block' : 'none';
+  done.textContent = noop ? '返回原批次' : '查看新批次';
+  done.onclick = () => { location.href = '/reimburses?batch_id=' + encodeURIComponent(returnBatch); };
   setStep(3);
-  toast(`导入成功：${d.imported} 行`);
+  toast(noop ? '未导入新数据' : `成功导入 ${imported} 条`);
 }
 
 // §12.4 降级策略：自定义导入失败 → 提示 → 经典模板重导 → 仍失败 → 手动录入
@@ -881,40 +1094,15 @@ function renderFailure(msg, errors){
 
 function fallbackAdjustMapping(){ clearWizAlert(); setStep(1); }
 
-// 使用经典模板重新导入（同一文件直接重试）
+// 使用经典模板重新导入：复用统一流程，同名与重复拦截均不可绕过
 async function fallbackClassic(){
   const classic = currentTemplates.find(t => t.is_system);
   if(!classic){ toast('未找到内置经典模板', false); return; }
   if(!wizState.file){ toast('原文件已丢失，请重新上传', false); setStep(1); return; }
-  const btn = document.getElementById('wizConfirmBtn');
-  busyIndet('正在导入报销单…', '使用经典模板重新导入');
-  try{
-    const fd = new FormData();
-    fd.append('file', wizState.file);
-    fd.append('template_id', classic.id);
-    const r = await fetch('/api/reimburses/import', { method:'POST', body:fd });
-    const j = await r.json();
-    const d = j.data || j;
-    if(d.need_confirm){
-      // 经典模板重试同样可能命中重复：切到模板模式后走统一的确认弹窗
-      wizState.mode = 'template'; wizState.templateId = classic.id;
-      showDupConfirm(d);
-    }
-    else if(d.ok){ wizState.mode = 'template'; renderSuccess(d); }
-    else{
-      // 经典模板仍无法解析 → 只剩手动录入
-      document.getElementById('wizResult').innerHTML =
-        `<div class="alert alert-red"><b>经典模板仍无法解析该文件</b><br>${esc(d.message || '')}</div>
-         <p class="muted mb">请改用「手动录入」逐条录入：</p>
-         <div style="display:flex;gap:8px;flex-wrap:wrap;">
-           <button class="btn" onclick="closeWizard(); openManualEntry();">手动录入</button>
-           <button class="btn btn-outline" onclick="setStep(1)">返回</button>
-         </div>`;
-      setStep(3);
-      toast('经典模板仍无法解析', false);
-    }
-  }catch(e){ toast('重试失败：' + e.message, false); }
-  finally{ busyDone(); }
+  wizState.mode = 'template';
+  wizState.templateId = classic.id;
+  setStep(2);
+  await wizConfirm();
 }
 
 // ============================================================
@@ -1078,30 +1266,79 @@ async function delReimburse(id){
   }
   location.reload();
 }
+let batchDeleteState = { batchId:'', summary:null, submitting:false };
 async function delBatch(bid){
-  // 逐条调用单条删除接口（每条独立事务），显示真实进度条；中途失败不影响已删条目
-  const r = await fetch(`/api/reimburses/batch/${encodeURIComponent(bid)}/ids`);
-  const j = await r.json();
-  const ids = Array.isArray(j.data) ? j.data : [];
-  if(!ids.length){ toast('该批次没有报销单', false); return; }
-  if(!await confirmDlg(`确认删除批次 ${bid} 的 ${ids.length} 张报销单？\n关联匹配将级联删除，已匹配发票回到 NORMAL。`)) return;
-  busyIndet('正在删除报销单批次…', `共 ${ids.length} 张`);
-  const okIds = [];
-  for(let i = 0; i < ids.length; i++){
-    busyProgress(Math.round(i / ids.length * 100), `正在删除第 ${i + 1}/${ids.length} 张报销单`);
-    try{
-      const resp = await fetch(`/api/reimburses/${ids[i]}/delete`, {method:'POST', body:new FormData()});
-      const rj = await resp.json();
-      if(rj && rj.data && rj.data.ok !== false) okIds.push(ids[i]);
-    }catch(err){}
+  closeBatchDrawer();
+  const local = BATCHES.find(b => b.batch_id === bid) || {};
+  batchDeleteState = { batchId:bid, summary:null, submitting:false };
+  document.getElementById('batchDeleteText').textContent = '正在读取批次信息…';
+  document.getElementById('batchDeleteMeta').innerHTML = '';
+  document.getElementById('batchDeleteError').style.display = 'none';
+  document.getElementById('confirmBatchDeleteBtn').disabled = true;
+  showEl('batchDeleteModal');
+  try{
+    const r = await fetch(`/api/reimburses/batch/${encodeURIComponent(bid)}/delete-summary`);
+    const j = await r.json();
+    const d = j.data || j;
+    if(!r.ok || d.ok === false) throw new Error(d.message || '批次信息读取失败');
+    const s = {...local, ...d};
+    batchDeleteState.summary = s;
+    const name = s.file_name || s.source_file || batchDisplayName(s);
+    const rowCount = Number(s.row_count || 0);
+    const matchCount = Number(s.active_match_count || 0);
+    const releaseCount = Number(s.release_invoice_count || 0);
+    document.getElementById('batchDeleteText').innerHTML =
+      `⚠️ 警告：即将删除批次【${esc(name)}】，包含 ${rowCount} 条报销单及 ${matchCount} 条匹配记录。删除后关联发票将释放，原匹配关系不会自动恢复！`;
+    document.getElementById('batchDeleteMeta').innerHTML =
+      `<div><b>${rowCount}</b><span>报销单</span></div><div><b>${matchCount}</b><span>匹配记录</span></div><div><b>${releaseCount}</b><span>释放发票</span></div>`;
+    document.getElementById('confirmBatchDeleteBtn').disabled = rowCount === 0;
+  }catch(e){
+    const err = document.getElementById('batchDeleteError');
+    err.textContent = e.message || '批次信息读取失败';
+    err.style.display = 'block';
   }
-  busyDone();
-  const fail = ids.length - okIds.length;
-  if(fail) toast(`删除完成：${okIds.length} 张成功，${fail} 张失败`, false);
-  // 可撤销：缓存本批次删除成功的 ID，20 秒内可撤销
-  if(okIds.length) stashUndo('reimburse', okIds, `已删除 ${okIds.length} 条报销单`);
-  // 删除后跳回无参列表页：服务端自动选中最新批次（无批次则显示全部）
-  setTimeout(()=>{ location.href = '/reimburses'; }, 400);
+}
+function closeBatchDelete(){
+  if(batchDeleteState.submitting) return;
+  hideEl('batchDeleteModal');
+  hideBg();
+}
+async function confirmBatchDelete(){
+  const s = batchDeleteState.summary;
+  if(!s || batchDeleteState.submitting) return;
+  batchDeleteState.submitting = true;
+  const btn = document.getElementById('confirmBatchDeleteBtn');
+  btn.disabled = true;
+  busyIndet('正在删除报销单批次…', `共 ${Number(s.row_count || 0)} 条，正在释放关联发票`);
+  try{
+    const r = await fetch(`/api/reimburses/batch/${encodeURIComponent(batchDeleteState.batchId)}/delete`, {
+      method:'POST', body:new FormData()
+    });
+    const j = await r.json();
+    const d = j.data || j;
+    if(!r.ok || d.ok === false) throw new Error(d.message || '批次删除失败');
+    if(Array.isArray(d.ids) && d.ids.length) stashUndo('reimburse', d.ids, `已删除 ${d.ids.length} 条报销单`);
+    hideEl('batchDeleteModal');
+    hideBg();
+    if(batchDeleteState.batchId === CURRENT_BATCH){
+      const u = new URL(location.href);
+      u.searchParams.delete('batch_id');
+      u.searchParams.delete('page');
+      u.searchParams.delete('focus_id');
+      FilterCache.save('reimburses', u.searchParams.toString());
+      location.href = u.toString();
+    }else{
+      location.reload();
+    }
+  }catch(e){
+    const err = document.getElementById('batchDeleteError');
+    err.textContent = e.message || '批次删除失败';
+    err.style.display = 'block';
+    btn.disabled = false;
+  }finally{
+    busyDone();
+    batchDeleteState.submitting = false;
+  }
 }
 
 // 点击遮罩关闭面板（不干扰 base.html 的 closeModal）

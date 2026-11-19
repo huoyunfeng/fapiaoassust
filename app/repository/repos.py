@@ -342,7 +342,7 @@ class InvoiceRepo:
 # =====================================================================
 class ReimburseRepo:
     INSERT_FIELDS = [
-        "batch_id", "template_id", "reimburse_no", "submitter", "reimburse_date",
+        "batch_id", "template_id", "source_file", "reimburse_no", "submitter", "reimburse_date",
         "biz_date", "period_start", "period_end", "expense_type", "amount", "invoice_no",
         "invoice_date", "remark", "extra_data", "source_row", "parent_id",
         "split_type", "raw_row", "row_index", "dup_flag", "dup_source",
@@ -407,9 +407,10 @@ class ReimburseRepo:
         return [self._to_dict(r) for r in conn.execute(sql, params)]
 
     def batches(self, conn: sqlite3.Connection) -> List[dict]:
-        """批次聚合：行数 + 未匹配数（未匹配 = 无生效匹配，口径与列表页 matched 一致）。"""
+        """批次聚合：文件名、行数与未匹配数，未匹配口径与列表页一致。"""
         return _rows_to_dicts(conn.execute(
-            f"""SELECT r.batch_id, COUNT(*) AS row_count, MIN(r.created_at) AS created_at,
+            f"""SELECT r.batch_id, MAX(r.source_file) AS source_file,
+                      COUNT(*) AS row_count, MIN(r.created_at) AS created_at,
                       t.name AS template_name,
                       SUM(CASE WHEN ar.reimburse_id IS NULL THEN 1 ELSE 0 END) AS unmatched_count
                FROM reimburse r
@@ -424,8 +425,91 @@ class ReimburseRepo:
                    )
                ) ar ON ar.reimburse_id = r.id
                WHERE r.deleted_at IS NULL
-               GROUP BY r.batch_id ORDER BY created_at DESC"""
+               GROUP BY r.batch_id
+               ORDER BY created_at DESC, MAX(r.id) DESC"""
         ))
+
+    def find_batch_by_source_file(self, conn: sqlite3.Connection, source_file: str,
+                                  exclude_batch_id: str = None) -> Optional[dict]:
+        """按规范化文件名查找有效 Excel 批次；手动批次与软删除批次不参与。"""
+        sql = """SELECT r.batch_id, MAX(r.source_file) AS file_name,
+                        COUNT(*) AS row_count, MIN(r.created_at) AS created_at,
+                        MAX(r.template_id) AS template_id, t.name AS template_name
+                 FROM reimburse r
+                 LEFT JOIN reimburse_template t ON t.id = r.template_id
+                 WHERE r.deleted_at IS NULL AND r.source_file != ''
+                   AND LOWER(TRIM(r.source_file)) = ?"""
+        params: list = [source_file.strip().lower()]
+        if exclude_batch_id:
+            sql += " AND r.batch_id != ?"
+            params.append(exclude_batch_id)
+        sql += " GROUP BY r.batch_id ORDER BY created_at DESC, MAX(r.id) DESC LIMIT 1"
+        return _row_to_dict(conn.execute(sql, params).fetchone())
+
+    def batch_delete_summary(self, conn: sqlite3.Connection, batch_id: str) -> Optional[dict]:
+        """删除前准确统计批次行数、生效匹配记录和将释放的发票。"""
+        summary = _row_to_dict(conn.execute(
+            f"""SELECT r.batch_id, MAX(r.source_file) AS source_file,
+                      MAX(r.source_file) AS file_name, COUNT(*) AS row_count,
+                      MIN(r.created_at) AS created_at, t.name AS template_name,
+                      SUM(CASE WHEN ar.reimburse_id IS NULL THEN 1 ELSE 0 END) AS unmatched_count
+               FROM reimburse r
+               LEFT JOIN reimburse_template t ON t.id = r.template_id
+               LEFT JOIN (
+                   SELECT DISTINCT reimburse_id FROM (
+                       SELECT reimburse_id FROM match_result
+                        WHERE {ACTIVE_SQL} AND reimburse_id IS NOT NULL
+                       UNION
+                       SELECT p.reimburse_id FROM match_pair p
+                           JOIN match_result m ON m.id = p.match_id AND m.{ACTIVE_SQL}
+                   )
+               ) ar ON ar.reimburse_id = r.id
+               WHERE r.batch_id = ? AND r.deleted_at IS NULL
+               GROUP BY r.batch_id""", (batch_id,)).fetchone())
+        if summary is None:
+            return None
+        active = conn.execute(
+            """SELECT COUNT(*) AS n FROM (
+                   SELECT mr.id FROM match_result mr
+                       JOIN reimburse r ON r.id = mr.reimburse_id
+                   WHERE r.batch_id = ? AND r.deleted_at IS NULL
+                     AND mr.status IN ('MATCHED','CONFIRMED')
+                   UNION
+                   SELECT mr.id FROM match_result mr
+                       JOIN match_pair mp ON mp.match_id = mr.id
+                       JOIN reimburse r ON r.id = mp.reimburse_id
+                   WHERE r.batch_id = ? AND r.deleted_at IS NULL
+                     AND mr.status IN ('MATCHED','CONFIRMED')
+               )""", (batch_id, batch_id)).fetchone()["n"]
+        matched_rows = conn.execute(
+            """SELECT COUNT(DISTINCT reimburse_id) AS n FROM (
+                   SELECT mr.reimburse_id FROM match_result mr
+                       JOIN reimburse r ON r.id = mr.reimburse_id
+                   WHERE r.batch_id = ? AND r.deleted_at IS NULL
+                     AND mr.status IN ('MATCHED','CONFIRMED')
+                   UNION
+                   SELECT mp.reimburse_id FROM match_result mr
+                       JOIN match_pair mp ON mp.match_id = mr.id
+                       JOIN reimburse r ON r.id = mp.reimburse_id
+                   WHERE r.batch_id = ? AND r.deleted_at IS NULL
+                     AND mr.status IN ('MATCHED','CONFIRMED')
+               )""", (batch_id, batch_id)).fetchone()["n"]
+        released = conn.execute(
+            """SELECT COUNT(DISTINCT invoice_id) AS n FROM (
+                   SELECT mr.invoice_id FROM match_result mr
+                       JOIN reimburse r ON r.id = mr.reimburse_id
+                   WHERE r.batch_id = ? AND r.deleted_at IS NULL
+                     AND mr.status IN ('MATCHED','CONFIRMED') AND mr.invoice_id IS NOT NULL
+                   UNION
+                   SELECT mp.invoice_id FROM match_result mr
+                       JOIN match_pair mp ON mp.match_id = mr.id
+                       JOIN reimburse r ON r.id = mp.reimburse_id
+                   WHERE r.batch_id = ? AND r.deleted_at IS NULL
+                     AND mr.status IN ('MATCHED','CONFIRMED')
+               )""", (batch_id, batch_id)).fetchone()["n"]
+        summary.update(active_match_count=active, matched_row_count=matched_rows,
+                       release_invoice_count=released)
+        return summary
 
     def update_remark(self, conn: sqlite3.Connection, rid: int, remark: str) -> None:
         """仅更新报销单备注（匹配说明写入用，不触及其它业务字段）。"""

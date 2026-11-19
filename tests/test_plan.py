@@ -1613,6 +1613,155 @@ class TestBatchCards:
         assert r2["duplicates"][0]["type"] == "history"
         assert r2["duplicates"][0]["no"] == rev_no
 
+    def test_same_file_conflict_normalizes_name_and_preserves_batch(self, env):
+        """同名比较忽略路径/大小写；未确认覆盖及伪造目标均不产生任何写入。"""
+        row = ["RB-SAME-1", "张三", "2026-09-10", "2026-09-01", "2026-09-30",
+               "费用", "100.00", "", "", ""]
+        first = env["reb"].import_excel("  C:\\imports\\September.XLSX  ",
+                                       make_excel([row]), batch_id="batch_same_old")
+        assert first["ok"] and first["imported"] == 1
+        assert first["parsed_count"] == 1 and first["skipped_count"] == 0
+
+        conflict = env["reb"].import_excel("september.xlsx", make_excel([row]))
+        assert conflict["ok"] and conflict["need_file_confirm"] is True
+        assert conflict["existing_batch"]["batch_id"] == "batch_same_old"
+        assert conflict["existing_batch"]["file_name"] == "September.XLSX"
+
+        other = env["reb"].import_excel("other.xlsx", make_excel([
+            ["RB-OTHER", "李四", "2026-09-11", "2026-09-01", "2026-09-30",
+             "费用", "200.00", "", "", ""]]), batch_id="batch_other")
+        assert other["ok"]
+        forged = env["reb"].import_excel("SEPTEMBER.xlsx", make_excel([row]),
+                                         overwrite_batch_id="batch_other")
+        assert forged["ok"] is False and forged["overwrite_performed"] is False
+        with env["db"].read() as conn:
+            old = env["reimburse_repo"].list(conn, batch_id="batch_same_old")[0]
+            assert old["source_file"] == "September.XLSX"
+            assert old["deleted_at"] is None
+            assert env["reimburse_repo"].count(conn) == 2
+
+    def test_overwrite_replaces_batch_and_releases_old_match(self, env, monkeypatch):
+        """覆盖排除旧批次自身查重，并在同一事务内清理旧匹配、释放发票。"""
+        monkeypatch.setattr(env["match"], "run_matching", lambda operator=None: {
+            "auto_matched": 0, "pending": 0, "conflict": 0})
+        inv_id = env["inv"].import_files([
+            ("overwrite.xml", "", xml_invoice("OVERRIDE001", "100.00"))])[0]["invoice_id"]
+        row = ["RB-OVERWRITE", "张三", "2026-09-10", "2026-09-01", "2026-09-30",
+               "费用", "100.00", "", "", ""]
+        first = env["reb"].import_excel("same.xlsx", make_excel([row]),
+                                       batch_id="batch_overwrite_old")
+        assert first["ok"]
+        with env["db"].read() as conn:
+            old = env["reimburse_repo"].list(conn, batch_id="batch_overwrite_old")[0]
+        matched = env["match"].manual_match(inv_id, old["id"])
+        assert matched["ok"]
+        with env["db"].read() as conn:
+            old_match_id = conn.execute(
+                "SELECT id FROM match_result WHERE reimburse_id = ? "
+                "AND status IN ('MATCHED','CONFIRMED')", (old["id"],)).fetchone()["id"]
+        summary = env["reb"].batch_delete_summary("batch_overwrite_old")
+        assert summary["row_count"] == 1 and summary["active_match_count"] == 1
+        assert summary["release_invoice_count"] == 1
+
+        replaced = env["reb"].import_excel("SAME.XLSX", make_excel([row]),
+                                           overwrite_batch_id="batch_overwrite_old")
+        assert replaced["ok"] and replaced["imported"] == 1
+        assert replaced["parsed_count"] == 1 and replaced["skipped_count"] == 0
+        assert replaced["overwrite_performed"] is True
+        assert replaced["batch_id"] != "batch_overwrite_old"
+        with env["db"].read() as conn:
+            old_after = env["reimburse_repo"].get(conn, old["id"])
+            assert old_after["deleted_at"] is not None
+            new_rows = env["reimburse_repo"].list(conn, batch_id=replaced["batch_id"])
+            assert len(new_rows) == 1 and new_rows[0]["source_file"] == "SAME.XLSX"
+            assert conn.execute("SELECT 1 FROM match_result WHERE id = ?",
+                                (old_match_id,)).fetchone() is None
+            inv = env["invoice_repo"].get(conn, inv_id)
+            assert inv["status"] == "NORMAL" and inv["is_closed"] == 0
+            assert inv["matched_amount"] == "0.00"
+            transitions = [(x["from_status"], x["to_status"])
+                           for x in env["log_repo"].list_for_invoice(conn, inv_id)]
+            assert ("MATCHED", "NORMAL") in transitions
+
+        deleted = env["reb"].delete_batch(replaced["batch_id"])
+        assert deleted["ok"] and deleted["ids"] == [new_rows[0]["id"]]
+        assert env["reb"].delete_batch(replaced["batch_id"])["ok"] is False
+
+    def test_overwrite_all_duplicates_skipped_keeps_old_batch(self, env):
+        """其他批次造成全部重复跳过时，不删除同名旧批次，也不创建空批次。"""
+        row = ["RB-DUP-SKIP", "张三", "2026-09-10", "2026-09-01", "2026-09-30",
+               "费用", "100.00", "", "", ""]
+        first = env["reb"].import_excel("target.xlsx", make_excel([row]),
+                                       batch_id="batch_skip_target")
+        assert first["ok"]
+        other = env["reb"].import_excel("other-dup.xlsx", make_excel([row]),
+                                       batch_id="batch_skip_other", on_duplicate="force")
+        assert other["ok"]
+        preview = env["reb"].import_excel("TARGET.xlsx", make_excel([row]),
+                                          overwrite_batch_id="batch_skip_target")
+        assert preview["need_confirm"] is True
+        assert preview["duplicates"][0]["type"] == "history"
+
+        skipped = env["reb"].import_excel("TARGET.xlsx", make_excel([row]),
+                                          overwrite_batch_id="batch_skip_target",
+                                          on_duplicate="skip")
+        assert skipped["ok"] and skipped["noop"] is True
+        assert skipped["imported"] == 0 and skipped["parsed_count"] == 1
+        assert skipped["skipped_count"] == 1 and skipped["duplicates_skipped"] == 1
+        assert skipped["overwrite_performed"] is False
+        with env["db"].read() as conn:
+            target = env["reimburse_repo"].list(conn, batch_id="batch_skip_target")
+            assert len(target) == 1 and target[0]["deleted_at"] is None
+            assert env["reimburse_repo"].list(conn, batch_id=skipped["batch_id"]) == []
+            assert env["reimburse_repo"].count(conn) == 2
+
+    def test_overwrite_insert_failure_rolls_back_everything(self, env, monkeypatch):
+        """模拟新行写入失败：旧批次、匹配、发票和两类日志全部回滚。"""
+        monkeypatch.setattr(env["match"], "run_matching", lambda operator=None: {
+            "auto_matched": 0, "pending": 0, "conflict": 0})
+        inv_id = env["inv"].import_files([
+            ("rollback.xml", "", xml_invoice("ROLLBACK001", "100.00"))])[0]["invoice_id"]
+        row = ["RB-ROLLBACK", "张三", "2026-09-10", "2026-09-01", "2026-09-30",
+               "费用", "100.00", "", "", ""]
+        first = env["reb"].import_excel("rollback.xlsx", make_excel([row]),
+                                       batch_id="batch_rollback_old")
+        assert first["ok"]
+        with env["db"].read() as conn:
+            old = env["reimburse_repo"].list(conn, batch_id="batch_rollback_old")[0]
+        assert env["match"].manual_match(inv_id, old["id"])["ok"]
+        with env["db"].read() as conn:
+            before = {
+                "audit": conn.execute("SELECT COUNT(*) n FROM audit_log").fetchone()["n"],
+                "status_logs": conn.execute(
+                    "SELECT COUNT(*) n FROM invoice_status_log WHERE invoice_id = ?",
+                    (inv_id,)).fetchone()["n"],
+                "matches": conn.execute(
+                    "SELECT COUNT(*) n FROM match_result WHERE reimburse_id = ?",
+                    (old["id"],)).fetchone()["n"],
+            }
+
+        def fail_insert(conn, data):
+            raise RuntimeError("模拟新行写入失败")
+
+        monkeypatch.setattr(env["reimburse_repo"], "insert", fail_insert)
+        failed = env["reb"].import_excel("ROLLBACK.XLSX", make_excel([row]),
+                                         overwrite_batch_id="batch_rollback_old")
+        assert failed["ok"] is False and failed["overwrite_performed"] is False
+        assert "旧批次保持不变" in failed["message"]
+        with env["db"].read() as conn:
+            old_after = env["reimburse_repo"].get(conn, old["id"])
+            assert old_after["deleted_at"] is None
+            assert env["reimburse_repo"].list(conn, batch_id=failed["batch_id"]) == []
+            assert conn.execute(
+                "SELECT COUNT(*) n FROM match_result WHERE reimburse_id = ?",
+                (old["id"],)).fetchone()["n"] == before["matches"]
+            inv = env["invoice_repo"].get(conn, inv_id)
+            assert inv["status"] == "MATCHED" and inv["is_closed"] == 1
+            assert conn.execute("SELECT COUNT(*) n FROM audit_log").fetchone()["n"] == before["audit"]
+            assert conn.execute(
+                "SELECT COUNT(*) n FROM invoice_status_log WHERE invoice_id = ?",
+                (inv_id,)).fetchone()["n"] == before["status_logs"]
+
     def test_assign_seq_per_batch(self):
         """模块一/二：全部批次按批次分组，各组序号从 1 开始；单批次连续编号。"""
         from app.web.pages import _assign_seq

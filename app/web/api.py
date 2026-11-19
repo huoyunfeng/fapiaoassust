@@ -178,13 +178,15 @@ async def import_reimburses(request: Request, file: UploadFile = File(...),
                             template_id: int = Form(None),
                             fields_config: str = Form("{}"),
                             remember_mapping: str = Form("1"),
-                            on_duplicate: str = Form("")):
+                            on_duplicate: str = Form(""),
+                            overwrite_batch_id: str = Form("")):
     """导入报销单 Excel。
 
     template_id: 指定模板 id（优先于默认模板）
     fields_config: JSON 字符串，临时字段映射（映射向导传入，优先级最高）
     remember_mapping: 是否回写映射缓存
     on_duplicate: 查重处置（空=先返回重复确认；skip=只导入不重复行；force=全部导入并打标）
+    overwrite_batch_id: 同名文件确认后指定覆盖的有效旧批次
     """
     content = await file.read()
     if not content:
@@ -204,6 +206,7 @@ async def import_reimburses(request: Request, file: UploadFile = File(...),
             fields_config=fc,
             remember_mapping=remember_mapping == "1",
             on_duplicate=on_duplicate or None,
+            overwrite_batch_id=overwrite_batch_id.strip() or None,
         )
     except Exception as e:
         logger.exception("报销单导入异常")
@@ -341,6 +344,11 @@ async def set_reimburse_category(reimburse_id: int, category: str = Form(""),
 @api.post("/reimburses/{reimburse_id}/delete")
 async def delete_reimburse(reimburse_id: int, operator: str = Form("admin")):
     return _j(reimburse_service.delete_reimburse(reimburse_id, operator))
+
+
+@api.get("/reimburses/batch/{batch_id}/delete-summary")
+async def batch_delete_summary(batch_id: str):
+    return _j(reimburse_service.batch_delete_summary(batch_id))
 
 
 @api.post("/reimburses/batch/{batch_id}/delete")
