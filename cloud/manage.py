@@ -1,4 +1,4 @@
-"""云端订单 / 黑名单管理 CLI（线下收单后录入订单号）。
+"""云端订单 / 黑名单 / 解锁码管理 CLI（线下收单后录入订单号）。
 
 示例：
     python cloud/manage.py add-order ORD-20261105-001 enterprise 365
@@ -8,6 +8,7 @@
     python cloud/manage.py blacklist 1111-2222-3333-4444 违规退款
     python cloud/manage.py unblacklist 1111-2222-3333-4444
     python cloud/manage.py reset-order ORD-20261105-001
+    python cloud/manage.py unlock 1111-2222-3333-4444 1          # 签发超管解锁码（1天有效）
     python cloud/manage.py gen-keys        # 重新生成密钥对（会打印新公私钥）
 """
 import json
@@ -79,6 +80,32 @@ def reset_order(order_id: str) -> None:
         devices.pop(m, None)
     _save("devices.json", "devices", devices)
     print(f"订单 {order_id} 已解绑")
+
+
+def unlock_code(machine: str, days: int = 1) -> None:
+    """客服签发超管解锁码（短期有效，绑定机器码）。
+
+    用户拿到解锁码后，在本地 /recover 页面输入即可重置管理员密码。
+    """
+    machine = (machine or "").strip()
+    if not machine:
+        raise SystemExit("机器码不能为空")
+    days = max(1, int(days))
+    from license_server import sign_payload
+
+    now = int(time.time())
+    payload = {
+        "type": "unlock",
+        "machine_code": machine,
+        "exp": now + days * 86400,
+        "issued_at": now,
+    }
+    code = sign_payload(payload)
+    exp_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(payload["exp"]))
+    print(f"已签发超管解锁码（{days} 天有效，到期 {exp_str}）")
+    print(f"绑定机器码：{machine}")
+    print("解锁码：")
+    print(code)
 
 
 def gen_keys() -> None:
@@ -169,6 +196,10 @@ def main() -> None:
         set_blacklist(sys.argv[2], "", False)
     elif cmd == "reset-order" and len(sys.argv) >= 3:
         reset_order(sys.argv[2])
+    elif cmd == "unlock" and len(sys.argv) >= 3:
+        machine = sys.argv[2]
+        days = int(sys.argv[3]) if len(sys.argv) > 3 else 1
+        unlock_code(machine, days)
     elif cmd == "gen-keys":
         gen_keys()
     else:

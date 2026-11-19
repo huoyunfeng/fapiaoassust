@@ -998,6 +998,128 @@ def payment_recover(req: PayRecoverReq, request: Request):
             "plan": order.get("plan"), "message": "授权已找回"}
 
 
+# ---------------------------------------------------------------- 客服管理页面
+_ADMIN_HTML = """<!DOCTYPE html>
+<html lang="zh-CN"><head><meta charset="utf-8"><title>客服管理后台</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f0f2f5;padding:20px}
+.container{max-width:800px;margin:0 auto}
+.card{background:#fff;border-radius:12px;padding:24px;margin-bottom:20px;box-shadow:0 2px 8px rgba(0,0,0,.06)}
+h1{font-size:22px;margin-bottom:8px;color:#1a1a2e}
+h2{font-size:16px;margin-bottom:16px;color:#333;border-left:3px solid #2563eb;padding-left:10px}
+.sub{font-size:13px;color:#888;margin-bottom:20px}
+.form-group{margin-bottom:14px}
+label{display:block;font-size:13px;color:#555;margin-bottom:6px;font-weight:500}
+input,select,textarea{width:100%;padding:10px 12px;border:1px solid #d9d9d9;border-radius:6px;font-size:14px;transition:border .2s}
+input:focus,select:focus{outline:none;border-color:#2563eb;box-shadow:0 0 0 2px rgba(37,99,235,.1)}
+.btn{display:inline-block;padding:10px 20px;border:none;border-radius:6px;font-size:14px;font-weight:500;cursor:pointer;transition:all .2s}
+.btn-primary{background:#2563eb;color:#fff}.btn-primary:hover{background:#1d4ed8}
+.btn-danger{background:#dc2626;color:#fff}.btn-danger:hover{background:#b91c1c}
+.btn-success{background:#16a34a;color:#fff}.btn-success:hover{background:#15803d}
+.result{margin-top:16px;padding:14px;border-radius:8px;font-size:13px;display:none;word-break:break-all}
+.result.ok{display:block;background:#f0fdf4;border:1px solid #86efac;color:#166534}
+.result.err{display:block;background:#fef2f2;border:1px solid #fca5a5;color:#dc2626}
+.code-box{margin-top:12px;padding:14px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;font-family:monospace;font-size:12px;word-break:break-all;display:none}
+.code-box.show{display:block}
+table{width:100%;border-collapse:collapse;font-size:13px;margin-top:12px}
+th,td{padding:10px;text-align:left;border-bottom:1px solid #e5e7eb}
+th{background:#f9fafb;font-weight:600;color:#374151}
+tr:hover{background:#f9fafb}
+.tabs{display:flex;gap:8px;margin-bottom:20px}
+.tab{padding:10px 20px;border:1px solid #d9d9d9;border-radius:8px;background:#fff;cursor:pointer;font-size:14px;color:#555}
+.tab.active{background:#2563eb;color:#fff;border-color:#2563eb}
+.tab-content{display:none}.tab-content.active{display:block}
+.login-wrap{max-width:400px;margin:100px auto}
+.login-wrap .card{padding:32px}
+@media(max-width:600px){.container{padding:0 10px}.tabs{flex-wrap:wrap}}
+</style></head><body>
+<div id="loginPage" class="login-wrap"><div class="card">
+<h1>客服管理后台</h1><p class="sub">请输入管理员 Token 登录</p>
+<div class="form-group"><label>管理员 Token</label><input type="password" id="tokenInput" placeholder="CLOUD_ADMIN_TOKEN"></div>
+<button class="btn btn-primary" style="width:100%" onclick="doLogin()">登 录</button>
+<div id="loginMsg" class="result"></div>
+</div></div>
+
+<div id="adminPage" class="container" style="display:none">
+<div class="card"><h1>客服管理后台</h1><p class="sub">发票报销核对助手 · 云端授权管理</p>
+<div class="tabs">
+<div class="tab active" onclick="switchTab('unlock')">签发解锁码</div>
+<div class="tab" onclick="switchTab('orders')">订单管理</div>
+<div class="tab" onclick="switchTab('blacklist')">黑名单</div>
+</div>
+
+<div id="tab-unlock" class="tab-content active">
+<h2>签发超管解锁码</h2>
+<div class="form-group"><label>用户机器码</label><input id="unlockMachine" placeholder="例如：8E3F-8BBF-8148-F9BA"></div>
+<div class="form-group"><label>有效期（天）</label><select id="unlockDays"><option value="1">1 天</option><option value="3">3 天</option><option value="7">7 天</option></select></div>
+<button class="btn btn-primary" onclick="doUnlock()">签发解锁码</button>
+<div id="unlockResult" class="result"></div>
+<div id="unlockCodeBox" class="code-box"></div>
+</div>
+
+<div id="tab-orders" class="tab-content">
+<h2>订单列表 <button class="btn btn-primary" style="float:right;font-size:12px;padding:6px 12px" onclick="loadOrders()">刷新</button></h2>
+<div id="ordersResult" class="result"></div>
+<div id="ordersTable"></div>
+</div>
+
+<div id="tab-blacklist" class="tab-content">
+<h2>黑名单管理</h2>
+<div class="form-group"><label>机器码</label><input id="blMachine" placeholder="机器码"></div>
+<div class="form-group"><label>原因</label><input id="blReason" placeholder="拉黑原因"></div>
+<button class="btn btn-danger" onclick="doBlacklist(true)">加入黑名单</button>
+<button class="btn btn-success" onclick="doBlacklist(false)">解除黑名单</button>
+<div id="blResult" class="result"></div>
+</div>
+</div></div>
+
+<script>
+let TOKEN='';
+function showMsg(id,msg,ok){const el=document.getElementById(id);el.textContent=msg;el.className='result '+(ok?'ok':'err')}
+function doLogin(){TOKEN=document.getElementById('tokenInput').value.trim();if(!TOKEN){showMsg('loginMsg','请输入 Token',false);return}
+fetch('/api/unlock_code',{method:'POST',headers:{'Content-Type':'application/json','X-Admin-Token':TOKEN},body:JSON.stringify({machine_code:'test',days:1})})
+.then(r=>{if(r.status===401||r.status===403){showMsg('loginMsg','Token 无效',false);return}
+document.getElementById('loginPage').style.display='none';document.getElementById('adminPage').style.display='block';loadOrders()})
+.catch(e=>showMsg('loginMsg','连接失败：'+e.message,false))}
+function switchTab(name){document.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));document.querySelectorAll('.tab-content').forEach(t=>t.classList.remove('active'));event.target.classList.add('active');document.getElementById('tab-'+name).classList.add('active')}
+function doUnlock(){const m=document.getElementById('unlockMachine').value.trim();const d=document.getElementById('unlockDays').value;
+if(!m){showMsg('unlockResult','请输入机器码',false);return}
+fetch('/api/unlock_code',{method:'POST',headers:{'Content-Type':'application/json','X-Admin-Token':TOKEN},body:JSON.stringify({machine_code:m,days:parseInt(d)})})
+.then(r=>r.json()).then(d=>{if(d.ok){showMsg('unlockResult','签发成功！有效期至 '+new Date(d.exp*1000).toLocaleString(),true);
+const box=document.getElementById('unlockCodeBox');box.textContent=d.unlock_code;box.className='code-box show';
+navigator.clipboard.writeText(d.unlock_code).then(()=>showMsg('unlockResult','签发成功！解锁码已复制到剪贴板。有效期至 '+new Date(d.exp*1000).toLocaleString(),true))}
+else{showMsg('unlockResult',d.detail||d.message||'签发失败',false)}})
+.catch(e=>showMsg('unlockResult','请求失败：'+e.message,false))}
+function loadOrders(){fetch('/api/admin/orders',{headers:{'X-Admin-Token':TOKEN}})
+.then(r=>r.json()).then(d=>{if(d.ok){let html='<table><tr><th>订单号</th><th>套餐</th><th>状态</th><th>机器码</th><th>创建时间</th></tr>';
+for(const[o,v]of Object.entries(d.orders||{})){html+=`<tr><td>${o}</td><td>${v.plan||'-'}</td><td>${v.status||'-'}</td><td>${v.machine_code||'-'}</td><td>${v.created_at||'-'}</td></tr>`}
+html+='</table>';document.getElementById('ordersTable').innerHTML=html}
+else{showMsg('ordersResult',d.detail||'加载失败',false)}})
+.catch(e=>showMsg('ordersResult','请求失败：'+e.message,false))}
+function doBlacklist(enable){const m=document.getElementById('blMachine').value.trim();const r=document.getElementById('blReason').value.trim();
+if(!m){showMsg('blResult','请输入机器码',false);return}
+fetch('/api/blacklist',{method:'POST',headers:{'Content-Type':'application/json','X-Admin-Token':TOKEN},body:JSON.stringify({machine_code:m,reason:r,enabled:enable})})
+.then(r=>r.json()).then(d=>{if(d.ok){showMsg('blResult',enable?'已拉黑 '+m:'已解除 '+m,true)}else{showMsg('blResult',d.detail||'操作失败',false)}})
+.catch(e=>showMsg('blResult','请求失败：'+e.message,false))}
+</script></body></html>"""
+
+
+@app.get("/admin", response_class=HTMLResponse)
+def admin_page():
+    """客服管理后台页面（需 Token 登录）。"""
+    return HTMLResponse(_ADMIN_HTML)
+
+
+@app.get("/api/admin/orders")
+def admin_list_orders(x_admin_token: str = Header(default="")):
+    """客服查看所有订单。"""
+    _admin_guard(x_admin_token)
+    with _LOCK:
+        orders = _load("orders.json", "orders")
+    return {"ok": True, "orders": orders}
+
+
 if __name__ == "__main__":
     import uvicorn
 
