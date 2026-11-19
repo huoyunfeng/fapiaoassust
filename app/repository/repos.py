@@ -93,11 +93,15 @@ class InvoiceRepo:
             kw = f"%{keyword}%"
             params += [kw, kw, kw, kw, kw]
         # 开票日期范围（仪表盘下钻联动；口径与 aggregate_by_item_summary 一致）
+        # 无开票日期的行（解析失败/待补录）一律保留：否则异常发票会被日期条件
+        # 静默过滤掉，用户只看到「暂无数据」，误以为没导入成功。
         if date_from:
-            sql += f" AND {p}invoice_date IS NOT NULL AND {p}invoice_date >= ?"
+            sql += (f" AND ({p}invoice_date IS NULL OR {p}invoice_date = ''"
+                    f" OR {p}invoice_date >= ?)")
             params.append(date_from)
         if date_to:
-            sql += f" AND {p}invoice_date IS NOT NULL AND {p}invoice_date <= ?"
+            sql += (f" AND ({p}invoice_date IS NULL OR {p}invoice_date = ''"
+                    f" OR {p}invoice_date <= ?)")
             params.append(date_to)
         # 冷热分离：默认只取近 1 年（按开票日期）；无日期的行保留，防止补录/解析缺失数据丢失
         if since:

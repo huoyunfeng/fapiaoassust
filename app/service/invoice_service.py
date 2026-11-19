@@ -5,6 +5,7 @@
 """
 import hashlib
 import json
+import sqlite3
 import time
 import uuid
 from datetime import datetime
@@ -187,6 +188,11 @@ def _import_one(file_name: str, content: bytes, operator: str) -> dict:
     # 先只读查一次重复：重复文件不必落盘，避免产生无引用的孤儿文件
     with db.read() as conn:
         existed = invoice_repo.get_by_hash(conn, file_hash)
+    # 上次解析失败（ABNORMAL）不算重复：允许用户重传同一文件重新解析，
+    # 否则失败记录会一直占着文件哈希，前端只会提示「跳过重复」而发票永远进不来。
+    if existed and existed["status"] in (InvoiceStatus.ABNORMAL.value,
+                                        InvoiceStatus.PARSING.value):
+        existed = None
     if existed:
         return {"file_name": file_name, "ok": True, "skipped": True,
                 "invoice_id": existed["id"], "status": existed["status"],
@@ -200,6 +206,12 @@ def _import_one(file_name: str, content: bytes, operator: str) -> dict:
     with db.tx() as conn:
         # 不变量 I1 二次确认（并发上传同一文件时兜底）：清理刚写入的副本再跳过
         existed = invoice_repo.get_by_hash(conn, file_hash)
+        if existed and existed["status"] in (InvoiceStatus.ABNORMAL.value,
+                                             InvoiceStatus.PARSING.value):
+            # 软删除旧的失败记录（唯一索引只约束未删除行），本次重新解析入库
+            invoice_repo.soft_delete(conn, existed["id"])
+            logger.info("重新解析此前失败的发票 #%s（文件 %s）", existed["id"], file_name)
+            existed = None
         if existed:
             _file_store.delete(source_path)
             return {"file_name": file_name, "ok": True, "skipped": True,
@@ -244,12 +256,64 @@ def _import_one(file_name: str, content: bytes, operator: str) -> dict:
                     "text": result.dto.traffic_text,
                 }
             t_u = time.perf_counter()
-            invoice_repo.update(conn, invoice_id, {
-                **_row_fields_from_dto(result.dto),
-                "parse_engine": result.engine,
-                "parse_confidence": result.confidence,
-                "raw_json": json.dumps(raw, ensure_ascii=False),
-            })
+            # update 前主动去重：同号票存在时走 PARSED → DUPLICATE，
+            # 避免 SQLite UNIQUE 约束在 update 时拦截（IntegrityError）。
+            same_no_hit = None
+            if result.dto.invoice_no:
+                existing = invoice_repo.fingerprints(conn, exclude_id=invoice_id)
+                for exist_id, _hash, code, no in existing:
+                    if no and code == (result.dto.invoice_code or "") \
+                            and no == result.dto.invoice_no:
+                        same_no_hit = exist_id
+                        break
+
+            if same_no_hit:
+                # 同号票已存在：当前记录保留解析元数据（raw_json），但不写
+                # 代码号字段（避免撞 UNIQUE 约束），状态机走 PARSED → DUPLICATE。
+                raw["dup_reason"] = (f"同号票 #{same_no_hit} 已存在，导入后标 DUPLICATE "
+                                     f"（号={result.dto.invoice_no}）")
+                invoice_repo.update(conn, invoice_id, {
+                    "parse_engine": result.engine,
+                    "parse_confidence": result.confidence,
+                    "raw_json": json.dumps(raw, ensure_ascii=False),
+                })
+                change_invoice_status(conn, invoice_id, InvoiceStatus.PARSED.value,
+                                      f"解析成功（engine={result.engine}，同号票 #{same_no_hit}）",
+                                      operator)
+                change_invoice_status(conn, invoice_id, InvoiceStatus.DUPLICATE.value,
+                                      f"同号码发票已存在（#{same_no_hit}），自动标记重复",
+                                      operator)
+                _scan_risk(conn, invoice_id)
+                return {"file_name": file_name, "ok": True, "invoice_id": invoice_id,
+                        "status": InvoiceStatus.DUPLICATE.value,
+                        "message": f"同号码发票已存在（#{same_no_hit}），已自动标记为重复"}
+
+            try:
+                invoice_repo.update(conn, invoice_id, {
+                    **_row_fields_from_dto(result.dto),
+                    "parse_engine": result.engine,
+                    "parse_confidence": result.confidence,
+                    "raw_json": json.dumps(raw, ensure_ascii=False),
+                })
+            except sqlite3.IntegrityError as e:
+                # 并发场景：上面主动查重后仍撞约束（同号并发插入），兜底走 DUPLICATE 流程
+                msg = str(e)
+                if "invoice_code" not in msg and "invoice_no" not in msg:
+                    raise
+                logger.warning("发票 %s 撞同号约束（%s），兜底走 DUPLICATE", file_name, msg)
+                invoice_repo.update(conn, invoice_id, {
+                    "parse_engine": result.engine,
+                    "parse_confidence": result.confidence,
+                    "raw_json": json.dumps(raw, ensure_ascii=False),
+                })
+                change_invoice_status(conn, invoice_id, InvoiceStatus.PARSED.value,
+                                      f"解析成功（engine={result.engine}，同号票撞约束）", operator)
+                change_invoice_status(conn, invoice_id, InvoiceStatus.DUPLICATE.value,
+                                      f"同号票撞 DB 约束，标记 DUPLICATE", operator)
+                _scan_risk(conn, invoice_id)
+                return {"file_name": file_name, "ok": True, "invoice_id": invoice_id,
+                        "status": InvoiceStatus.DUPLICATE.value,
+                        "message": "同号码发票已存在，已自动标记为重复"}
             t_s = time.perf_counter()
             change_invoice_status(conn, invoice_id, InvoiceStatus.PARSED.value,
                                   f"解析成功（engine={result.engine}）", operator)

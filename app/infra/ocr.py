@@ -185,8 +185,11 @@ def _load_engine(warmup: bool = True, max_side: int = MAX_SIDE_LEN):
     return eng
 
 
-def _image_to_array(content: bytes):
-    """图片字节 -> RGB numpy 数组（按 EXIF 方向校正）。"""
+def _image_to_array(content: bytes, rotate: int = 0):
+    """图片字节 -> RGB numpy 数组（按 EXIF 方向校正，可选旋转）。
+
+    rotate: 0/90/180/270，用于纠正侧拍/倒拍的纸质票据（手机拍照常见）。
+    """
     try:
         import numpy as np
         from PIL import Image, ImageOps
@@ -195,10 +198,28 @@ def _image_to_array(content: bytes):
     try:
         img = Image.open(io.BytesIO(content))
         img = ImageOps.exif_transpose(img)   # 手机照片方向校正
+        if rotate:
+            img = img.rotate(rotate, expand=True)
         img = img.convert("RGB")
     except Exception as e:
         raise ParseSkip(f"OCR 图片无法解码: {e}") from e
     return np.array(img)
+
+
+def _field_score(dto: InvoiceDTO) -> int:
+    """旋转方向取舍：关键字段完整度评分（越高说明该方向读得越准）。"""
+    score = 0
+    if dto.invoice_no and _RE_INVOICE_NO.match(dto.invoice_no):
+        score += 3
+    if dto.total_amount is not None:
+        score += 2
+    if dto.invoice_date:
+        score += 1
+    if dto.invoice_code:
+        score += 1
+    if dto.seller_name or dto.buyer_name:
+        score += 1
+    return score
 
 
 def _digit_quality(dto: InvoiceDTO) -> int:
@@ -223,13 +244,13 @@ def _digits_suspicious(dto: InvoiceDTO) -> bool:
     return bool(checks) and not all(checks)
 
 
-def _run_ocr_once(content: bytes, max_side: int):
+def _run_ocr_once(content: bytes, max_side: int, rotate: int = 0):
     """跑一遍 OCR 并抽取字段，返回 (dto, 行数, elapse)。"""
     # 引擎非线程安全且 4 核机器并发 OCR 只会互相抢 CPU：串行化，让其它请求（删除等）仍能响应
     try:
         with _OCR_LOCK:
             engine = _load_engine(warmup=False, max_side=max_side)
-            arr = _image_to_array(content)
+            arr = _image_to_array(content, rotate)
             result, elapse = engine(arr)
     except ParseSkip:
         raise
@@ -255,6 +276,25 @@ def parse_image(content: bytes) -> InvoiceDTO:
     import time as _t
     t0 = _t.time()
     dto, n_lines, elapse = _run_ocr_once(content, MAX_SIDE_LEN)
+    used_angle = 0
+    if not dto.invoice_no and not dto.total_amount:
+        # 手机拍摄的纸质票据常被横置/倒置：按 180°→90°→270° 重试，取字段最完整的一轮。
+        # 只在首轮完全失败时触发，正常电子发票不会多付 OCR 时间。
+        best = (_field_score(dto), dto, n_lines, elapse, 0)
+        for angle in (180, 90, 270):
+            try:
+                dto_r, n_r, e_r = _run_ocr_once(content, MAX_SIDE_LEN, angle)
+            except ParseSkip:
+                continue
+            score = _field_score(dto_r)
+            if score > best[0]:
+                best = (score, dto_r, n_r, e_r, angle)
+            if dto_r.invoice_no and dto_r.total_amount:
+                break
+        if best[4]:
+            logger.info("OCR 首轮未取到关键字段，改用 %s° 旋转重识别（评分 %s）",
+                        best[4], best[0])
+            _, dto, n_lines, elapse, used_angle = best
     if not dto.invoice_no and not dto.total_amount:
         raise ParseSkip(
             "OCR 已识别文字，但未提取到关键字段（发票号码/价税合计）"
@@ -266,7 +306,7 @@ def parse_image(content: bytes) -> InvoiceDTO:
         logger.info("OCR 首轮长数字字段位数可疑（发票号=%s, 质量=%s），改用 %s 高清复检",
                     dto.invoice_no, q1, HIRES_SIDE_LEN)
         try:
-            dto2, n_lines2, elapse2 = _run_ocr_once(content, HIRES_SIDE_LEN)
+            dto2, n_lines2, elapse2 = _run_ocr_once(content, HIRES_SIDE_LEN, used_angle)
         except ParseSkip:
             logger.warning("OCR 高清复检未识别到文字，保留首轮结果")
         except Exception as e:

@@ -601,6 +601,90 @@ def _iso_date(raw: str) -> str:
     return "%s-%02d-%02d" % (m.group(1), int(m.group(2)), int(m.group(3)))
 
 
+# 卷式出租车发票（北京等）特征：票面没有「发票号码 / 价税合计」标签，
+# 代码(12 位)与号码(8 位)是相邻两行纯数字，金额写作「金额 / Fare」，合计写作「实收金额」。
+_TAXI_ROLL_HINTS = ("Taxi No", "TaxiNo", "Priceperkm", "Price per km",
+                    "实收金额", "燃油附加费", "里程", "车号")
+
+
+def _extract_taxi_roll(text: str, dto: InvoiceDTO) -> None:
+    """抽取卷式出租车发票字段（仅补齐缺失项，不影响常规发票）。"""
+    if not any(h in text for h in _TAXI_ROLL_HINTS):
+        return
+    if not dto.invoice_no:
+        # 代码 + 号码：两行相邻的 12 位 / 8 位纯数字（卷票无字段名）
+        m = re.search(r"(?<!\d)(\d{12})(?!\d)\s*\n\s*(?<!\d)(\d{8})(?!\d)", text)
+        if m:
+            dto.invoice_code = dto.invoice_code or m.group(1)
+            dto.invoice_no = m.group(2)
+        else:
+            m8 = re.search(r"(?<!\d)(\d{8})(?!\d)", text)
+            if m8:
+                dto.invoice_no = m8.group(1)
+            m12 = re.search(r"(?<!\d)(\d{12})(?!\d)", text)
+            if m12 and not dto.invoice_code:
+                dto.invoice_code = m12.group(1)
+    if not dto.total_amount:
+        # 优先「金额 / Fare」后的票面金额。出租车票针式打印常把 ¥ 符号
+        # 读成 "年/卡/元" 等干扰字，货币符号改为"任意非数字串"。
+        amt_re = r"金额[\s\S]{0,20}?[^0-9]{0,5}([0-9]+(?:\.[0-9]{1,2})?)"
+        fare_re = r"Fare[\s\S]{0,20}?[^0-9]{0,5}([0-9]+(?:\.[0-9]{1,2})?)"
+        paid_re = r"实收金额[\s\S]{0,20}?[^0-9]{0,5}([0-9]+(?:\.[0-9]{1,2})?)"
+        m = (re.search(amt_re, text)
+             or re.search(fare_re, text, re.I)
+             or re.search(paid_re, text))
+        if m:
+            # 取"金额"标签后出现的最大有效金额（排除燃油附加费/预约费等小数目）
+            cand = m.group(1)
+            dto.total_amount = max(float(cand), float(dto.total_amount or 0)) \
+                if dto.total_amount else cand
+    if not dto.invoice_date:
+        def _ocr_fix_month(raw: str) -> int:
+            """出租车票针式打印常见 OCR 数字粘连校正。
+
+            核心规律：出租车票月份只能是 1-12。针式/喷墨打印时：
+              - 数字 0 的圆圈墨点散开最容易被读成 8 或 6
+              - 1/2 可能被读成 9
+            所以：两位数且十位数为 1 的月份一定是 10/11/12，
+            OCR 把个位数读错时优先按"10/11/12"修正。
+            """
+            v = int(raw)
+            if 1 <= v <= 12:
+                return v
+            # 两位数月份且十位为 1 → 只能是 10/11/12，修正个位
+            if 10 <= v <= 19:
+                units = v % 10
+                # 8/6 → 0；9 → 1 或 2
+                if units in (8, 6):
+                    return 10         # 18/16 → 10（最常见，0→8/6）
+                if units == 9:
+                    return 12         # 19 → 12（2→9）
+                if units == 0:
+                    return 10
+                # units ∈ (2,3,4,5,7) 不太常见但也可能，按十位数取 10
+                return 10
+            # 其他非法月份（≥20），尝试取后 1 位看是否合法（38→8, 26→6 等）
+            if v > 20:
+                units = v % 10
+                if 1 <= units <= 9:
+                    return units
+            return v  # 留非法值让 normalize 的 strptime 自然失败
+
+        m = re.search(r"(20\d{2})[-/.年](\d{1,2})[-/.月](\d{1,2})", text)
+        if not m:
+            # 兼容"日期 Date"独立行 + 时间 Time 独立行的版式，日期可能紧跟在"日期"标签之后
+            m = re.search(r"日期[^\d]{0,10}(20\d{2})[-/.年](\d{1,2})[-/.月](\d{1,2})", text)
+        if m:
+            year_s, month_s, day_s = m.group(1), m.group(2), m.group(3)
+            month_v = _ocr_fix_month(month_s)
+            day_v = int(day_s)
+            dto.invoice_date = "%s-%02d-%02d" % (year_s, month_v, day_v)
+    if not dto.seller_name:
+        dto.seller_name = "出租车"
+    # 卷票票面没有商品明细，统一归为「出租车费」，避免把证件号等噪音当摘要
+    dto.item_summary = "出租车费"
+
+
 def _extract_traffic(text: str, dto: InvoiceDTO) -> None:
     """提取无票号票据的车牌号 / 上下车时间 / 票面文字（无发票号场景匹配用）。
 
@@ -670,6 +754,8 @@ def extract_fields_from_text(text: str) -> InvoiceDTO:
     # 项目名称（完整处理折行 + 多商品 + 金额列剥离）
     # 策略：找到所有 *税收分类* 所在行，向下收集折行，剥掉金额列后合并
     dto.item_summary = _extract_item_summary_block(text)
+    # 卷式出租车发票（无「发票号码 / 价税合计」标签的版式）
+    _extract_taxi_roll(text, dto)
     # 无票号交通票据特征（车牌号 / 上下车时间 / 票面文字）
     _extract_traffic(text, dto)
     return dto
