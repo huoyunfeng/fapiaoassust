@@ -128,6 +128,16 @@ def _raw_json(row: dict) -> dict:
         return {}
 
 
+def _backfill_dup_fields(row: dict) -> None:
+    """DUPLICATE 记录：invoice_code/invoice_no 为避免撞 DB 唯一约束未落列，
+    真实号码保存在 raw_json.dup_invoice_code/dup_invoice_no，显示时回填。"""
+    raw = _raw_json(row)
+    if not row.get("invoice_no") and raw.get("dup_invoice_no"):
+        row["invoice_no"] = raw["dup_invoice_no"]
+    if not row.get("invoice_code") and raw.get("dup_invoice_code"):
+        row["invoice_code"] = raw["dup_invoice_code"]
+
+
 # ---------------------------------------------------------------- 导入
 def import_files(files: List[tuple[str, str, bytes]], operator: str = None,
                  skip_match: bool = False) -> List[dict]:
@@ -268,11 +278,18 @@ def _import_one(file_name: str, content: bytes, operator: str) -> dict:
                         break
 
             if same_no_hit:
-                # 同号票已存在：当前记录保留解析元数据（raw_json），但不写
-                # 代码号字段（避免撞 UNIQUE 约束），状态机走 PARSED → DUPLICATE。
+                # 同号票已存在：除 invoice_code/invoice_no 外其余解析字段全部落库
+                # （金额/日期/买卖方等用户关心字段照常显示），代码号仅保留在 raw_json
+                # 中避免撞 UNIQUE 约束。状态机走 PARSED → DUPLICATE。
                 raw["dup_reason"] = (f"同号票 #{same_no_hit} 已存在，导入后标 DUPLICATE "
                                      f"（号={result.dto.invoice_no}）")
+                raw["dup_invoice_code"] = result.dto.invoice_code or ""
+                raw["dup_invoice_no"] = result.dto.invoice_no or ""
+                row_fields = _row_fields_from_dto(result.dto)
+                row_fields.pop("invoice_code", None)
+                row_fields.pop("invoice_no", None)
                 invoice_repo.update(conn, invoice_id, {
+                    **row_fields,
                     "parse_engine": result.engine,
                     "parse_confidence": result.confidence,
                     "raw_json": json.dumps(raw, ensure_ascii=False),
@@ -301,7 +318,13 @@ def _import_one(file_name: str, content: bytes, operator: str) -> dict:
                 if "invoice_code" not in msg and "invoice_no" not in msg:
                     raise
                 logger.warning("发票 %s 撞同号约束（%s），兜底走 DUPLICATE", file_name, msg)
+                raw["dup_invoice_code"] = result.dto.invoice_code or ""
+                raw["dup_invoice_no"] = result.dto.invoice_no or ""
+                row_fields = _row_fields_from_dto(result.dto)
+                row_fields.pop("invoice_code", None)
+                row_fields.pop("invoice_no", None)
                 invoice_repo.update(conn, invoice_id, {
+                    **row_fields,
                     "parse_engine": result.engine,
                     "parse_confidence": result.confidence,
                     "raw_json": json.dumps(raw, ensure_ascii=False),
@@ -759,6 +782,7 @@ def invoice_detail(invoice_id: int) -> Optional[dict]:
         row = invoice_repo.get(conn, invoice_id)
         if row is None or row.get("deleted_at"):
             return None
+        _backfill_dup_fields(row)
         row["raw"] = _raw_json(row)
         row["status_log"] = log_repo.list_for_invoice(conn, invoice_id)
         return row
@@ -770,6 +794,7 @@ def invoice_preview(invoice_id: int) -> Optional[dict]:
         row = invoice_repo.get(conn, invoice_id)
         if row is None or row.get("deleted_at"):
             return None
+        _backfill_dup_fields(row)
         row.pop("raw_json", None)
         src = row.pop("source_path", "") or ""   # 绝对路径不下发前端
         m = match_repo.active_for_invoice(conn, invoice_id)
@@ -972,6 +997,7 @@ def list_invoices(status: str = None, keyword: str = None,
         user_val = raw.get("item_summary_user") or ""
         parsed_val = raw.get("item_summary_raw") or ""
         r["item_summary_raw"] = user_val or parsed_val or r.get("item_summary") or ""
+        _backfill_dup_fields(r)
     return rows
 
 
