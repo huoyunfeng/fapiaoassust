@@ -38,9 +38,9 @@
 
 /* ===== 搜索条件区：与发票管理页同构（左侧=状态+搜索，右侧=时间+筛选+重置） ===== */
 .filter-form{display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
-.filter-form select,.filter-form input:not([type=checkbox]):not([type=radio]){
-  height:36px;padding:0 12px;border:1px solid var(--border);border-radius:var(--radius);background:#fff;font-size:13px;}
-.filter-form .btn{height:36px;}
+.filter-form select,.filter-form input:not([type=checkbox]):not([type=radio]):not([type=hidden]){
+  height:36px;box-sizing:border-box;align-self:center;padding:0 12px;border:1px solid var(--border);border-radius:var(--radius);background:#fff;font-size:13px;}
+.filter-form .btn{height:36px;box-sizing:border-box;align-self:center;}
 
 /* ===== 表格工具栏：与发票管理页同构（左侧过滤标签，右侧操作按钮） ===== */
 .table-toolbar{display:flex;justify-content:space-between;align-items:center;gap:12px;
@@ -61,9 +61,7 @@
 .reb-table{min-width:700px;}
 .reb-table thead th{background:#f8f9fa;color:var(--text-2);font-weight:600;white-space:nowrap;font-size:13px;}
 .reb-table tbody td{height:48px;background:#fff;}
-.reb-table tbody tr.row-unmatched td{background:var(--danger-bg);}
 .reb-table tbody tr:hover td{background:var(--bg);}
-.reb-table tbody tr.row-unmatched:hover td{background:#ffecec;}
 
 /* ===== 单元格智能渲染 ===== */
 .cell-amount{color:var(--primary);font-weight:500;text-align:right;font-variant-numeric:tabular-nums;}
@@ -306,14 +304,17 @@
             </div>
             {% endif %}
           </td>
-          <td class="col-action"><button class="btn btn-sm btn-danger" onclick="delReimburse({{ r.id }})">删除</button></td>
+          <td class="col-action"><button type="button" class="btn-text-danger" onclick="delReimburse({{ r.id }})">删除</button></td>
         </tr>
         {% endfor %}
       </tbody>
     </table>
   </div>
   {{ render_pager(pager) }}
-  {% else %}<p class="empty-state">暂无相关数据</p>
+  {% else %}<div class="empty-state">
+    <svg class="empty-icon" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 8h28v32H10z"/><path d="M17 17h14M17 24h14M17 31h9"/></svg>
+    <p>暂无相关数据</p>
+  </div>
   <p class="muted" style="text-align:center;padding-bottom:20px;">点击右上角「导入报销单 Excel」开始</p>{% endif %}
   </div>
 </div>
@@ -597,7 +598,7 @@ function renderTemplateList(){
         ${t.is_system ? '' : `<button class="btn btn-sm btn-outline" onclick="editTemplate(${t.id})">编辑</button> `}
         <button class="btn btn-sm btn-outline" onclick="copyTemplate(${t.id})">复制</button>
         ${t.is_default ? '' : `<button class="btn btn-sm" onclick="setDefaultTemplate(${t.id})">设默认</button> `}
-        ${t.is_system ? '' : `<button class="btn btn-sm btn-danger" onclick="delTemplate(${t.id})">删除</button>`}
+        ${t.is_system ? '' : `<button class="btn-text-danger" onclick="delTemplate(${t.id})">删除</button>`}
       </td></tr>`).join('') + '</table>';
 }
 

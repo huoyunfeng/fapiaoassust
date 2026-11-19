@@ -57,7 +57,7 @@ button,input,select,textarea{font-family:inherit;color:inherit;}
 .card-divider{height:1px;background:var(--border-light);}
 .list-body{padding:16px var(--space) var(--space);}
 /* 卡片风险态 + 容量进度条（替代页面内联硬编码颜色） */
-.card-warn{border-color:var(--warning-border);background:var(--warning-bg);}
+.card-warn{border-color:var(--warning-border);background:var(--card);}
 .progress{max-width:420px;height:8px;background:#e5e7eb;border-radius:6px;overflow:hidden;margin-top:10px;}
 .progress-fill{height:100%;background:var(--primary);transition:var(--transition);}
 .progress-fill.warn{background:var(--warning);}
@@ -159,6 +159,12 @@ td.num{font-variant-numeric:tabular-nums;}
 .btn-outline:hover{background:#fff;border-color:var(--primary);color:var(--primary);box-shadow:none;}
 .btn-danger{background:var(--danger);border-color:var(--danger);}
 .btn-danger:hover{background:#f5222d;border-color:#f5222d;box-shadow:0 2px 6px rgba(255,77,79,.25);}
+/* 表格内危险操作：仅保留红色文字，不使用实心色块 */
+.btn-text-danger{display:inline-flex;align-items:center;justify-content:center;padding:4px 6px;
+  border:0;background:transparent;color:var(--danger-text);font-size:13px;line-height:1.5;
+  cursor:pointer;white-space:nowrap;text-decoration:none;}
+.btn-text-danger:hover{color:#a8071a;text-decoration:underline;}
+.btn-text-danger:disabled{opacity:.45;cursor:not-allowed;text-decoration:none;}
 .btn-green{background:var(--success);border-color:var(--success);}
 .btn-green:hover{background:#4aa50f;border-color:#4aa50f;box-shadow:0 2px 6px rgba(82,196,26,.25);}
 /* 表单控件：统一高度 36px，聚焦时边框切换主色并带轻微光晕 */
@@ -198,8 +204,10 @@ pre{background:#0f172a;color:#e2e8f0;padding:14px;border-radius:8px;font-size:12
 .pager .btn[disabled]{opacity:.45;cursor:not-allowed;}
 .pager-custom{display:inline-flex;align-items:center;gap:6px;}
 .pager-custom input{width:120px;height:32px;padding:4px 8px;text-align:center;}
-/* 空状态占位 */
-.empty-state{text-align:center;color:var(--muted);padding:36px 0;font-size:14px;}
+/* 空状态：统一浅灰线框图标 + 灰色辅助文案 */
+.empty-state{text-align:center;color:var(--muted);padding:36px 0;font-size:13px;}
+.empty-state p{margin:0;color:var(--muted);font-size:13px;}
+.empty-icon{display:block;width:48px;height:48px;margin:0 auto 10px;color:#cbd5e1;stroke-width:1.4;}
 /* 全局忙碌遮罩：导入/删除等耗时操作期间显示进度并阻挡一切点击（z-index 高于弹窗/下拉/提示） */
 .busy-bg{display:none;position:fixed;inset:0;background:rgba(15,23,42,.5);z-index:999;align-items:center;justify-content:center;}
 .busy-bg.on{display:flex;}
@@ -223,7 +231,7 @@ pre{background:#0f172a;color:#e2e8f0;padding:14px;border-radius:8px;font-size:12
 .stat-danger .num{color:var(--danger-text);}
 .text-danger{color:var(--danger-text) !important;}
 tr.clickable{cursor:pointer;}
-tr.clickable:hover td{background:#eff6ff;}
+tr.clickable:hover td{background:var(--bg);}
 /* focus 定位高亮：黄色闪烁 3 次后自动恢复（animation 结束即回默认背景） */
 @keyframes focusFlash{0%,100%{background:#fef9c3;}50%{background:#fde047;}}
 tr.row-focus td{animation:focusFlash .7s ease-in-out 3;}

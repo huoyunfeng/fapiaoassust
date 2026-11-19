@@ -6,7 +6,6 @@
 /* 顶栏标题 + 刷新按钮 */
 .db-head{display:flex;align-items:center;justify-content:space-between;}
 .db-head h1{font-size:18px;margin:0;display:flex;align-items:center;gap:8px;}
-.db-head h1::before{content:"📊";font-size:20px;}
 
 /* ---- 顶部指标卡片 ---- */
 .db-cards{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;}
@@ -25,10 +24,11 @@
 .db-icon.green{background:var(--success-bg);color:var(--success-text);}
 .db-icon.purple{background:#f4f0ff;color:#5b21b6;}
 .db-icon.red{background:var(--danger-bg);color:var(--danger-text);}
-/* 红色警示卡：细边框 + 极浅红底 */
-.db-card.danger{border-color:var(--danger-border);background:var(--danger-bg);}
+/* 红色警示卡：白底承载，仅用红色数字与小图标表达风险 */
+.db-card.danger{border-color:var(--border-light);background:var(--card);}
 .db-card.danger .db-num{color:var(--danger-text);}
-.db-card.danger .db-sub{color:var(--danger-text);}
+.db-card.danger .db-sub{color:var(--text-3);}
+.db-card .db-icon svg{width:22px;height:22px;}
 
 /* ---- 核心区 左6 + 右4 ---- */
 .db-main{display:grid;grid-template-columns:minmax(0,6fr) minmax(0,4fr);gap:16px;align-items:start;}
@@ -84,13 +84,14 @@
   font-weight:700;cursor:help;flex-shrink:0;}
 
 /* ---- 右栏：快捷操作 + 待办 ---- */
-.db-quick{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-bottom:18px;}
-.db-quick a{display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid var(--border);border-radius:var(--radius-card);
+.db-quick{display:grid;grid-template-columns:repeat(2,1fr);gap:6px;margin-bottom:16px;}
+.db-quick a{display:flex;align-items:center;gap:8px;padding:8px 10px;border:1px solid var(--border-light);border-radius:var(--radius-card);
   text-decoration:none;color:var(--text);font-size:13px;background:#fff;transition:var(--transition);}
-.db-quick a:hover{border-color:var(--primary);color:var(--primary);background:var(--primary-light);}
+.db-quick a:hover{border-color:var(--primary-border);color:var(--primary);background:#fff;}
 .db-quick .q-icon{width:28px;height:28px;border-radius:6px;display:flex;align-items:center;justify-content:center;
-  font-size:14px;background:#f1f5f9;}
-.db-quick a:hover .q-icon{background:#dbeafe;}
+  color:var(--text-2);background:#f5f7fa;flex-shrink:0;}
+.db-quick .q-icon svg{width:16px;height:16px;}
+.db-quick a:hover .q-icon{background:var(--primary-light);color:var(--primary);}
 .db-quick .q-text{flex:1;}
 .db-quick .q-title{font-weight:600;font-size:13px;}
 .db-quick .q-sub{font-size:11px;color:#9ca3af;margin-top:1px;}
@@ -106,12 +107,12 @@
 .db-mini-table{width:100%;border-collapse:collapse;font-size:12px;}
 .db-mini-table th,.db-mini-table td{padding:6px 8px;border-bottom:1px solid #f1f5f9;text-align:left;white-space:nowrap;}
 .db-mini-table th{background:#f8f9fa;color:var(--text-2);font-weight:600;font-size:11px;}
-.db-mini-table tbody tr:hover td{background:#f8fafc;}
+.db-mini-table tbody tr:hover td{background:var(--bg);}
 .db-mini-table td.wrap{white-space:normal;max-width:180px;overflow:hidden;text-overflow:ellipsis;}
 .db-mini-table .go{font-size:11px;padding:3px 8px;}
-.db-empty{text-align:center;padding:28px 0;color:#9ca3af;}
-.db-empty .ok-icon{font-size:36px;margin-bottom:6px;}
-.db-empty p{font-size:13px;}
+.db-empty{text-align:center;padding:28px 0;color:var(--text-3);}
+.db-empty .empty-icon{width:42px;height:42px;margin-bottom:8px;}
+.db-empty p{font-size:13px;color:var(--text-3);}
 
 /* 响应式：窄屏下核心区变单列 */
 @media (max-width:1100px){
@@ -130,7 +131,7 @@
   <!-- 顶部 4 指标卡（紧凑 + 图标 + 警示） -->
   <div class="db-cards">
     <div class="db-card" onclick="location.href='/invoices'">
-      <div class="db-icon blue">🧾</div>
+      <div class="db-icon blue"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3h12v18l-3-2-3 2-3-2-3 2z"/><path d="M9 8h6M9 12h6M9 16h4"/></svg></div>
       <div class="db-body">
         <div class="db-label">发票总数</div>
         <div class="db-num">{{ inv_counts.values()|sum }}</div>
@@ -138,7 +139,7 @@
       </div>
     </div>
     <div class="db-card" onclick="location.href='/reimburses'">
-      <div class="db-icon green">📝</div>
+      <div class="db-icon green"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 3h14v18H5z"/><path d="M9 8h6M9 12h6M9 16h4"/></svg></div>
       <div class="db-body">
         <div class="db-label">报销单总数</div>
         <div class="db-num">{{ reb_total }}</div>
@@ -147,7 +148,7 @@
     </div>
     <div class="db-card" onclick="location.href='/matches?tab=matched'"
          {% if not lic.features.matching %}data-locked-feature="matching" data-locked-name="智能匹配中心"{% endif %}>
-      <div class="db-icon purple">🔗</div>
+      <div class="db-icon purple"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.5.5l2-2a5 5 0 0 0-7-7l-1.2 1.2"/><path d="M14 11a5 5 0 0 0-7.5-.5l-2 2a5 5 0 0 0 7 7l1.2-1.2"/></svg></div>
       <div class="db-body">
         <div class="db-label">生效匹配</div>
         <div class="db-num">{{ active_matches }}</div>
@@ -156,7 +157,7 @@
       </div>
     </div>
     <div class="db-card{% if unmatched_invoices %} danger{% endif %}" onclick="location.href='/invoices?status=unmatched'">
-      <div class="db-icon red">⚠️</div>
+      <div class="db-icon red"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 2.8 20h18.4z"/><path d="M12 9v5M12 17.5v.1"/></svg></div>
       <div class="db-body">
         <div class="db-label">未匹配发票</div>
         <div class="db-num">{{ unmatched_invoices|length }}</div>
@@ -195,31 +196,34 @@
         </div>
         <div class="expense-list" id="expenseList"></div>
       </div>
-      <div class="expense-empty" id="expenseEmpty" style="display:none;">暂无该时间段的发票数据</div>
+      <div class="expense-empty" id="expenseEmpty" style="display:none;">
+        <svg class="empty-icon" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 40V22M20 40V10M32 40V27M44 40H4"/></svg>
+        <p>暂无该时间段的发票数据</p>
+      </div>
     </div>
 
     <!-- ========== 右栏：快捷操作 + 待办 ========== -->
     <div class="db-panel">
       <div class="db-panel-head">
-        <h2>⚡ 工作台</h2>
+        <h2><span class="panel-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z"/></svg></span>工作台</h2>
       </div>
 
       <!-- 快捷入口 -->
       <div class="db-quick">
         <a href="/invoices">
-          <div class="q-icon">🧾</div>
+          <div class="q-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3h12v18l-3-2-3 2-3-2-3 2z"/><path d="M9 8h6M9 12h6M9 16h4"/></svg></div>
           <div class="q-text"><div class="q-title">导入发票</div><div class="q-sub">XML / 图片 / 录入</div></div>
         </a>
         <a href="/reimburses">
-          <div class="q-icon">📝</div>
+          <div class="q-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 3h14v18H5z"/><path d="M9 8h6M9 12h6M9 16h4"/></svg></div>
           <div class="q-text"><div class="q-title">导入报销单</div><div class="q-sub">Excel / 录入</div></div>
         </a>
         <a href="/matches">
-          <div class="q-icon">🔗</div>
+          <div class="q-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.5.5l2-2a5 5 0 0 0-7-7l-1.2 1.2"/><path d="M14 11a5 5 0 0 0-7.5-.5l-2 2a5 5 0 0 0 7 7l1.2-1.2"/></svg></div>
           <div class="q-text"><div class="q-title">执行匹配</div><div class="q-sub">自动 / 人工确认</div></div>
         </a>
         <a href="/report">
-          <div class="q-icon">📊</div>
+          <div class="q-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg></div>
           <div class="q-text"><div class="q-title">差异报告</div><div class="q-sub">查看 / 导出</div></div>
         </a>
       </div>
@@ -252,7 +256,7 @@
         {% endif %}
         {% else %}
         <div class="db-empty">
-          <div class="ok-icon">✅</div>
+          <svg class="empty-icon" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="24" cy="24" r="18"/><path d="m16 24 5 5 11-12"/></svg>
           <p>所有账目均已处理完毕，暂无异常</p>
         </div>
         {% endif %}
@@ -277,7 +281,7 @@
         {% endif %}
         {% else %}
         <div class="db-empty">
-          <div class="ok-icon">✅</div>
+          <svg class="empty-icon" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="24" cy="24" r="18"/><path d="m16 24 5 5 11-12"/></svg>
           <p>所有发票均解析正常</p>
         </div>
         {% endif %}

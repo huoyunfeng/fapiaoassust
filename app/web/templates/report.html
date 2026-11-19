@@ -2,9 +2,9 @@
 {% block content %}
 <style>
 /* ===== 布局：顶部统计 + 左右分栏工作台 ===== */
-.rp-layout{display:flex;gap:20px;align-items:flex-start;}
+.rp-layout{display:flex;gap:16px;align-items:flex-start;}
 /* 左侧导航：略深底色，选中项主色浅底 + 左侧蓝色竖条 */
-.rp-nav{width:220px;flex-shrink:0;background:#fafafa;border:1px solid var(--border-light);border-radius:var(--radius-card);
+.rp-nav{width:220px;flex-shrink:0;background:#fff;border:1px solid var(--border-light);border-radius:var(--radius-card);
   padding:8px 0;position:sticky;top:20px;}
 .rp-nav-title{font-size:12px;color:var(--text-3);padding:10px 16px 6px;font-weight:600;letter-spacing:.5px;}
 .rp-nav-item{display:flex;align-items:center;gap:8px;padding:9px 16px;cursor:pointer;font-size:13px;
@@ -28,7 +28,7 @@
 .stat.is-zero.stat-danger .num{color:var(--success-text);}
 .stat-filter-on{outline:2px solid var(--primary);outline-offset:-1px;border-color:var(--primary);}
 /* 未匹配盲区专属高亮：琥珀色描边，与主色筛选区分 */
-.stat-blind-on{outline:2px solid #f59e0b;outline-offset:-1px;border-color:#f59e0b;background:#fffdf7;}
+.stat-blind-on{outline:2px solid #f59e0b;outline-offset:-1px;border-color:#f59e0b;background:#fff;}
 .stat-foot{margin-top:6px;font-size:11px;color:var(--muted);}
 
 /* ===== 加载遮罩（卡片/菜单切换时覆盖右侧表格） ===== */
@@ -103,10 +103,10 @@
 .reason-danger{color:#dc2626;}
 .reason-muted{color:#94a3b8;}
 /* 操作下拉触发器：统一入口，替代并排文字链 */
-.ops-trigger{border:1px solid var(--border);background:#fff;border-radius:6px;font-size:13px;
-  padding:3px 10px;cursor:pointer;color:#409EFF;white-space:nowrap;transition:var(--transition);
+.ops-trigger{border:0;background:transparent;border-radius:4px;font-size:13px;
+  padding:3px 4px;cursor:pointer;color:var(--primary);white-space:nowrap;transition:color .15s;
   line-height:1.6;}
-.ops-trigger:hover{border-color:#bfdbfe;background:#f8faff;}
+.ops-trigger:hover{color:var(--primary-dark);background:transparent;text-decoration:underline;}
 .ops-trigger:disabled{opacity:.5;cursor:not-allowed;}
 .ops-none{color:var(--text-3);}
 .ops-item-confirm{color:#67C23A;font-weight:600;}
@@ -704,12 +704,12 @@ function cellHtml(d, c, cont){
 
 function emptyHtml(){
   return `<div class="rp-empty">
-    <svg viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-      <circle cx="32" cy="32" r="26" fill="#f1f5f9"/>
-      <path d="M20 33.5l8 8 16-17" stroke="#10b981" stroke-width="4"
-            stroke-linecap="round" stroke-linejoin="round"/>
+    <svg viewBox="0 0 64 64" fill="none" stroke="#cbd5e1" stroke-width="1.6"
+         stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <circle cx="32" cy="32" r="24"/>
+      <path d="m21 32 7 7 15-16"/>
     </svg>
-    <p>当前账户一切正常，暂无相关记录</p>
+    <p>暂无相关数据</p>
   </div>`;
 }
 
@@ -838,7 +838,7 @@ function renderPickList(){
       <span class="muted">${esc(r.seller_name || '—')}</span>
       <span class="muted">${esc(r.invoice_date || '')}</span>
     </label>`;
-  }).join('') : '<p class="empty-state">暂无可用发票</p>';
+  }).join('') : '<div class="empty-state"><svg class="empty-icon" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 5h14l8 8v30H14z"/><path d="M28 5v9h8M20 23h10M20 30h10"/></svg><p>暂无可用发票</p></div>';
   syncPick();
 }
 function pickInv(id, checked){
@@ -1358,7 +1358,7 @@ function renderBindList(){
   const box = document.getElementById('bindList');
   if(!box) return;
   if(!S.bindOpts.length){
-    box.innerHTML = '<p class="empty-state">没有匹配的报销单（可能均已被占用）</p>';
+    box.innerHTML = '<div class="empty-state"><svg class="empty-icon" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 8h28v32H10z"/><path d="M17 17h14M17 24h14M17 31h9"/></svg><p>没有匹配的报销单（可能均已被占用）</p></div>';
     syncBindOk();
     return;
   }

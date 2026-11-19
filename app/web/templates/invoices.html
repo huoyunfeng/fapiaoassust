@@ -14,9 +14,7 @@
 .invoice-table .col-number,.invoice-table .cell-amount{text-align:right;}
 .invoice-table .col-state,.invoice-table .col-action{text-align:center;}
 .invoice-table tbody td{background:#fff;}
-.invoice-table tbody tr.row-unmatched td{background:var(--danger-bg);}
 .invoice-table tbody tr:hover td{background:var(--bg);}
-.invoice-table tbody tr.row-unmatched:hover td{background:#ffecec;}
 .cell-amount{color:var(--primary);font-weight:500;text-align:right;font-variant-numeric:tabular-nums;}
 
 /* ===== 列宽策略：JS 按权重动态分配百分比宽度，CSS 仅设 min-width 下限 ===== */
@@ -51,10 +49,6 @@
 .invoice-table thead th{box-shadow:inset 0 -1px 0 var(--border-light);}
 .invoice-table tbody tr:hover td.fixed-left,
 .invoice-table tbody tr:hover td.fixed-right{background:var(--bg);}
-.invoice-table tbody tr.row-unmatched td.fixed-left,
-.invoice-table tbody tr.row-unmatched td.fixed-right{background:var(--danger-bg);}
-.invoice-table tbody tr.row-unmatched:hover td.fixed-left,
-.invoice-table tbody tr.row-unmatched:hover td.fixed-right{background:#ffecec;}
 /* 固定列在横向滚动时的分隔阴影，替代生硬的整表竖线 */
 .invoice-table th.fixed-left,.invoice-table td.fixed-left{box-shadow:6px 0 8px -6px rgba(15,23,42,.12);}
 .invoice-table th.fixed-right,.invoice-table td.fixed-right{box-shadow:-6px 0 8px -6px rgba(15,23,42,.12);}
@@ -78,6 +72,12 @@
 
 /* 行点击打开详情抽屉 */
 .invoice-table tbody tr{cursor:pointer;}
+
+/* ===== 搜索条件区：所有控件统一 36px，并垂直居中 ===== */
+#invFilterForm{display:flex;align-items:center;gap:8px;flex-wrap:wrap;}
+#invFilterForm select,
+#invFilterForm input:not([type=checkbox]):not([type=radio]):not([type=hidden]),
+#invFilterForm .btn{height:36px;box-sizing:border-box;align-self:center;}
 
 /* ===== 表格工具栏：左侧过滤标签 / 右侧操作按钮 ===== */
 .table-toolbar{display:flex;justify-content:space-between;align-items:center;gap:12px;
@@ -319,7 +319,10 @@
   </table>
   </div>
   {{ render_pager(pager) }}
-  {% else %}<p class="empty-state">暂无相关数据</p>
+  {% else %}<div class="empty-state">
+    <svg class="empty-icon" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 5h14l8 8v30H14z"/><path d="M28 5v9h8M20 23h10M20 30h10"/></svg>
+    <p>暂无相关数据</p>
+  </div>
   <p class="muted" style="text-align:center;padding-bottom:20px;">点击右上角「上传发票文件」开始导入</p>{% endif %}
   </div>
 </div>
