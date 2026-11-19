@@ -27,12 +27,53 @@
 .pl-desc{font-size:12px;color:#94a3b8;margin-bottom:14px;min-height:34px;line-height:1.6;}
 .pl-feat{font-size:13px;color:var(--text-2);line-height:2.1;flex:1;}
 .pl-feat li{list-style:none;}
+.pl-feat .ok{color:#059669;font-weight:700;margin-right:2px;}
+/* 场景标签与价值锚点 */
+.pl-scene{font-size:12px;color:#64748b;background:#f8fafc;border-radius:6px;padding:6px 10px;
+  margin:2px 0 10px;line-height:1.6;}
+.pl-biz{display:inline-block;margin:0 0 6px;padding:3px 10px;border-radius:999px;
+  background:#eff6ff;border:1px solid #bfdbfe;color:#1d4ed8;font-size:12px;font-weight:600;}
+.pl-anchor{margin-top:18px;text-align:center;font-size:12.5px;color:#94a3b8;line-height:1.9;padding:0 12px;}
+/* 设备授权说明 tooltip */
+.pl-help{display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;border-radius:50%;
+  background:#e2e8f0;color:#64748b;font-size:10px;font-weight:700;cursor:help;position:relative;
+  margin-left:4px;vertical-align:middle;}
+.pl-help .pl-tip{position:absolute;left:50%;bottom:calc(100% + 9px);transform:translateX(-50%) translateY(4px);
+  width:270px;background:#0f172a;color:#e2e8f0;font-size:12px;line-height:1.75;padding:10px 12px;border-radius:8px;
+  opacity:0;visibility:hidden;transition:all .18s;z-index:60;text-align:left;font-weight:400;pointer-events:none;
+  box-shadow:0 8px 24px rgba(15,23,42,.28);}
+.pl-help .pl-tip::after{content:'';position:absolute;top:100%;left:50%;margin-left:-5px;
+  border:5px solid transparent;border-top-color:#0f172a;}
+.pl-help:hover .pl-tip,.pl-help:focus .pl-tip{opacity:1;visibility:visible;transform:translateX(-50%) translateY(0);}
+/* 多设备协同说明条 */
+.pl-note{margin-top:20px;background:#f8fafc;border:1px solid #e8edf3;border-radius:12px;
+  padding:16px 20px;font-size:12px;color:#64748b;line-height:1.9;}
+.pl-note b{color:#475569;}
+.pl-note .t{display:block;margin-bottom:4px;color:#475569;font-weight:600;font-size:12.5px;}
+/* 详细功能对比折叠面板 */
+.pl-fold{margin-top:18px;background:#fbfcfd;border:1px solid #e8edf3;border-radius:12px;overflow:hidden;}
+.pl-fold summary{list-style:none;cursor:pointer;padding:14px 20px;font-size:13px;font-weight:600;color:#64748b;
+  display:flex;align-items:center;justify-content:space-between;user-select:none;}
+.pl-fold summary::-webkit-details-marker{display:none;}
+.pl-fold summary .cv{transition:transform .2s;font-size:11px;color:#94a3b8;}
+.pl-fold[open] summary .cv{transform:rotate(180deg);}
+.pl-fold[open] summary{border-bottom:1px solid #eef2f7;background:#f6f8fb;}
+.pl-fold .body{padding:6px 20px 16px;}
+.pl-fold table{width:100%;border-collapse:collapse;font-size:12.5px;}
+.pl-fold th,.pl-fold td{padding:9px 10px;border-bottom:1px solid #eef2f7;}
+.pl-fold th{color:#64748b;font-weight:600;font-size:12px;text-align:center;background:#f8fafc;}
+.pl-fold th:first-child,.pl-fold td:first-child{text-align:left;color:#475569;}
+.pl-fold td{text-align:center;color:#334155;}
+.pl-fold td.na{color:#cbd5e1;}
+.pl-fold td.yes{color:#059669;font-weight:700;}
 .pl-now{margin-top:16px;text-align:center;padding:9px;border-radius:8px;background:#f1f5f9;color:#64748b;font-size:13px;}
 .pl-buy{margin-top:16px;text-align:center;padding:9px;border-radius:8px;border:1px solid var(--primary);
   color:var(--primary);font-size:13px;cursor:pointer;background:#fff;text-decoration:none;display:block;font-weight:600;transition:all .15s;}
 .pl-buy:hover{background:var(--primary);color:#fff;}
 .pl-buy.primary{background:var(--primary);color:#fff;border-color:var(--primary);}
 .pl-buy.primary:hover{background:#1d4ed8;}
+.pl-buy.dark{background:#111827;color:#fbbf24;border-color:#111827;font-weight:700;}
+.pl-buy.dark:hover{background:#0b1220;color:#fcd34d;}
 .pl-buy:disabled{opacity:.5;cursor:not-allowed;background:#fff;color:#94a3b8;border-color:#e2e8f0;}
 .pl-sec{background:#fff;border-radius:14px;padding:22px 26px;box-shadow:0 10px 30px rgba(15,23,42,.06);margin-top:20px;}
 .pl-sec h2{font-size:15px;margin-bottom:4px;}
@@ -192,25 +233,82 @@
   <div class="pl-grid" id="planGrid">
     {% for p in license.plans %}
     <div class="pl-card {% if p.key == 'enterprise' %}hl{% endif %} {% if license.role == 'sub' and not p.current %}disabled{% endif %}">
-      {% if p.key == 'enterprise' %}<span class="tag">推荐 · 多设备 / 多账号</span>{% endif %}
+      {% if p.key == 'enterprise' %}<span class="tag">推荐 · 3 人协作 / 3 台设备</span>{% endif %}
       <div class="pl-name">{{ p.name }}</div>
       <div class="pl-price">{{ p.price }}</div>
       {% if p.key == 'personal' %}
-      <div class="pl-monthly">折合每月仅需 8.25 元，平均每天不到 3 毛钱！</div>
+      <div class="pl-monthly">🔥 折合每天不到 3 毛钱！</div>
+      {% elif p.key == 'enterprise' %}
+      <div class="pl-biz">💼 老板与财务的内控首选</div>
       {% endif %}
-      <div class="pl-desc">{{ p.desc }}</div>
+      <div class="pl-scene">
+        {% if p.key == 'free' %}适合刚接触软件的个人体验
+        {% elif p.key == 'personal' %}适合个人出纳、兼职代账、单干老板
+        {% else %}适合小团队，或需要多台电脑协作{% endif %}
+      </div>
       <ul class="pl-feat">
-        <li>✓ 每月发票额度：{{ '不限' if p.monthly_invoice_quota is none else p.monthly_invoice_quota ~ ' 张' }}</li>
-        <li>✓ 智能匹配：{{ '支持' if p.matching else '不支持' }}</li>
-        <li>✓ 数据导出：{{ '支持' if p.export else '不支持' }}</li>
-        <li>✓ 多账号团队：{{ '支持' if p.team else '不支持' }}</li>
-        <li>✓ 可绑定设备：{{ p.devices }} 台</li>
+        {% if p.key == 'free' %}
+        <li><span class="ok">✓</span> 每月 20 张发票智能解析</li>
+        <li><span class="ok">✓</span> 基础台账管理</li>
+        <li><span class="ok">✓</span> 基础数据防重</li>
+        {% elif p.key == 'personal' %}
+        <li><span class="ok">✓</span> <b>无限量</b>发票解析</li>
+        <li><span class="ok">✓</span> 全自动智能匹配与差异报告</li>
+        <li><span class="ok">✓</span> 支持自定义 Excel 报销模板</li>
+        <li><span class="ok">✓</span> 数据备份与回收站防丢</li>
+        {% else %}
+        <li><span class="ok">✓</span> 包含个人版所有功能</li>
+        <li><span class="ok">✓</span> <b>3 人团队协作</b>（分角色、防数据串号）</li>
+        <li>
+          <span class="ok">✓</span> <b>3 台设备授权</b>（支持安全交接）
+          <span class="pl-help" tabindex="0">?<span class="pl-tip">为保障数据绝对安全，多台设备采用分布式本地独立存储。您可以通过系统的【数据交接包】功能，将子设备的数据导出为加密文件，在主设备导入合并，无需依赖云端。</span></span>
+        </li>
+        <li><span class="ok">✓</span> 永久审计日志（防员工篡改账目）</li>
+        <li><span class="ok">✓</span> 高级风控规则（拦截烟酒、红冲等）</li>
+        {% endif %}
       </ul>
       <!-- 按钮区：由 JS 动态根据场景注入 -->
       <div id="planBtn-{{ p.key }}" data-plan="{{ p.key }}" data-name="{{ p.name }}"></div>
     </div>
     {% endfor %}
   </div>
+
+  <!-- 价值锚点 -->
+  <div class="pl-anchor">
+    💡 纯本地运行，数据绝对安全。人工核对 1 个月账目需 8 小时；使用本软件只需 10 分钟。一年为你省下 90 个小时的加班。
+  </div>
+
+  <!-- 多设备物理隔离说明（折叠面板上方） -->
+  <div class="pl-note">
+    <span class="t">💡 关于企业版多设备授权说明：</span>
+    本软件为纯本地安全架构。企业版支持 3 台电脑独立授权，受限于物理隔离，不同电脑的数据不会实时自动同步。
+    若需合并账目，请使用主设备的【导入交接包】功能，系统会自动去重合并，绝不会覆盖您的主设备账目。
+  </div>
+
+  <!-- 详细功能对比（默认收起） -->
+  <details class="pl-fold">
+    <summary>查看所有版本详细功能对比 <span class="cv">▼</span></summary>
+    <div class="body">
+      <table>
+        <thead>
+          <tr><th>能力项</th><th>免费版</th><th>个人版</th><th>企业版</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>每月发票额度</td><td>20 张</td><td>不限</td><td>不限</td></tr>
+          <tr><td>智能匹配中心</td><td class="na">—</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+          <tr><td>报销单管理</td><td class="na">—</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+          <tr><td>差异报告</td><td class="na">—</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+          <tr><td>Excel 数据导出</td><td class="na">—</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+          <tr><td>智能风控规则</td><td class="na">—</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+          <tr><td>自定义费用字典</td><td class="na">—</td><td class="yes">✓</td><td class="yes">✓</td></tr>
+          <tr><td>团队席位</td><td>1 人</td><td>1 人</td><td>3 人</td></tr>
+          <tr><td>绑定设备</td><td>1 台</td><td>1 台</td><td>3 台</td></tr>
+          <tr><td>审计日志</td><td class="na">—</td><td class="na">—</td><td class="yes">✓</td></tr>
+          <tr><td>数据交接包</td><td class="na">—</td><td class="na">—</td><td class="yes">✓</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </details>
 
   {% if request.state.user and request.state.user.role == 'admin' %}
   <!-- ============ 合并激活卡片（激活 + 找回） ============ -->
@@ -378,15 +476,18 @@
         return;
       }
       if(p.key === 'enterprise'){
-        btnBox.innerHTML = `<button class="pl-buy" type="button" onclick="openPay(this)" data-plan="${p.key}" data-name="${p.name}">升级至企业版</button>`;
+        btnBox.innerHTML = `<button class="pl-buy dark" type="button" onclick="openPay(this)" data-plan="${p.key}" data-name="${p.name}">升级企业版</button>`;
         return;
       }
       btnBox.innerHTML = `<div class="pl-now">付费后无需降级</div>`;
       return;
     }
-    // free 当前或已过期：全部【立即购买】（个人版用更强的转化文案）
-    const buyText = p.key === 'personal' ? '立即解锁无限解析' : '立即购买';
-    btnBox.innerHTML = `<button class="pl-buy${p.key === 'personal' ? ' primary' : ''}" type="button" onclick="openPay(this)" data-plan="${p.key}" data-name="${p.name}">${buyText}</button>`;
+    // free 当前或已过期：个人版深蓝实心，企业版深黑金实心
+    if(p.key === 'personal'){
+      btnBox.innerHTML = `<button class="pl-buy primary" type="button" onclick="openPay(this)" data-plan="${p.key}" data-name="${p.name}">升级个人版</button>`;
+    }else{
+      btnBox.innerHTML = `<button class="pl-buy dark" type="button" onclick="openPay(this)" data-plan="${p.key}" data-name="${p.name}">升级企业版</button>`;
+    }
   });
 })();
 
