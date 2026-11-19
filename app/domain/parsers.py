@@ -319,6 +319,8 @@ _RE_CODE = re.compile(r"发票代码\s*[:：]?\s*(\d{10,12})")
 _RE_DATE = re.compile(r"开票日期\s*[:：]?\s*(\d{4}[年\-/.]\d{1,2}[月\-/.]\d{1,2}日?)")
 _RE_TOTAL = re.compile(r"[（(]小写[）)]\s*[:：]?\s*[¥￥]?\s*([0-9,，.]+)")
 _RE_TOTAL2 = re.compile(r"价税合计\s*[:：]?\s*[¥￥]?\s*([0-9,，.]+)")
+_RE_TOTAL3 = re.compile(r"合计金额\s*[:：]?\s*[¥￥]?\s*([0-9,，.]+)")
+_RE_TOTAL4 = re.compile(r"票价\s*[:：]?\s*[¥￥]?\s*([0-9,，.]+)")
 _RE_SUM_ROW = re.compile(r"(?:合|计)\s*(?:合|计)?\s*[¥￥]?\s*([0-9,，.]+)\s*[¥￥]?\s*([0-9,，.]+)")
 
 # 常见计量单位（发票"单位"列取值）
@@ -609,6 +611,9 @@ _TAXI_ROLL_HINTS = ("Taxi No", "TaxiNo", "Priceperkm", "Price per km",
 
 def _extract_taxi_roll(text: str, dto: InvoiceDTO) -> None:
     """抽取卷式出租车发票字段（仅补齐缺失项，不影响常规发票）。"""
+    # 排除机票/火车票（它们也可能包含"燃油附加费"等关键词）
+    if any(h in text for h in _FLIGHT_HINTS) or any(h in text for h in _TRAIN_HINTS):
+        return
     if not any(h in text for h in _TAXI_ROLL_HINTS):
         return
     if not dto.invoice_no:
@@ -704,6 +709,55 @@ def _extract_traffic(text: str, dto: InvoiceDTO) -> None:
         dto.traffic_text = re.sub(r"\s+", " ", text).strip()[:300]
 
 
+# ---- 机票行程单 / 火车票特征 ----
+_FLIGHT_HINTS = ("航空运输", "电子客票", "行程单", "航班号", "出发地", "目的地",
+                 "民航发展基金", "燃油附加费")
+_TRAIN_HINTS = ("中国铁路", "火车票", "车次", "出发站", "到达站", "座位",
+                "硬座", "硬卧", "软座", "软卧", "二等座", "一等座", "商务座")
+
+
+def _extract_flight_train(text: str, dto: InvoiceDTO) -> None:
+    """机票行程单 / 火车票的旅客姓名、销售方、报销内容提取。"""
+    is_flight = any(h in text for h in _FLIGHT_HINTS)
+    is_train = any(h in text for h in _TRAIN_HINTS)
+
+    if is_flight:
+        # 旅客姓名 → buyer_name
+        m = re.search(r"旅客姓名\s*[:：]?\s*([^\s\n]{2,20})", text)
+        if m and not dto.buyer_name:
+            dto.buyer_name = m.group(1)
+        # 销售单位/航空公司 → seller_name
+        m = (re.search(r"销售单位\s*[:：]?\s*([^\s\n]{2,30})", text)
+             or re.search(r"(中国国际航空|中国南方航空|中国东方航空|海南航空|"
+                          r"春秋航空|吉祥航空|深圳航空|四川航空|厦门航空|"
+                          r"山东航空|天津航空|首都航空|西部航空|祥鹏航空|"
+                          r"中国联合航空|成都航空|长龙航空|青岛航空|"
+                          r"中国国航|南方航空|东方航空|"
+                          r"Air China|China Southern|China Eastern)", text))
+        if m and not dto.seller_name:
+            dto.seller_name = m.group(1)
+        if not dto.item_summary:
+            dto.item_summary = "航空运输电子客票行程单"
+        # 航班号 → 备注（存 raw_json）
+        m = re.search(r"航班号\s*[:：]?\s*([A-Z0-9]{2,10})", text)
+        if m:
+            dto.flight_no = m.group(1)
+
+    elif is_train:
+        # 乘车人 → buyer_name
+        m = re.search(r"乘车人\s*[:：]?\s*([^\s\n]{2,20})", text)
+        if m and not dto.buyer_name:
+            dto.buyer_name = m.group(1)
+        if not dto.seller_name:
+            dto.seller_name = "中国铁路"
+        if not dto.item_summary:
+            dto.item_summary = "铁路客运"
+        # 车次 → 备注
+        m = re.search(r"车次\s*[:：]?\s*([GDZTK0-9]{1,10})", text)
+        if m:
+            dto.train_no = m.group(1)
+
+
 def extract_fields_from_text(text: str) -> InvoiceDTO:
     """从发票文本（PDF 文本层 / OCR 结果）中抽取字段。
 
@@ -720,9 +774,9 @@ def extract_fields_from_text(text: str) -> InvoiceDTO:
     m = _RE_DATE.search(text)
     if m:
         dto.invoice_date = m.group(1)
-    m = _RE_TOTAL.search(text) or _RE_TOTAL2.search(text)
+    m = _RE_TOTAL.search(text) or _RE_TOTAL2.search(text) or _RE_TOTAL3.search(text) or _RE_TOTAL4.search(text)
     if m:
-        dto.total_amount = m.group(1)
+        dto.total_amount = m.group(1).replace(",", "").replace("，", "")
     m = _RE_SUM_ROW.search(text)
     if m:
         dto.amount, dto.tax_amount = m.group(1), m.group(2)
@@ -751,9 +805,12 @@ def extract_fields_from_text(text: str) -> InvoiceDTO:
         if len(taxes) > 1:
             dto.seller_tax_no = dto.seller_tax_no or taxes[1]
 
+    # 机票行程单 / 火车票特征（旅客姓名 / 销售方 / 报销内容）——优先于通用摘要提取
+    _extract_flight_train(text, dto)
     # 项目名称（完整处理折行 + 多商品 + 金额列剥离）
     # 策略：找到所有 *税收分类* 所在行，向下收集折行，剥掉金额列后合并
-    dto.item_summary = _extract_item_summary_block(text)
+    if not dto.item_summary:
+        dto.item_summary = _extract_item_summary_block(text)
     # 卷式出租车发票（无「发票号码 / 价税合计」标签的版式）
     _extract_taxi_roll(text, dto)
     # 无票号交通票据特征（车牌号 / 上下车时间 / 票面文字）

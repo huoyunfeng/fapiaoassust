@@ -40,6 +40,9 @@ class InvoiceDTO:
     plate_no: str = ""                          # 车牌号（如 沪A12345）
     ride_time: str = ""                         # 上下车时间（原文或 ISO8601）
     traffic_text: str = ""                      # 票面关键文字（线路/上下车地点等）
+    # ---- 机票/火车票扩展字段 ----
+    flight_no: str = ""                         # 航班号（如 CA1234）
+    train_no: str = ""                          # 车次（如 G123）
 
     def filled_fields(self) -> list[str]:
         """返回已填充的必填字段名（用于解析引擎终止判断）。"""
