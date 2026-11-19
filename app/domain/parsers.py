@@ -322,6 +322,7 @@ _RE_TOTAL2 = re.compile(r"价税合计\s*[:：]?\s*[¥￥]?\s*([0-9,，.]+)")
 _RE_TOTAL3 = re.compile(r"合计金额\s*[:：]?\s*[¥￥]?\s*([0-9,，.]+)")
 _RE_TOTAL4 = re.compile(r"票价\s*[:：]?\s*[¥￥]?\s*([0-9,，.]+)")
 _RE_TOTAL5 = re.compile(r"(?<!合计)(?<!价税)金额\s*[:：]?\s*[¥￥]?\s*([0-9,，.]+)")
+_RE_TOTAL6 = re.compile(r"车费\s*[:：]?\s*[¥￥]?\s*([0-9,，.]+)")
 _RE_SUM_ROW = re.compile(r"(?:合|计)\s*(?:合|计)?\s*[¥￥]?\s*([0-9,，.]+)\s*[¥￥]?\s*([0-9,，.]+)")
 
 # 常见计量单位（发票"单位"列取值）
@@ -714,12 +715,12 @@ def _extract_traffic(text: str, dto: InvoiceDTO) -> None:
 
 # ---- 交通票据类型特征（按优先级排序，先匹配最具体的） ----
 _FLIGHT_HINTS = ("航空运输", "电子客票", "航班号", "出发地", "目的地",
-                 "民航发展基金", "燃油附加费")
+                 "民航发展基金")
 _TRAIN_HINTS = ("中国铁路", "火车票", "车次", "出发站", "到达站",
                 "硬座", "硬卧", "软座", "软卧", "二等座", "一等座", "商务座")
 _BUS_HINTS = ("公路汽车", "汽车客票", "班次", "起点站", "终点站")
 _SHIP_HINTS = ("水路客运", "船票", "船名", "航线", "开航日期")
-_RIDE_HAILING_HINTS = ("网约车", "上车地点", "下车地点", "里程")
+_RIDE_HAILING_HINTS = ("网约车", "上车地点", "下车地点")
 _TOLL_HINTS = ("车辆通行费", "入口收费站", "出口收费站", "车型")
 _METRO_HINTS = ("定额发票", "轨道交通", "地铁", "公交")
 
@@ -844,7 +845,8 @@ def extract_fields_from_text(text: str) -> InvoiceDTO:
     m = _RE_DATE.search(text)
     if m:
         dto.invoice_date = m.group(1)
-    m = _RE_TOTAL.search(text) or _RE_TOTAL2.search(text) or _RE_TOTAL3.search(text) or _RE_TOTAL4.search(text) or _RE_TOTAL5.search(text)
+    m = (_RE_TOTAL.search(text) or _RE_TOTAL2.search(text) or _RE_TOTAL3.search(text)
+         or _RE_TOTAL4.search(text) or _RE_TOTAL5.search(text) or _RE_TOTAL6.search(text))
     if m:
         dto.total_amount = m.group(1).replace(",", "").replace("，", "")
     m = _RE_SUM_ROW.search(text)
