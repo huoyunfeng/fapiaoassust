@@ -579,8 +579,8 @@ async function uploadFiles(e){
     toast('已导入 ' + okCount + ' 张，其余因本月额度不足未导入', false);
     return false;
   }
-  // 免费版无匹配能力，不再触发 /api/match/run（否则每次导入都会命中 402 弹升级）
-  if(okCount > 0 && MATCH_ENABLED){
+  // 免费版无匹配能力；员工无匹配权限，均不触发 /api/match/run（否则命中 402/403）
+  if(okCount > 0 && MATCH_ENABLED && !IS_EMPLOYEE){
     busyIndet('正在刷新匹配结果…', '已完成 ' + okCount + '/' + files.length);
     try{ await fetch('/api/match/run', {method:'POST', body:new FormData()}); }catch(err){}
   }

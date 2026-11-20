@@ -211,9 +211,7 @@ async def import_reimburses(request: Request, file: UploadFile = File(...),
     except Exception as e:
         logger.exception("报销单导入异常")
         return {"ok": False, "message": f"导入异常：{e}"}
-    user = getattr(request.state, "user", None)
-    if isinstance(result, dict) and result.get("batch_id") and not auth_service.is_staff(user):
-        reimburse_service.assign_owner_by_batch(result["batch_id"], user["id"])
+    # 报销单导入属于财务操作（员工被中间件整段拦截），归属统一为共享数据
     return _j(result)
 
 

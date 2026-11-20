@@ -496,7 +496,13 @@
             <tr data-id="{{ m.id }}">
               <td><strong>{{ m.username }}</strong></td>
               <td>{{ m.display_name }}</td>
-              <td><span class="tm-pill {{ m.role if m.role != 'employee' else 'emp' }}">{{ m.role_cn }}</span></td>
+              <td>
+                <select class="tm-role-sel" onchange="tmSetRole({{ m.id }}, this)">
+                  <option value="employee" {% if m.role == 'employee' %}selected{% endif %}>员工</option>
+                  <option value="finance" {% if m.role == 'finance' %}selected{% endif %}>财务</option>
+                  <option value="admin" {% if m.role == 'admin' %}selected{% endif %}>管理员</option>
+                </select>
+              </td>
               <td><span class="tm-pill {{ '' if m.is_active else 'off' }}">{{ '正常' if m.is_active else '已停用' }}</span></td>
               <td class="muted">{{ m.last_login_at or '—' }}</td>
               <td>
@@ -519,16 +525,18 @@
     <!-- ============ 模块4：系统与安全（4 Tab：管理员心智模型 v2） ============ -->
     <div class="sg-pane active" id="pane-system">
 
-      <!-- Tab 切换 -->
+      <!-- Tab 切换（数据备份/存储清理涉及账号表与系统文件，仅管理员可见） -->
       <div class="tabs">
+        {% if u.role == 'admin' %}
         <div class="tab active" onclick="sgSecTab(this,'sgTabBackup')">数据与备份</div>
         <div class="tab" onclick="sgSecTab(this,'sgTabStorage')">存储与回收</div>
-        <div class="tab" onclick="sgSecTab(this,'sgTabAudit');{% if lic.features.audit or ro %}sgEnsureAudit();{% endif %}">审计日志</div>
+        {% endif %}
+        <div class="tab{% if u.role != 'admin' %} active{% endif %}" onclick="sgSecTab(this,'sgTabAudit');{% if lic.features.audit or ro %}sgEnsureAudit();{% endif %}">审计日志</div>
         <div class="tab" onclick="sgSecTab(this,'sgTabLicense')">授权与系统信息</div>
       </div>
 
       <!-- ========= Tab 1：数据与备份 ========= -->
-      <div class="tabpane active" id="sgTabBackup">
+      <div class="tabpane{% if u.role == 'admin' %} active{% endif %}" id="sgTabBackup">
 
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:var(--space);">
 
@@ -657,7 +665,7 @@
       </div>
 
       <!-- ========= Tab 3：审计日志（全宽独立，防查账更清晰） ========= -->
-      <div class="tabpane" id="sgTabAudit">
+      <div class="tabpane{% if u.role != 'admin' %} active{% endif %}" id="sgTabAudit">
         {% if lic.features.audit or ro %}
         <div class="card" style="position:relative;">
           <h2>审计日志（不可篡改，仅供追溯）</h2>
@@ -747,7 +755,6 @@
 
       <!-- ========= Tab 4：授权与系统信息 ========= -->
       <div class="tabpane" id="sgTabLicense">
-
         <!-- 软件授权与激活（含倒计时进度条） -->
         <div class="card" id="licenseCard">
           <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap;">
@@ -783,10 +790,14 @@
               <button class="btn btn-outline btn-sm" onclick="copyMachineCode()">复制</button>
             </div>
             <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+              {% if u.role == 'admin' %}
               <input id="licCodeInput" placeholder="请输入订单号，如 ORD-20261105-001"
                      style="width:320px;font-family:monospace;">
               <button class="btn" onclick="activateLicense()">激活授权</button>
               <span class="muted" style="font-size:12px;color:#909399;">无订单号？联系商家购买（个人版 99 元/年 · 企业版 499 元/年）</span>
+              {% else %}
+              <span class="muted" style="font-size:12px;color:#909399;">授权激活与设备绑定由管理员操作</span>
+              {% endif %}
             </div>
           </div>
         </div>
@@ -815,7 +826,9 @@
               </div>
               <div style="margin-top:18px;padding-top:14px;border-top:1px solid var(--border-light);display:flex;gap:10px;align-items:center;">
                 <span class="muted" style="font-size:12px;">遇到问题？导出诊断包发给售后排查（仅日志 + 配置 + 系统信息，不含发票数据）</span>
+                {% if u.role == 'admin' %}
                 <button class="btn btn-outline btn-sm" style="margin-left:auto;" onclick="sgDiagnose()">📦 导出诊断包</button>
+                {% endif %}
               </div>
             </div>
           </div>
@@ -892,8 +905,13 @@ function sgEnsureRecycleDays(){
 const SG_SECTION = {{ section|tojson }};
 (function(){
   if(SG_SECTION === 'security'){
+    {% if u.role == 'admin' %}
     // Tab1（默认激活）需审计日志；Tab2 懒加载：用户点「存储与回收」时触发
     setTimeout(()=>{ sgEnsureAudit(); sgRecycleEnsure(); sgEnsureRecycleDays(); loadLastBackupStatus(); }, 50);
+    {% else %}
+    // 财务：数据备份/存储清理为管理员专属，只加载审计日志
+    setTimeout(()=>{ sgEnsureAudit(); }, 50);
+    {% endif %}
   }
 })();
 
@@ -2676,6 +2694,17 @@ async function tmToggle(id, active){
   if(!d.ok){ toast(d.message || '操作失败', false); return; }
   location.reload();
 }
+async function tmSetRole(id, el){
+  const role = el.value;
+  el.disabled = true;
+  try{
+    const d = await tmPost(`/api/team/users/${id}/role`, {role: role});
+    if(!d.ok){ toast(d.message || '角色修改失败', false); setTimeout(()=>location.reload(), 600); return; }
+    toast('角色已更新');
+    setTimeout(()=>location.reload(), 600);
+  }catch(e){ toast('网络异常', false); }
+  finally{ el.disabled = false; }
+}
 async function tmReset(id, name){
   const pwd = await sgPrompt(`为 ${name} 设置新密码（至少 8 位）`, '至少 8 位');
   if(!pwd) return;
@@ -2784,8 +2813,10 @@ document.addEventListener('DOMContentLoaded', function(){
   if(document.getElementById('riskCard')) loadRisk();
 });
 
-// 页面加载时读取授权与附件路径
+// 页面加载时读取授权与附件路径（附件路径接口仅管理员可用）
 loadLicense();
+{% if u.role == 'admin' %}
 loadUploadPath();
+{% endif %}
 </script>
 {% endblock %}

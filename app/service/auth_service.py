@@ -13,8 +13,12 @@ import time
 from typing import Optional
 
 from app.config import settings
+from app.infra.logger import get_logger
 from app.repository import db
 from app.repository.repos import kv_repo, user_repo
+from app.service import audit_service
+
+logger = get_logger(__name__)
 
 COOKIE_NAME = "fapiao_session"
 ROLE_CN = {"admin": "管理员", "finance": "财务", "employee": "员工"}
@@ -26,6 +30,10 @@ _RECOVERY_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 # 进程内缓存：账号一旦存在恒为真；会话密钥读一次即可（避免每个请求查库）
 _HAS_USERS_CACHE = False
 _SESSION_SECRET_CACHE = ""
+# 登录失败节流：同一用户名连续失败 5 次锁定 60 秒（进程内，重启即清空）
+_LOGIN_MAX_FAILS = 5
+_LOGIN_LOCK_SECONDS = 60
+_LOGIN_FAILS = {}   # username -> [连续失败次数, 锁定到期时间戳]
 
 
 class AuthError(Exception):
@@ -175,9 +183,22 @@ def create_user(username: str, password: str, role: str = "employee",
 
 
 def authenticate(username: str, password: str) -> dict:
-    row = get_by_username(username)
+    name = (username or "").strip()
+    now = time.time()
+    state = _LOGIN_FAILS.get(name)
+    if state and state[1] > now:
+        raise AuthError(f"登录失败次数过多，请 {int(state[1] - now) + 1} 秒后重试")
+    row = get_by_username(name)
     if not row or not verify_password(password or "", row.get("password_hash", "")):
+        if state is None or state[1] <= now:
+            _LOGIN_FAILS[name] = [0, 0]
+        fails = _LOGIN_FAILS[name][0] + 1
+        if fails >= _LOGIN_MAX_FAILS:
+            _LOGIN_FAILS[name] = [0, now + _LOGIN_LOCK_SECONDS]
+            raise AuthError("登录失败次数过多，账号已临时锁定 60 秒")
+        _LOGIN_FAILS[name] = [fails, 0]
         raise AuthError("用户名或密码错误")
+    _LOGIN_FAILS.pop(name, None)
     if not row.get("is_active"):
         raise AuthError("该账号已被停用，请联系管理员")
     with db.tx() as conn:
@@ -220,28 +241,75 @@ def change_password(user_id: int, old_password: str, new_password: str) -> dict:
         return user_repo.get(conn, user_id)
 
 
-def delete_user(user_id: int) -> dict:
+def set_role(user_id: int, role: str) -> None:
+    """变更角色（管理员保护：不能把最后一个有效管理员降级）。"""
+    if role not in ROLE_CN:
+        raise AuthError("无效的角色")
+    with db.tx() as conn:
+        user = user_repo.get(conn, user_id)
+        if user is None:
+            raise AuthError("账号不存在")
+        if user.get("role") == role:
+            return
+        if user.get("role") == "admin" and user.get("is_active") \
+                and user_repo.count_admins(conn) <= 1:
+            raise AuthError("不能降级唯一的管理员账号")
+        user_repo.update_fields(conn, user_id, {"role": role})
+
+
+def delete_user(user_id: int, operator: str = None) -> dict:
     """删除账号并物理删除其名下数据，立即释放 1 个席位。
 
-    返回删除统计；不可恢复（前端必须二次确认）。
+    与业务删除保持一致：先清理匹配记录与闭环标记，删除后重新复核指向这些
+    发票的 DUPLICATE 记录，事务提交后再清理附件文件（避免孤儿文件）。
     """
+    from app.infra.filestore import FileStore
+    from app.repository.repos import invoice_repo, log_repo, match_repo
+    from app.service import invoice_service      # 惰性导入，避免循环依赖
+
+    operator = operator or settings.default_operator
+    paths = []
     with db.tx() as conn:
         user = user_repo.get(conn, user_id)
         if user is None:
             raise AuthError("账号不存在")
         if user.get("role") == "admin" and user_repo.count_admins(conn) <= 1:
             raise AuthError("不能删除唯一的管理员账号")
-        inv_count = conn.execute(
-            "SELECT COUNT(*) FROM invoice WHERE owner_user_id=?", (user_id,)
-        ).fetchone()[0]
+        invs = conn.execute(
+            "SELECT id, source_path FROM invoice WHERE owner_user_id=?", (user_id,)
+        ).fetchall()
         rmb_count = conn.execute(
             "SELECT COUNT(*) FROM reimburse WHERE owner_user_id=?", (user_id,)
         ).fetchone()[0]
-        # 先清业务数据（匹配/分类/状态日志由外键级联删除）
+        inv_ids = [r["id"] for r in invs]
+        paths = [r["source_path"] for r in invs if r["source_path"]]
+        for row in invs:
+            match_repo.delete_for_invoice(conn, row["id"])
+            log_repo.delete_for_invoice(conn, row["id"])
+            invoice_repo.delete(conn, row["id"])
+        # 指向被删发票的重复标记必须重新复核，否则会永久停留在 DUPLICATE
+        if inv_ids:
+            dead = set(inv_ids)
+            for dup_id, raw_json in conn.execute(
+                    "SELECT id, raw_json FROM invoice "
+                    "WHERE status='DUPLICATE' AND deleted_at IS NULL").fetchall():
+                try:
+                    raw = json.loads(raw_json) if raw_json else {}
+                except (json.JSONDecodeError, TypeError):
+                    raw = {}
+                if raw.get("dup_of") in dead:
+                    try:
+                        invoice_service._validate_and_dedup(conn, dup_id, operator)
+                    except Exception:       # 复核失败不应阻断账号删除
+                        logger.warning("删除账号后复核重复发票 #%s 失败", dup_id, exc_info=True)
         conn.execute("DELETE FROM reimburse WHERE owner_user_id=?", (user_id,))
-        conn.execute("DELETE FROM invoice WHERE owner_user_id=?", (user_id,))
+        audit_service.log(conn, "purge", "user", user_id, user.get("username") or "",
+                          "正常", "已删除", operator,
+                          f"删除账号并清理其名下 {len(inv_ids)} 张发票、{rmb_count} 条报销单")
         user_repo.delete(conn, user_id)
-    return {"deleted_invoices": int(inv_count), "deleted_reimburses": int(rmb_count)}
+    for p in paths:
+        FileStore().delete(p)
+    return {"deleted_invoices": len(inv_ids), "deleted_reimburses": int(rmb_count)}
 
 
 def regenerate_recovery(user_id: int) -> str:

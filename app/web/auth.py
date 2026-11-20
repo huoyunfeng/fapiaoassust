@@ -280,7 +280,10 @@ async def api_license_sync():
 
 
 @auth.get("/api/license/invite")
-async def api_license_invite():
+async def api_license_invite(request: Request):
+    user = getattr(request.state, "user", None)
+    if not user or user.get("role") != "admin":
+        return _err("仅管理员可获取设备邀请码", 403)
     try:
         code = license_service.invite_code()
     except license_service.LicenseError as e:
@@ -310,6 +313,15 @@ async def api_team_create(body: dict):
     except auth_service.AuthError as e:
         return _err(str(e))
     return JSONResponse({"ok": True, "user_id": uid, "message": "账号已创建"})
+
+
+@auth.post("/api/team/users/{user_id}/role")
+async def api_team_role(user_id: int, body: dict):
+    try:
+        auth_service.set_role(user_id, _body(body, "role"))
+    except auth_service.AuthError as e:
+        return _err(str(e))
+    return JSONResponse({"ok": True, "message": "角色已更新"})
 
 
 @auth.post("/api/team/users/{user_id}/toggle")

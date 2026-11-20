@@ -56,7 +56,9 @@ def build_package() -> bytes:
 
 
 def _clean(row: dict, allowed: set) -> dict:
-    skip = {"id", "created_at", "updated_at", "deleted_at"}
+    # owner_user_id 不能跨设备搬运：来源机与目标机的用户 ID 空间各自独立，
+    # 原样导入会把数据错误归属给本机同 id 的另一个人。导入后统一置空（共享数据）。
+    skip = {"id", "created_at", "updated_at", "deleted_at", "owner_user_id"}
     return {k: v for k, v in row.items() if k in allowed and k not in skip}
 
 

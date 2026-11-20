@@ -5,6 +5,7 @@
 """
 from app.domain.states import InvalidTransition, assert_invoice_transition
 from app.infra.logger import get_logger
+from app.infra.request_context import current_operator
 from app.repository.repos import invoice_repo, log_repo
 
 logger = get_logger(__name__)
@@ -18,6 +19,8 @@ def change_invoice_status(conn, invoice_id: int, target: str,
     闭环强约束：转为 MATCHED 时用条件更新（WHERE is_closed=0）做乐观锁，
     并发下只有一张单据能抢到该发票；落库同时记录已报销金额。
     """
+    # 状态日志同样记录真实登录用户，避免被前端 operator 覆盖
+    operator = current_operator() or operator
     inv = invoice_repo.get(conn, invoice_id)
     if inv is None:
         raise ValueError(f"发票 #{invoice_id} 不存在")

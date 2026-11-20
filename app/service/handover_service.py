@@ -222,6 +222,16 @@ def import_handover(content: bytes) -> dict:
             data = {k: v for k, v in row.items() if k in inv_cols and k != "id"}
             data.pop("deleted_at", None)
             data.pop("matched", None)  # 匹配状态不随包走，导入后重跑匹配
+            # 归属人不能跨设备搬运：来源机与目标机用户 ID 空间独立，
+            # 原样导入会把数据错误归属给本机同 id 的另一个人
+            data.pop("owner_user_id", None)
+            # 匹配结果不随包走：清掉闭环标记，导入后重新参与匹配
+            if data.get("status") == "MATCHED":
+                data["status"] = "NORMAL"
+            if "is_closed" in data:
+                data["is_closed"] = 0
+            if "matched_amount" in data:
+                data["matched_amount"] = "0.00"
             # 附件已落到本机 uploads/：source_path 改为本机真实路径，
             # 否则会指向子设备的绝对路径（预览/清理必然失败）
             base = Path(str(row.get("source_path") or "")).name
@@ -248,6 +258,7 @@ def import_handover(content: bytes) -> dict:
             data = {k: v for k, v in row.items() if k in reb_cols and k != "id"}
             data.pop("deleted_at", None)
             data.pop("matched", None)
+            data.pop("owner_user_id", None)
             keys = list(data.keys())
             try:
                 conn.execute(

@@ -803,18 +803,6 @@ def purge_reimburses(ids: List[int], operator: str = None) -> dict:
     return {"ok": True, "purged": purged, "message": f"已彻底删除 {purged} 条报销单"}
 
 
-def assign_owner_by_batch(batch_id: str, user_id: int) -> None:
-    """把本批次报销单归属到提交员工（数据隔离用）。"""
-    if not batch_id or not user_id:
-        return
-    with db.tx() as conn:
-        conn.execute(
-            "UPDATE reimburse SET owner_user_id = ? "
-            "WHERE owner_user_id IS NULL AND batch_id = ?",
-            (user_id, batch_id),
-        )
-
-
 def list_reimburses(batch_id: str = None, keyword: str = None,
                     template_id: int = None, since: str = None,
                     date_from: str = None, date_to: str = None,

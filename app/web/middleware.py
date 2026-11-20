@@ -10,6 +10,7 @@
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from app.infra.request_context import set_current_operator
 from app.service import auth_service, license_service
 
 PUBLIC_PAGES = {"/login", "/setup", "/forgot-password", "/recover", "/health"}
@@ -20,13 +21,14 @@ PUBLIC_API = {
     "/api/_shutdown",
 }
 # 员工可访问页面（其余业务页面均需财务及以上）
-EMPLOYEE_PAGES = {"/", "/invoices", "/plans", "/recovery-code", "/change-password"}
+EMPLOYEE_PAGES = {"/", "/invoices", "/plans", "/recovery-code",
+                  "/change-password", "/help"}
 EMPLOYEE_API_PREFIX = (
     "/api/auth/", "/api/license/status", "/api/license/plans",
     "/api/dashboard/expense-breakdown",
     "/api/invoices/upload", "/api/invoices/manual", "/api/invoices/",
 )
-# 员工允许的写接口（发票上传/手工录入/自己发票的分类；其余写操作一律 403）
+# 员工允许的写接口（仅发票上传与手工录入；分类修改/删除等均属财务操作）
 EMPLOYEE_WRITE_PREFIX = (
     "/api/auth/", "/api/invoices/upload", "/api/invoices/manual",
 )
@@ -73,6 +75,8 @@ class AuthMiddleware(BaseHTTPMiddleware):
         path = request.url.path
         user = auth_service.user_from_request(request)
         request.state.user = user
+        # 写入请求级操作人：审计/状态日志以其为准，前端传值仅作兜底
+        set_current_operator((user or {}).get("username") or "")
 
         # 1. 首次启动：没有账号时只允许初始化
         if not auth_service.has_users():
@@ -170,10 +174,12 @@ class AuthMiddleware(BaseHTTPMiddleware):
                  "message": "自定义费用字典为付费能力，升级后立即解锁"},
                 status_code=403)
 
-        # 6. 管理员专属：团队与权限 / 数据交接与存储迁移
+        # 6. 管理员专属：团队与权限 / 数据备份与恢复 / 存储迁移与清理 /
+        #    诊断包 / 多设备交接包 / 数据交接与存储迁移（含账号表，财务不可触达）
         #    免费版允许打开「团队与权限」页面（展示升级引导），只拦截真正的读写接口
         admin_prefix = ("/team", "/settings/team", "/api/team",
-                        "/api/exchange", "/api/storage")
+                        "/api/exchange", "/api/storage", "/api/handover",
+                        "/api/backup", "/api/tasks", "/api/system")
         if path.startswith(admin_prefix):
             if not auth_service.can_manage_team(user):
                 if _is_api(path):

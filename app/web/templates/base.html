@@ -478,6 +478,8 @@ const PLAN = {
 // 供各页面判断是否发起相关请求（激活后由 App.applyPlan 即时更新）
 let MATCH_ENABLED = !!PLAN.features.matching;
 let EXPORT_ENABLED = !!PLAN.features.export;
+// 当前登录角色是否为普通员工（员工无匹配/导出/删除等财务权限）
+const IS_EMPLOYEE = {{ 'true' if u and u.role == 'employee' else 'false' }};
 // 受限路径前缀：随授权变化重建，页面内散落的链接/卡片同样能拦截
 let LOCKED_PATHS = [];
 function _rebuildLockedPaths(){

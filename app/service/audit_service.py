@@ -18,6 +18,7 @@ import json
 from typing import Optional
 
 from app.config import settings
+from app.infra.request_context import current_operator
 from app.repository import db
 from app.repository.repos import audit_repo
 
@@ -45,9 +46,11 @@ def log(conn, action, target_type, target_id="", target_label="",
         if detail and not existing:
             merged["legacy"] = detail
         final_detail = json.dumps(merged, ensure_ascii=False)
+    # 优先使用当前登录用户：前端传的 operator 可被伪造，审计必须记录真实操作人
+    real_operator = current_operator() or operator or settings.default_operator
     return audit_repo.log(
         conn, action, target_type, str(target_id), target_label,
-        old_value, new_value, operator or settings.default_operator, final_detail)
+        old_value, new_value, real_operator, final_detail)
 
 
 def list_recent(limit: int = 100, target_type: str = None,
