@@ -29,6 +29,8 @@ logger = get_logger(__name__)
 
 # 导出包保留份数（按修改时间留最新 N 份，避免 data/handover 无限增长）
 _MAX_EXPORT_FILES = 10
+# 导入时单个成员上限：交接包附件会读入内存，不能只限制总解压大小
+_MAX_IMPORT_MEMBER_BYTES = 100 * 1024 ** 2
 
 
 # ==============================================================
@@ -161,6 +163,12 @@ def import_handover(content: bytes) -> dict:
         return {"ok": False, "message": "交接包无效：不是合法的 .zip 文件"}
 
     with zipfile.ZipFile(io.BytesIO(content)) as zf:
+        try:
+            backup_service.validate_zip_members(
+                zf, metadata_names={"handover.json", "manifest.json"},
+                max_member_bytes=_MAX_IMPORT_MEMBER_BYTES)
+        except backup_service.UnsafeZip as e:
+            return {"ok": False, "message": str(e)}
         # 沙盒读取 handover.json（不落盘，纯内存校验）
         try:
             payload = json.loads(zf.read("handover.json").decode("utf-8"))

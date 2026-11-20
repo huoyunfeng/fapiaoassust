@@ -160,7 +160,7 @@ def _upload(client):
     boundary = "----matrix"
     body = (
         f"--{boundary}\r\nContent-Disposition: form-data; name=\"files\"; "
-        "filename=\"x.txt\"\r\nContent-Type: text/plain\r\n\r\nhello\r\n"
+        "filename=\"x.pdf\"\r\nContent-Type: application/pdf\r\n\r\nhello\r\n"
         f"--{boundary}--\r\n"
     ).encode()
     return client.request("/api/invoices/upload", "POST", body,

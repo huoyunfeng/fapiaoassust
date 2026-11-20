@@ -593,6 +593,37 @@ def _rewrite_source_paths(old_root: Path, new_root: Path) -> int:
     return n
 
 
+# ZIP 安全上限：防止恶意备份/交接包通过海量条目或高压缩比耗尽磁盘、内存。
+MAX_ZIP_MEMBERS = 100_000
+MAX_ZIP_UNCOMPRESSED_BYTES = 20 * 1024 ** 3
+MAX_ZIP_METADATA_BYTES = 64 * 1024 ** 2
+
+
+class UnsafeZip(ValueError):
+    """压缩包规模或元数据超出安全上限。"""
+
+
+def validate_zip_members(zf: zipfile.ZipFile, metadata_names=(),
+                         max_member_bytes: int = None) -> None:
+    """在读取或解压任何成员前校验 ZIP 规模；metadata_names 额外限制单文件 64MB。"""
+    infos = zf.infolist()
+    if len(infos) > MAX_ZIP_MEMBERS:
+        raise UnsafeZip(f"压缩包条目过多（超过 {MAX_ZIP_MEMBERS} 个上限），禁止导入")
+    metadata = set(metadata_names)
+    total = 0
+    for info in infos:
+        size = max(0, int(info.file_size))
+        total += size
+        if total > MAX_ZIP_UNCOMPRESSED_BYTES:
+            raise UnsafeZip("压缩包解压后超过 20GB 安全上限，禁止导入")
+        if max_member_bytes is not None and size > max_member_bytes:
+            raise UnsafeZip(
+                f"压缩包内单个文件超过 {max_member_bytes // (1024 ** 2)}MB 上限，禁止导入")
+        name = info.filename.replace("\\", "/")
+        if name in metadata and size > MAX_ZIP_METADATA_BYTES:
+            raise UnsafeZip("压缩包清单文件超过 64MB 安全上限，禁止导入")
+
+
 def _safe_members(zf: zipfile.ZipFile) -> tuple:
     """返回 (根目录 .db 成员名, uploads/ 下成员名列表, 其他文件成员列表)，拦截路径穿越。"""
     db_members, upload_members, extra_members = [], [], []
@@ -902,8 +933,11 @@ def _do_restore(content: bytes, on_progress: Optional[Callable[[int, str], None]
     # 0. MD5 完整性校验（防篡改 / 传输损坏）
     try:
         with zipfile.ZipFile(io.BytesIO(content)) as zf_probe:
+            validate_zip_members(zf_probe, metadata_names={"manifest.json"})
             manifest_probe = _read_manifest(zf_probe)
         declared_md5 = (manifest_probe.get("md5") or "").lower()
+    except UnsafeZip as e:
+        return {"ok": False, "message": str(e)}
     except zipfile.BadZipFile:
         return {"ok": False, "message": "备份文件损坏：无法打开"}
     actual_md5 = hashlib.md5(content).hexdigest().lower()

@@ -1593,6 +1593,7 @@ def export_excel(status: str = None, keyword: str = None, ids: list = None,
     """导出发票清单 Excel（支持按当前筛选条件或指定 ids 导出，上限 10 万条）。"""
     import io
     from openpyxl import Workbook
+    from app.infra.excel import safe_cell
     # 与全量重算串行：避免导出到重算中途的半成品数据
     from app.service.task_lock import HEAVY_TASK_LOCK
     with HEAVY_TASK_LOCK, db.read() as conn:
@@ -1606,7 +1607,7 @@ def export_excel(status: str = None, keyword: str = None, ids: list = None,
                "金额", "税额", "价税合计", "税率", "报销内容",
                "导入时间"])
     for i in rows:
-        ws.append([
+        ws.append([safe_cell(v) for v in [
             i["id"], i["status"], i["invoice_no"],
             i["invoice_date"], i["buyer_name"], i["buyer_tax_no"],
             i["seller_name"], i["seller_tax_no"],
@@ -1616,7 +1617,7 @@ def export_excel(status: str = None, keyword: str = None, ids: list = None,
             str(i["tax_rate"]) if i.get("tax_rate") is not None else "",
             i["item_summary"] or "",
             i.get("created_at") or "",
-        ])
+        ]])
     for col, w in zip("ABCDEFGHIJKLMN",
                       (6, 10, 22, 12, 28, 20, 28, 20, 12, 10, 12, 8, 30, 20)):
         ws.column_dimensions[col].width = w

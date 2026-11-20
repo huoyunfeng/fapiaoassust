@@ -18,6 +18,7 @@ from app.service import (audit_service, auth_service, backup_service,
 from app.service.mapping_service import mapping_service
 from app.service.template_service import template_service
 from app.domain.states import InvalidTransition
+from app.infra.filestore import SUPPORTED_TYPES
 from app.infra.logger import get_logger
 
 logger = get_logger(__name__)
@@ -26,6 +27,10 @@ api = APIRouter(prefix="/api", tags=["api"])
 
 # 交接包上传上限（2GB）：超过此大小内存无法安全读入，直接拒绝
 MAX_ZIP_BYTES = 2 * 1024 ** 3
+# 发票上传限制：防止员工通过超大文件/大批量文件耗尽内存或磁盘
+MAX_INVOICE_FILE_BYTES = 20 * 1024 ** 2
+MAX_INVOICE_FILES = 100
+MAX_INVOICE_BATCH_BYTES = 200 * 1024 ** 2
 
 
 def _j(data):
@@ -43,28 +48,57 @@ def _stale(err) -> JSONResponse:
 async def upload_invoices(request: Request, files: List[UploadFile] = File(...),
                           no_match: int = Form(0)):
     payload = []
-    for f in files:
-        payload.append((f.filename, f.content_type or "", await f.read()))
-    # 免费版月度额度（防刷）：先原子预留整批额度，导入完成后按未入库数退回
-    try:
-        license_service.consume_invoice_quota(len(payload))
-    except license_service.QuotaExceeded as e:
-        # 额度耗尽走专用错误码：前端弹升级卡片，而不是普通报错
-        return JSONResponse(status_code=403, content={
-            "ok": False, "code": "LIMIT_EXCEEDED", "msg": "额度用尽",
-            "limit": int((license_service.quota_status() or {}).get("limit") or 0),
-            "message": str(e)})
-    # no_match=1: 前端逐文件上传以显示进度，导入完成后由前端统一触发一次匹配
-    # 解析（尤其 OCR）耗时数秒，放线程池执行：事件循环保持畅通，删除等请求不被卡住
-    result = await run_in_threadpool(
-        invoice_service.import_files, payload, None, bool(no_match))
-    imported = [r for r in result if r.get("ok") and not r.get("skipped") and r.get("invoice_id")]
-    license_service.refund_invoice_quota(len(payload) - len(imported))
-    if imported:
-        user = getattr(request.state, "user", None)
-        if not auth_service.is_staff(user):
-            invoice_service.assign_owner([r["invoice_id"] for r in imported], user["id"])
-    return _j(result)
+    pre_results = []
+    total_bytes = 0
+
+    def _reject(name: str, message: str) -> dict:
+        return {"file_name": name, "ok": False, "invoice_id": None,
+                "status": None, "message": message}
+
+    for index, f in enumerate(files):
+        name = f.filename or f"未命名文件_{index + 1}"
+        if index >= MAX_INVOICE_FILES:
+            pre_results.append(_reject(
+                name, f"单次最多上传 {MAX_INVOICE_FILES} 个文件，本文件未处理"))
+            continue
+        ext = name.rsplit(".", 1)[-1].lower() if "." in name else ""
+        if ext not in SUPPORTED_TYPES:
+            pre_results.append(_reject(name, "不支持的文件类型：仅支持 PDF/OFD/XML/JPG/PNG"))
+            continue
+        # 最多只读取上限 + 1 字节，避免超大文件被全量载入内存
+        content = await f.read(MAX_INVOICE_FILE_BYTES + 1)
+        if len(content) > MAX_INVOICE_FILE_BYTES:
+            pre_results.append(_reject(name, "单个文件超过 20MB 上限，未导入"))
+            continue
+        if total_bytes + len(content) > MAX_INVOICE_BATCH_BYTES:
+            pre_results.append(_reject(name, "本批文件累计超过 200MB 上限，本文件未处理"))
+            continue
+        total_bytes += len(content)
+        payload.append((name, f.content_type or "", content))
+
+    if payload:
+        # 免费版月度额度（防刷）：先原子预留整批额度，导入完成后按未入库数退回
+        try:
+            license_service.consume_invoice_quota(len(payload))
+        except license_service.QuotaExceeded as e:
+            # 额度耗尽走专用错误码：前端弹升级卡片，而不是普通报错
+            return JSONResponse(status_code=403, content={
+                "ok": False, "code": "LIMIT_EXCEEDED", "msg": "额度用尽",
+                "limit": int((license_service.quota_status() or {}).get("limit") or 0),
+                "message": str(e)})
+        # no_match=1: 前端逐文件上传以显示进度，导入完成后由前端统一触发一次匹配
+        # 解析（尤其 OCR）耗时数秒，放线程池执行：事件循环保持畅通，删除等请求不被卡住
+        imported_result = await run_in_threadpool(
+            invoice_service.import_files, payload, None, bool(no_match))
+        imported = [r for r in imported_result
+                    if r.get("ok") and not r.get("skipped") and r.get("invoice_id")]
+        license_service.refund_invoice_quota(len(payload) - len(imported))
+        if imported:
+            user = getattr(request.state, "user", None)
+            if not auth_service.is_staff(user):
+                invoice_service.assign_owner([r["invoice_id"] for r in imported], user["id"])
+        pre_results.extend(imported_result)
+    return _j(pre_results)
 
 
 @api.post("/invoices/manual")
@@ -1129,7 +1163,7 @@ async def handover_import(file: UploadFile = File(...)):
     filename = (file.filename or "").lower()
     if not filename.endswith(".zip"):
         return _j({"ok": False, "message": "请上传 .zip 格式的数据交接包"})
-    content = await file.read()
+    content = await file.read(MAX_ZIP_BYTES + 1)
     if len(content) > MAX_ZIP_BYTES:
         return _j({"ok": False, "message": "交接包过大（超过 2GB 上限）"})
     try:
@@ -1168,15 +1202,18 @@ async def tasks_restore(file: UploadFile = File(...)):
     filename = (file.filename or "").lower()
     if not filename.endswith(".zip"):
         return _j({"ok": False, "message": "请上传 .zip 格式的备份文件"})
-    content = await file.read()
+    content = await file.read(MAX_ZIP_BYTES + 1)
     if len(content) > MAX_ZIP_BYTES:
         return _j({"ok": False, "message": "备份包过大（超过 2GB 上限）"})
     # MD5 预校验：前端选文件后拿到"声明 md5"，但我们也可以先做一次完整性快查
     declared_md5 = ""
     try:
         with zipfile.ZipFile(io.BytesIO(content)) as zf:
+            backup_service.validate_zip_members(zf, metadata_names={"manifest.json"})
             manifest = zf.read("manifest.json").decode("utf-8")
             declared_md5 = (json.loads(manifest).get("md5") or "").lower()
+    except backup_service.UnsafeZip as e:
+        return _j({"ok": False, "message": str(e)})
     except (KeyError, zipfile.BadZipFile, json.JSONDecodeError):
         declared_md5 = ""
     actual_md5 = backup_service.compute_md5_bytes(content).lower()

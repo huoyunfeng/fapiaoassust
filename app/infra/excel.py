@@ -304,6 +304,13 @@ def split_multi_invoice(rows: List[dict], separator: str = ",") -> List[dict]:
 # 差异报告导出
 # =====================================================================
 
+def safe_cell(value: Any) -> Any:
+    """阻止 Excel 公式注入：文本以公式触发字符开头时强制按字符串显示。"""
+    if isinstance(value, str) and value.startswith(("=", "+", "-", "@", "\t", "\r", "\n")):
+        return "'" + value
+    return value
+
+
 def export_report(sheets: List[Tuple[str, List[str], List[List[Any]]]]) -> bytes:
     """导出差异报告。sheets: [(sheet名, 表头, 行数据)]。返回 xlsx 字节。"""
     wb = Workbook()
@@ -312,7 +319,7 @@ def export_report(sheets: List[Tuple[str, List[str], List[List[Any]]]]) -> bytes
         ws = wb.create_sheet(title=name[:31])
         ws.append(header)
         for row in rows:
-            ws.append(list(row))
+            ws.append([safe_cell(v) for v in row])
         for i, h in enumerate(header, start=1):
             ws.column_dimensions[ws.cell(row=1, column=i).column_letter].width = max(12, len(h) * 2 + 4)
     buf = io.BytesIO()
@@ -334,7 +341,7 @@ def export_report_stream(sheets: List[Tuple[str, List[str], List[Any]]],
         ws = wb.create_sheet(title=name[:31])
         ws.append(list(header))
         for row in rows:
-            ws.append(list(row))
+            ws.append([safe_cell(v) for v in row])
 
     tmp = tempfile.SpooledTemporaryFile(max_size=8 << 20)
     wb.save(tmp)
