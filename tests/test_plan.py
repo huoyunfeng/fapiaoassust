@@ -1522,11 +1522,11 @@ class TestBatchCards:
         assert env["reb"].renumber_legacy_auto_nos() == 0   # 幂等，不重复迁移
 
     def test_display_columns_all_batches(self):
-        """全部批次模式：核心公共列，隐藏模板专属列；唯一「序号」列由视觉索引生成。"""
+        """全部批次模式：核心公共列，隐藏模板专属列（批次名由分组标题展示）。"""
         from app.web.pages import _display_columns
         cols = _display_columns([], all_batches=True)
         keys = [c["key"] for c in cols]
-        assert keys == ["_seq", "reimburse_no", "_template", "submitter",
+        assert keys == ["_seq", "reimburse_no", "submitter",
                         "reimburse_date", "expense_type", "amount", "invoice_no"]
 
     def test_display_columns_batch_template(self, env):
@@ -1541,6 +1541,45 @@ class TestBatchCards:
         # 经典模板表头：含报销单号/金额；备注列被剔除；序号列由视觉索引生成
         assert "报销单号" in labels and "金额" in labels and "备注" not in labels
         assert labels[0] == "序号" and cols[0]["key"] == "_seq"
+
+    def test_union_columns_merges_templates(self, monkeypatch):
+        """全部数据视图：合并所有模板列（并集），A 的发票号与 B 的项目名称都保留。"""
+        from app.service import template_service as ts_mod
+        from app.web.pages import _union_columns
+        tpls = {
+            1: {"fields_config": {"fields": [
+                {"system_key": "submitter", "excel_header": "提交人", "is_custom": False},
+                {"system_key": "invoice_no", "excel_header": "发票号", "is_custom": False},
+            ]}},
+            2: {"fields_config": {"fields": [
+                {"system_key": "custom_项目名称", "excel_header": "项目名称",
+                 "display_name": "项目名称", "is_custom": True},
+                {"system_key": "amount", "excel_header": "金额", "is_custom": False},
+            ]}},
+        }
+        monkeypatch.setattr(ts_mod.template_service, "get", lambda tid: tpls.get(tid))
+        cols = _union_columns([{"template_id": 1}, {"template_id": 2}])
+        labels = [c["label"] for c in cols]
+        assert labels[:2] == ["序号", "报销单号"]
+        assert "发票号" in labels and "项目名称" in labels and "金额" in labels
+        assert labels[-1] == "费用类型"
+        assert labels.count("发票号") == 1   # 同名字段只出现一次
+
+    def test_column_widths_follow_content(self):
+        """列宽随内容长度动态分配：短列固定像素，长文本列吸收剩余空间。"""
+        from app.web.pages import _column_widths
+        cols = [{"label": "序号", "key": "_seq"},
+                {"label": "报销单号", "key": "reimburse_no"},
+                {"label": "项目名称", "custom": "项目名称"}]
+        rows = [{"cells": [{"text": "1"}, {"text": "BX-20261120-0085"},
+                           {"text": "某市政务云平台建设项目"}]}]
+        layout = _column_widths(cols, rows)
+        assert len(layout) == 5                       # 模板列 + 状态、操作
+        assert layout[0]["px"] == 44                  # 序号固定窄列
+        assert layout[1]["px"] >= 132                 # 单号列按内容更宽
+        assert layout[2].get("fit") is True           # 长文本列按内容定宽、不随表格放大
+        assert layout[2]["px"] >= 150
+        assert layout[3]["px"] == 76 and layout[4]["px"] == 64
 
     def test_read_reimburses_ignores_seq_column(self):
         """Excel / 模板中的「序号」列强制忽略，绝不进入自定义字段。"""
@@ -1608,10 +1647,33 @@ class TestBatchCards:
         assert r1["ok"] and r1["imported"] == 1
         with env["db"].read() as conn:
             rev_no = env["reimburse_repo"].list(conn)[0]["reimburse_no"]
-        r2 = env["reb"].import_excel("b.xlsx", make_excel([row]))
+        # 文件字节不同（费用类型变化），但查重指纹一致 -> 命中历史重复
+        row2 = list(row)
+        row2[5] = "客运费"
+        r2 = env["reb"].import_excel("b.xlsx", make_excel([row2]))
         assert r2["need_confirm"] is True
         assert r2["duplicates"][0]["type"] == "history"
         assert r2["duplicates"][0]["no"] == rev_no
+
+    def test_import_blocks_same_content_with_different_name(self, env):
+        """文件级去重：内容 MD5 相同（仅改文件名）也拦截；确认覆盖后旧批次被替换。"""
+        row = ["RB-HASH-1", "张三", "2026-09-10", "2026-09-01", "2026-09-30",
+               "费用", "100.00", "", "", ""]
+        content = make_excel([row])
+        first = env["reb"].import_excel("hash-a.xlsx", content, batch_id="batch_hash_a")
+        assert first["ok"] and first["imported"] == 1
+        conflict = env["reb"].import_excel("hash-b.xlsx", content)
+        assert conflict["ok"] and conflict["need_file_confirm"] is True
+        assert conflict["existing_batch"]["batch_id"] == "batch_hash_a"
+        replaced = env["reb"].import_excel("hash-b.xlsx", content,
+                                           overwrite_batch_id="batch_hash_a")
+        assert replaced["ok"] and replaced["imported"] == 1
+        assert replaced["overwrite_performed"] is True
+        with env["db"].read() as conn:
+            assert env["reimburse_repo"].list(conn, batch_id="batch_hash_a") == []
+            new_rows = env["reimburse_repo"].list(conn, batch_id=replaced["batch_id"])
+            assert len(new_rows) == 1 and new_rows[0]["source_file"] == "hash-b.xlsx"
+            assert len(new_rows[0]["file_hash"]) == 32
 
     def test_same_file_conflict_normalizes_name_and_preserves_batch(self, env):
         """同名比较忽略路径/大小写；未确认覆盖及伪造目标均不产生任何写入。"""
@@ -1694,7 +1756,10 @@ class TestBatchCards:
         first = env["reb"].import_excel("target.xlsx", make_excel([row]),
                                        batch_id="batch_skip_target")
         assert first["ok"]
-        other = env["reb"].import_excel("other-dup.xlsx", make_excel([row]),
+        # 字节不同（费用类型不同）、查重指纹一致，避开 MD5 文件级拦截
+        row2 = list(row)
+        row2[5] = "差旅费"
+        other = env["reb"].import_excel("other-dup.xlsx", make_excel([row2]),
                                        batch_id="batch_skip_other", on_duplicate="force")
         assert other["ok"]
         preview = env["reb"].import_excel("TARGET.xlsx", make_excel([row]),

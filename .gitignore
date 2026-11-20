@@ -29,6 +29,9 @@ data/diagnose_*.zip
 data/fapiaocheck.db
 data/pay_qr.jpg
 
+# 交接导出 zip（运行产物，不入库）
+data/handover/
+
 # 截图与临时产物
 .screenshots/
 

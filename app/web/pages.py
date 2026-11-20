@@ -299,10 +299,10 @@ def reimburses_page(request: Request, batch_id: Optional[str] = None, q: str = "
                     sort: str = "",
                     page: int = 1, page_size: int = 20, focus_id: int = 0):
     batches = reimburse_service.list_batches()
-    # 默认激活最新批次：仅在 URL 完全没有 batch_id 参数时生效；
-    # ?batch_id=（空串）是用户显式选择「全部批次」，不覆盖
-    if batch_id is None:
-        batch_id = batches[0]["batch_id"] if batches else ""
+    # 视图唯一事实源：URL 的 batch_id。
+    # 缺省与空串都表示「全部数据」全局视图（时间过滤可用）；
+    # 只有在用户显式点击某个批次卡片/抽屉项后，才进入特定批次视图。
+    batch_id = (batch_id or "").strip()
 
     # ===== 时间范围解析（按报销日期口径）=====
     # 与 invoices_page 的故意差异：
@@ -338,6 +338,14 @@ def reimburses_page(request: Request, batch_id: Optional[str] = None, q: str = "
             since_f = _range_since("1y")
             date_from_f = date_to_f = None
 
+    # ===== 批次与时间过滤解耦 =====
+    # 特定批次视图：时间过滤一律失效（批次本身就是数据范围），避免两套条件叠加后
+    # 静默少数据。前端同时会把时间下拉框置灰并提示「时间筛选已锁定」。
+    if batch_id:
+        range_mode = "batch"
+        since_f = None
+        date_from_f = date_to_f = None
+
     rows = reimburse_service.list_reimburses(batch_id=batch_id or None,
                                              keyword=q or None,
                                              since=since_f,
@@ -351,19 +359,21 @@ def reimburses_page(request: Request, batch_id: Optional[str] = None, q: str = "
         rows = [r for r in rows if r.get("matched")]
     all_batches = not batch_id
     batch_tpl_id = None if all_batches else reimburse_service.batch_template_id(batch_id)
-    columns = _display_columns(rows, all_batches, batch_tpl_id)
-    if all_batches:
-        # 全部批次模式：附上每行的来源模板名（公共列「来源模板」）
-        from app.service.template_service import template_service
-        tpl_names = {t["id"]: t["name"] for t in template_service.list()}
-        for r in rows:
-            r["_template_name"] = tpl_names.get(r.get("template_id")) or "手动录入"
+    columns = _display_columns(rows, all_batches, batch_tpl_id, batches)
+    # 批次在页面上统一用「Excel 文件名去后缀」展示（与卡片一致），绝不暴露内部 batch_id
+    batch_name = ""
+    if batch_id:
+        current = next((b for b in batches if b["batch_id"] == batch_id), None)
+        batch_name = _batch_display_name(current) if current else batch_id
     # 列表排序轮换：asc = 最早的在前（首次进入），desc = 最新的在前（再次进入）。
     # 方向固化到 URL 的 sort 参数，删除后刷新沿用当前方向，不会突然翻转。
     _assign_seq(rows, batches if all_batches else None,
                 reverse=(sort or "").lower() == "desc")
     for r in rows:
         r["cells"] = [_cell_value(r, c) for c in columns]
+    # 列宽：按「表头 + 内容长度 + 预留留白」动态计算，与发票页 table-layout:fixed 一致。
+    # 用分页前的完整数据算，翻页时列宽保持稳定，不会忽宽忽窄。
+    col_widths = _column_widths(columns, rows)
     # 分页（focus 定位先算目标行所在页码）
     page_size = _norm_page_size(page_size)
     if focus_id:
@@ -377,9 +387,21 @@ def reimburses_page(request: Request, batch_id: Optional[str] = None, q: str = "
         b = r.get("batch_id")
         r["_group_break"] = bool(all_batches and b != prev_batch)
         prev_batch = b
+    view_groups = None
+    if all_batches:
+        view_groups = []
+        for r in rows:
+            if r.get("_group_break") or not view_groups:
+                view_groups.append({"name": r.get("_group_name") or "",
+                                    "count": r.get("_group_count") or 0,
+                                    "rows": []})
+            view_groups[-1]["rows"].append(r)
     return templates.TemplateResponse(request, "reimburses.html", {
         "request": request, "rows": rows, "batches": batches,
-        "batch_id": batch_id, "q": q, "status": status, "columns": columns,
+        "batch_id": batch_id, "batch_name": batch_name,
+        "q": q, "status": status, "columns": columns,
+        "col_widths": col_widths,
+        "view_groups": view_groups,
         "pager": pager, "categories": category_service.enabled_names(),
         "all_batches": all_batches,
         "range_mode": range_mode,
@@ -387,6 +409,14 @@ def reimburses_page(request: Request, batch_id: Optional[str] = None, q: str = "
         "date_to": date_to_f or "",
         "range_since": since_f or "",
     })
+
+
+def _batch_display_name(batch: dict) -> str:
+    """批次展示名：Excel 文件名去后缀（与卡片标题一致）。"""
+    name = (batch.get("source_file") or "").strip()
+    if name:
+        return name.rsplit(".", 1)[0] if "." in name else name
+    return batch.get("template_name") or "手动录入"
 
 
 def _assign_seq(rows: list, batches: list = None, reverse: bool = False) -> None:
@@ -413,32 +443,24 @@ def _assign_seq(rows: list, batches: list = None, reverse: bool = False) -> None
         b = r.get("batch_id") or ""
         seq[b] = seq.get(b, 0) + 1
         r["_seq"] = seq[b]
-        r["_group_name"] = f"{r.get('_template_name') or '手动录入'} · {b}"
+        # 分组标题用批次展示名（文件名去后缀），不展示模板名与内部批次号
+        r["_group_name"] = _batch_display_name(r)
         r["_group_count"] = counts[b]
 
 
 def _display_columns(rows: list, all_batches: bool = False,
-                     batch_tpl_id: int = None) -> list:
+                     batch_tpl_id: int = None, batches: list = None) -> list:
     """数据列生成。
 
-    全部批次模式：只输出核心公共列（序号/单号/来源模板/提交人/日期/费用类型/金额/发票号），
-    隐藏各模板的专属列，避免不同模板列混杂错位。
+    全部批次模式：合并所有批次模板的列（取并集），保证「A 有发票号、
+    B 有项目名称」时两列都显示，缺失值留空；同名字段只出现一次。
     具体批次模式：严格按该批次绑定的模板字段渲染列头；批次无行时兜底默认模板。
     两种模式都只有唯一一列「序号」（前端视觉计数，key=_seq），
     数据库自增主键与 Excel 原始序号绝不进入表格。
     """
     from app.infra.excel import is_seq_header
     if all_batches:
-        return [
-            {"label": "序号", "key": "_seq"},
-            {"label": "报销单号", "key": "reimburse_no"},
-            {"label": "来源模板", "key": "_template"},
-            {"label": "提交人", "key": "submitter"},
-            {"label": "报销日期", "key": "reimburse_date"},
-            {"label": "费用类型", "key": "expense_type"},
-            {"label": "金额", "key": "amount"},
-            {"label": "发票号", "key": "invoice_no"},
-        ]
+        return _union_columns(batches)
     from collections import Counter
     from app.service.template_service import template_service
     tpl = template_service.get(batch_tpl_id) if batch_tpl_id else None
@@ -468,6 +490,63 @@ def _display_columns(rows: list, all_batches: bool = False,
     return cols
 
 
+def _union_columns(batches: list) -> list:
+    """全部数据视图：合并所有批次模板的列（并集）。
+
+    不同模板字段不同（如 A 有「发票号」、B 有「项目名称」）时取并集，
+    两类数据都显示，缺失值由单元格渲染为「—」；同名字段只出现一次。
+    列顺序：序号 / 报销单号 → 各模板字段（按批次新旧首次出现） → 费用类型。
+    """
+    from app.infra.excel import is_seq_header
+    from app.service.template_service import template_service
+    tpl_ids = []
+    for b in (batches or []):
+        tid = b.get("template_id")
+        if tid and tid not in tpl_ids:
+            tpl_ids.append(tid)
+    cols, seen_keys, seen_labels = [], set(), set()
+
+    def add(col: dict, label: str) -> None:
+        key = col.get("key") or ("custom:" + str(col.get("custom")))
+        if label in seen_labels or key in seen_keys:
+            return
+        seen_keys.add(key)
+        seen_labels.add(label)
+        cols.append(col)
+
+    for tid in tpl_ids:
+        tpl = template_service.get(tid)
+        if not tpl:
+            continue
+        for f in ((tpl.get("fields_config") or {}).get("fields", [])):
+            label = f.get("excel_header") or f.get("display_name") or f.get("system_key") or ""
+            if not label or f.get("system_key") == "remark" or label == "备注":
+                continue
+            if is_seq_header(label) or f.get("system_key") in ("id", "_seq"):
+                continue
+            if f.get("is_custom"):
+                add({"label": label, "custom": f.get("display_name") or label}, label)
+            else:
+                add({"label": label, "key": f.get("system_key")}, label)
+    if not cols:
+        # 无模板数据时回退到系统核心列，保证空库也有稳定表头
+        cols = [
+            {"label": "提交人", "key": "submitter"},
+            {"label": "报销日期", "key": "reimburse_date"},
+            {"label": "费用类型", "key": "expense_type"},
+            {"label": "金额", "key": "amount"},
+            {"label": "发票号", "key": "invoice_no"},
+        ]
+    if not any(c.get("key") == "expense_type" for c in cols):
+        cols.append({"label": "费用类型", "key": "expense_type"})
+    if not any(c.get("key") == "amount" for c in cols):
+        cols.insert(2, {"label": "金额", "key": "amount"})
+    cols = [c for c in cols if c.get("key") not in ("reimburse_no", "_seq")]
+    cols.insert(0, {"label": "序号", "key": "_seq"})
+    cols.insert(1, {"label": "报销单号", "key": "reimburse_no"})
+    return cols
+
+
 def _cell_value(row: dict, col: dict) -> dict:
     """单元格智能渲染：金额保留两位小数、长文本标记（>18字符）、空值。
 
@@ -477,9 +556,7 @@ def _cell_value(row: dict, col: dict) -> dict:
     if col.get("key") == "expense_type":
         return {"text": "", "amount": False, "long": False,
                 "cat": _category_payload(row)}
-    if col.get("key") == "_template":
-        v = row.get("_template_name") or ""
-    elif "custom" in col:
+    if "custom" in col:
         v = (row.get("extra_data") or {}).get(col["custom"], "")
     else:
         v = row.get(col["key"])
@@ -495,6 +572,60 @@ def _cell_value(row: dict, col: dict) -> dict:
         except (ValueError, TypeError):
             pass
     return {"text": s, "amount": is_amount, "long": len(s) > 18}
+
+
+def _text_units(text) -> int:
+    """显示宽度折算：中文/全角按 2，半角按 1（用于估算列宽）。"""
+    return sum(2 if ord(ch) > 0x2E7F else 1 for ch in str(text or ""))
+
+
+def _column_widths(columns: list, rows: list) -> list:
+    """按内容长度计算每列的基础像素宽度（含表头与单元格留白）。
+
+    表格剩余空间由前端按各列基础宽度等比例放大，保证宽度分配均匀、
+    不会让某一列独占空白；短列（姓名/状态）始终比长文本列窄。
+    返回值在模板列之外追加「状态」「操作」两列（固定像素）。
+    """
+    PAD = 20   # 单元格左右内边距（16px）+ 呼吸空间
+    CAP = 240  # 长文本列的内容宽度上限，超出部分省略号截断（悬停看全文）
+    MIN_PX = {  # 语义列的最小宽度，保证表头/内容不被裁切
+        "_seq": 44, "reimburse_no": 132, "submitter": 56,
+        "reimburse_date": 96, "amount": 70, "expense_type": 88,
+        "invoice_no": 120,
+    }
+    layout = []
+    for i, c in enumerate(columns):
+        head_px = _text_units(c.get("label")) * 6
+        body_units = 0
+        has_cat = False
+        for r in rows:
+            cells = r.get("cells") or []
+            if i >= len(cells):
+                continue
+            cell = cells[i]
+            text = cell.get("text") or ""
+            if not text and isinstance(cell.get("cat"), dict):
+                has_cat = True
+                text = cell["cat"].get("category") or "选择分类"
+            body_units = max(body_units, _text_units(text))
+        body_px = min(body_units * 6, CAP)
+        is_long = body_units > 16 and not has_cat
+        content = max(head_px, body_px) + PAD
+        if has_cat:
+            content += 18       # 胶囊标签额外开销
+        elif is_long:
+            content += 8        # 长文本列额外留一点余量，尽量完整显示
+        col = {"px": int(max(MIN_PX.get(c.get("key"), 60), content))}
+        if is_long:
+            # 长文本列（如项目名称）：按内容定宽，不再随表格放大，减少空白
+            col["fit"] = True
+        layout.append(col)
+        # 对齐规范：金额右对齐；短字段居中更整齐；长文本左对齐便于阅读
+        c["align"] = ("right" if c.get("key") == "amount"
+                      else ("left" if body_units > 16 else "center"))
+    layout.append({"px": 76})   # 状态徽标
+    layout.append({"px": 64})   # 操作按钮
+    return layout
 
 
 def _category_payload(row: dict) -> dict:

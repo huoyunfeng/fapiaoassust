@@ -11,6 +11,7 @@
 - 全局自增不受批次 / 模板影响，跨模板连续递增
 - Excel 缺号 / 手动录入未填号时自动生成；用户显式填写的号保留（做唯一性校验）
 """
+import hashlib
 import json
 import re
 import uuid
@@ -353,22 +354,29 @@ def import_excel(file_name: str, content: bytes, batch_id: str = None,
     operator = operator or settings.default_operator
     source_file = _normalize_source_file(file_name)
     overwrite_batch_id = (overwrite_batch_id or "").strip() or None
+    file_hash = hashlib.md5(content).hexdigest()
 
-    # 同名预检只读，不在用户确认覆盖前触碰旧批次。
-    if source_file:
-        with db.read() as conn:
-            existing = reimburse_repo.find_batch_by_source_file(conn, source_file)
-        if overwrite_batch_id:
-            if existing is None or existing["batch_id"] != overwrite_batch_id:
-                return {"ok": False, "message": "覆盖目标不存在、已删除或与当前文件名不一致",
-                        "overwrite_performed": False}
-        elif existing:
+    # 导入前只读预检：先按内容 MD5（改文件名也能抓到），再按文件名兜底。
+    # 只有用户显式指定 overwrite_batch_id（确认覆盖）时才跳过拦截。
+    with db.read() as conn:
+        existing_by_name = (reimburse_repo.find_batch_by_source_file(conn, source_file)
+                            if source_file else None)
+        existing_by_hash = reimburse_repo.find_batch_by_file_hash(conn, file_hash)
+    if overwrite_batch_id:
+        target = existing_by_hash or existing_by_name
+        if target is None or target["batch_id"] != overwrite_batch_id:
+            return {"ok": False, "message": "覆盖目标不存在、已删除或与当前文件不一致",
+                    "overwrite_performed": False}
+    else:
+        existing = existing_by_hash or existing_by_name
+        if existing:
+            reason = "内容完全相同（MD5 一致）" if existing_by_hash else "文件名相同"
             return {"ok": True, "need_file_confirm": True,
-                    "message": f"检测到同名文件 {source_file}，请选择放弃导入或覆盖旧批次",
+                    "message": f"该文件已导入（{reason}），请选择放弃导入或覆盖旧批次",
                     "existing_batch": existing, "imported": 0,
                     "parsed_count": 0, "skipped_count": 0,
                     "overwrite_performed": False}
-    elif overwrite_batch_id:
+    if not source_file and overwrite_batch_id:
         return {"ok": False, "message": "缺少有效文件名，无法覆盖旧批次",
                 "overwrite_performed": False}
 
@@ -418,6 +426,7 @@ def import_excel(file_name: str, content: bytes, batch_id: str = None,
             "batch_id": dto.batch_id,
             "template_id": dto.template_id,
             "source_file": source_file,
+            "file_hash": file_hash,
             "reimburse_no": dto.reimburse_no or "",
             "submitter": dto.submitter,
             "reimburse_date": dto.reimburse_date,
@@ -483,24 +492,27 @@ def import_excel(file_name: str, content: bytes, batch_id: str = None,
     imported = 0
     try:
         with db.tx() as conn:
-            # 写事务内再次校验，防止预检后目标被删除或同名批次发生变化。
-            if source_file:
-                current = reimburse_repo.find_batch_by_source_file(conn, source_file)
-                if overwrite_batch_id:
-                    if current is None or current["batch_id"] != overwrite_batch_id:
-                        return {"ok": False,
-                                "message": "覆盖目标已发生变化，请刷新后重新导入",
-                                "batch_id": batch_id, "imported": 0,
-                                "parsed_count": parsed_count, "skipped_count": parsed_count,
-                                "errors": errors, "overwrite_performed": False}
-                    _delete_batch_in_tx(conn, overwrite_batch_id, operator,
-                                        requeue=False, strict=True)
-                elif current:
-                    return {"ok": True, "need_file_confirm": True,
-                            "message": f"检测到同名文件 {source_file}，请选择放弃导入或覆盖旧批次",
-                            "existing_batch": current, "imported": 0,
-                            "parsed_count": parsed_count, "skipped_count": len(errors),
+            # 写事务内再次校验，防止预检后目标被删除或同名/同内容批次发生变化。
+            current_hash = reimburse_repo.find_batch_by_file_hash(conn, file_hash)
+            current = current_hash or (
+                reimburse_repo.find_batch_by_source_file(conn, source_file)
+                if source_file else None)
+            if overwrite_batch_id:
+                if current is None or current["batch_id"] != overwrite_batch_id:
+                    return {"ok": False,
+                            "message": "覆盖目标已发生变化，请刷新后重新导入",
+                            "batch_id": batch_id, "imported": 0,
+                            "parsed_count": parsed_count, "skipped_count": parsed_count,
                             "errors": errors, "overwrite_performed": False}
+                _delete_batch_in_tx(conn, overwrite_batch_id, operator,
+                                    requeue=False, strict=True)
+            elif current:
+                reason = "内容完全相同（MD5 一致）" if current_hash else "文件名相同"
+                return {"ok": True, "need_file_confirm": True,
+                        "message": f"该文件已导入（{reason}），请选择放弃导入或覆盖旧批次",
+                        "existing_batch": current, "imported": 0,
+                        "parsed_count": parsed_count, "skipped_count": len(errors),
+                        "errors": errors, "overwrite_performed": False}
 
             for r in rows:
                 if not r["reimburse_no"]:

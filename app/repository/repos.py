@@ -342,7 +342,8 @@ class InvoiceRepo:
 # =====================================================================
 class ReimburseRepo:
     INSERT_FIELDS = [
-        "batch_id", "template_id", "source_file", "reimburse_no", "submitter", "reimburse_date",
+        "batch_id", "template_id", "source_file", "file_hash", "reimburse_no", "submitter",
+        "reimburse_date",
         "biz_date", "period_start", "period_end", "expense_type", "amount", "invoice_no",
         "invoice_date", "remark", "extra_data", "source_row", "parent_id",
         "split_type", "raw_row", "row_index", "dup_flag", "dup_source",
@@ -411,6 +412,7 @@ class ReimburseRepo:
         return _rows_to_dicts(conn.execute(
             f"""SELECT r.batch_id, MAX(r.source_file) AS source_file,
                       COUNT(*) AS row_count, MIN(r.created_at) AS created_at,
+                      MAX(r.template_id) AS template_id,
                       t.name AS template_name,
                       SUM(CASE WHEN ar.reimburse_id IS NULL THEN 1 ELSE 0 END) AS unmatched_count
                FROM reimburse r
@@ -440,6 +442,24 @@ class ReimburseRepo:
                  WHERE r.deleted_at IS NULL AND r.source_file != ''
                    AND LOWER(TRIM(r.source_file)) = ?"""
         params: list = [source_file.strip().lower()]
+        if exclude_batch_id:
+            sql += " AND r.batch_id != ?"
+            params.append(exclude_batch_id)
+        sql += " GROUP BY r.batch_id ORDER BY created_at DESC, MAX(r.id) DESC LIMIT 1"
+        return _row_to_dict(conn.execute(sql, params).fetchone())
+
+    def find_batch_by_file_hash(self, conn: sqlite3.Connection, file_hash: str,
+                                exclude_batch_id: str = None) -> Optional[dict]:
+        """按上传文件内容 MD5 查找已导入的有效批次（改文件名也能识别）。"""
+        if not file_hash:
+            return None
+        sql = """SELECT r.batch_id, MAX(r.source_file) AS file_name,
+                        COUNT(*) AS row_count, MIN(r.created_at) AS created_at,
+                        MAX(r.template_id) AS template_id, t.name AS template_name
+                 FROM reimburse r
+                 LEFT JOIN reimburse_template t ON t.id = r.template_id
+                 WHERE r.deleted_at IS NULL AND r.file_hash = ?"""
+        params: list = [file_hash]
         if exclude_batch_id:
             sql += " AND r.batch_id != ?"
             params.append(exclude_batch_id)

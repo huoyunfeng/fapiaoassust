@@ -58,15 +58,33 @@
 
 /* ===== 数据表格：全局视觉规范（斑马纹取消，统一整行 hover 高亮） ===== */
 .table-scroll{overflow-x:auto;}
-.reb-table{min-width:700px;}
+/* 固定布局 + 服务端按内容计算的列宽（与发票页一致）：
+   列宽由表头文字与内容长度动态分配，不再平均分列；超长内容省略号截断 */
+.reb-table{table-layout:fixed;width:100%;min-width:900px;}
 .reb-table thead th{background:#f8f9fa;color:var(--text-2);font-weight:600;white-space:nowrap;font-size:13px;}
 .reb-table tbody td{height:48px;background:#fff;}
+.reb-table th,.reb-table td{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.reb-table th.num{text-align:right;}
+.reb-table th.col-seq{text-align:center;}
+/* 内容对齐：短字段居中、长文本左对齐、金额右对齐（见 pages.py 的 align 计算） */
+.reb-table th.al-center,.reb-table td.al-center{text-align:center;}
+.reb-table th.al-left,.reb-table td.al-left{text-align:left;}
+.reb-table th.al-right,.reb-table td.al-right{text-align:right;}
+/* 状态列内含「疑似重复」悬停气泡，不能裁切 */
+.reb-table th.col-state,.reb-table td.col-state{overflow:visible;}
 .reb-table tbody tr:hover td{background:var(--bg);}
+/* 列设置：隐藏列（与发票页同款交互） */
+.col-hidden{display:none!important;}
+.col-settings{position:relative;display:inline-block;}
+.col-settings-panel{position:absolute;right:0;top:110%;background:#fff;border:1px solid var(--border);
+  border-radius:8px;box-shadow:0 6px 20px rgba(0,0,0,.12);padding:10px;min-width:180px;z-index:20;display:none;}
+.col-settings.open .col-settings-panel{display:block;}
+.col-settings-panel label{display:flex;align-items:center;gap:8px;padding:6px 8px;border-radius:4px;cursor:pointer;white-space:nowrap;}
+.col-settings-panel label:hover{background:#f4f6f9;}
 
 /* ===== 单元格智能渲染 ===== */
 .cell-amount{color:var(--primary);font-weight:500;text-align:right;font-variant-numeric:tabular-nums;}
-.cell-long{max-width:200px;}
-.text-ellipsis{display:inline-block;max-width:180px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;vertical-align:middle;}
+.text-ellipsis{display:inline-block;max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;vertical-align:middle;}
 /* 费用类型列：分类标签可能比单元格宽，不能省略号截断 */
 .reb-table .cell-cat{overflow:visible;text-overflow:clip;}
 /* 报销单号：弱化显示 */
@@ -74,10 +92,13 @@
 /* 视觉序号列：仅计数，弱化显示 */
 .cell-seq{color:#6b7280;font-variant-numeric:tabular-nums;white-space:nowrap;text-align:center;}
 
-/* ===== 全部批次模式：批次分组标题行 ===== */
-.reb-table tbody tr.group-row td{background:#f3f4f6;font-weight:600;font-size:12px;color:#374151;
-  padding:6px 12px;border-top:1px solid var(--border);}
-.reb-table tbody tr.group-row:hover td{background:#f3f4f6;}
+/* ===== 全部数据视图：批次标题独立于表格之外，作为分组区块头 ===== */
+.batch-group{margin-bottom:18px;}
+.batch-group:last-child{margin-bottom:6px;}
+.batch-group-head{display:flex;align-items:center;gap:10px;padding:8px 12px;margin-bottom:6px;
+  background:#f3f4f6;border-left:3px solid var(--primary);border-radius:6px;
+  font-size:13px;font-weight:600;color:#374151;}
+.batch-group-count{font-size:12px;font-weight:500;color:var(--muted);}
 
 /* ===== 疑似重复标签 + 溯源气泡 ===== */
 .dup-tag{display:inline-block;position:relative;z-index:30;margin-top:4px;padding:1px 8px;
@@ -98,6 +119,13 @@
 .reb-table .col-state,
 .reb-table .col-action{border-left:1px solid var(--border-light);}
 .reb-table .col-state,.reb-table .col-action{text-align:center;white-space:nowrap;}
+
+/* ===== 批次视图切换条：切回全部数据 / 时间锁定提示 ===== */
+.batch-view-chip{display:inline-flex;align-items:center;gap:6px;height:32px;padding:0 10px;
+  border:1px solid var(--primary-border);border-radius:6px;background:#eff6ff;color:var(--primary);
+  font-size:12px;font-weight:600;white-space:nowrap;max-width:280px;overflow:hidden;text-overflow:ellipsis;}
+.filter-lock-hint{display:inline-flex;align-items:center;gap:6px;color:var(--muted);font-size:12px;}
+select:disabled,input:disabled{background:#f5f6f8;color:#a8adb5;cursor:not-allowed;}
 
 /* ===== 最近批次卡片：白底、轻悬浮、选中描边 ===== */
 .list-batches{padding:16px var(--space) 12px;background:#fff;}
@@ -127,7 +155,7 @@
 .batch-stats{display:flex;gap:22px;margin-top:10px;}
 .bs-num{font-size:20px;font-weight:700;color:var(--primary);font-variant-numeric:tabular-nums;}
 .bs-num.bs-bad{color:var(--danger-text);}
-.bs-num.bs-zero{color:var(--success-text);}
+.bs-num.bs-zero{color:var(--muted);}
 .bs-label{font-size:11px;color:var(--muted);margin-top:2px;}
 
 /* ===== 历史批次右侧抽屉 ===== */
@@ -161,9 +189,9 @@
 .reb-history-empty{padding:46px 0;}
 
 /* ===== 导入反馈与高风险确认 ===== */
-.dup-preview-row td{background:#f8fafc !important;color:#94a3b8 !important;}
+.dup-preview-row td{background:#fef9c3 !important;color:#92400e !important;}
 .dup-preview-badge{display:inline-block;margin-left:6px;padding:1px 6px;border-radius:4px;
-  background:#e5e7eb;color:#6b7280;font-size:11px;font-weight:600;}
+  background:#fde68a;color:#92400e;font-size:11px;font-weight:600;}
 .same-file-card{margin-top:14px;padding:13px 14px;border:1px solid var(--border-light);border-radius:8px;
   background:#f8fafc;font-size:13px;line-height:1.9;color:var(--text-2);}
 .same-file-card b{color:var(--text);}
@@ -212,23 +240,25 @@
   <div class="batch-section-head">
     <span class="batch-section-title">最近批次</span>
     <div class="batch-section-actions">
-      <button type="button" class="batch-link" onclick="gotoBatch('')">全部批次</button>
+      <button type="button" class="batch-link" onclick="gotoBatch('')">切回全部数据</button>
       <button type="button" class="batch-link" onclick="openBatchDrawer()">更多历史批次（{{ batches|length }}）</button>
     </div>
   </div>
   <div class="batch-strip">
     {% for b in batches[:5] %}
-    {% set batch_title = b.source_file or b.template_name or '手动录入' %}
+    {# 卡片标题 = 原始 Excel 文件名（去后缀）；副标题 = 导入时间 #}
+    {% set _fname = b.source_file or '' %}
+    {% set batch_title = (_fname.rsplit('.', 1)[0] if '.' in _fname else _fname) or b.template_name or '手动录入' %}
     <div class="batch-card{% if batch_id == b.batch_id %} on{% endif %}"
          data-batch="{{ b.batch_id }}" title="点击只查看该批次" tabindex="0"
          onclick="gotoBatch('{{ b.batch_id }}')" onkeydown="if(event.key==='Enter')gotoBatch('{{ b.batch_id }}')">
       {% if batch_id == b.batch_id %}<span class="batch-check" title="当前视图">✓</span>{% endif %}
       <div class="batch-head">
-        <div class="batch-title" title="{{ batch_title }}">{{ batch_title }}</div>
+        <div class="batch-title" title="{{ _fname or batch_title }}">{{ batch_title }}</div>
         <button type="button" class="batch-del" title="删除该批次" aria-label="删除批次 {{ batch_title }}"
                 onclick="event.stopPropagation();delBatch('{{ b.batch_id }}')">×</button>
       </div>
-      <div class="batch-no" title="{{ b.batch_id }}">{{ b.batch_id }}</div>
+      <div class="batch-no">导入于 {{ (b.created_at or '')[:16] or '时间未知' }}</div>
       <div class="batch-stats">
         <div class="bs">
           <div class="bs-num">{{ b.row_count }}</div>
@@ -250,15 +280,23 @@
 <div class="list-filter">
   <form class="inline filter-form" method="get" id="rebFilterForm">
     <input type="hidden" name="batch_id" value="{{ batch_id }}">
+    {% if batch_id %}
+    <span class="batch-view-chip" title="{{ batch_name }}（当前处于特定批次视图，时间筛选已锁定）">
+      📌 {{ batch_name }}
+    </span>
+    <button type="button" class="btn btn-outline btn-sm" onclick="gotoBatch('')">← 切回全部数据</button>
+    {% endif %}
     <select name="status">
       <option value="" {% if not status %}selected{% endif %}>全部状态</option>
       <option value="unmatched" {% if status=='unmatched' %}selected{% endif %}>未匹配</option>
       <option value="matched" {% if status=='matched' %}selected{% endif %}>已匹配</option>
     </select>
-    <input name="q" value="{{ q }}" placeholder="单号/提交人/费用类型" style="flex:1;min-width:220px;">
-    {# 时间范围：按报销日期筛选，7 个快捷选项 + 自定义起止日期 #}
-    <select name="range" id="rangeSelect" onchange="toggleCustomDates(this.value)" title="数据时间范围（按报销日期，非导入时间）">
-      <option value="all" {% if range_mode == 'all' %}selected{% endif %}>全部时间</option>
+    <input name="q" value="{{ q }}" placeholder="单号/提交人/费用类型" style="flex:1;min-width:280px;">
+    {# 时间范围：仅「全部数据」视图可用；进入批次视图后置灰锁定 #}
+    <select name="range" id="rangeSelect" onchange="toggleCustomDates(this.value)"
+            title="{{ '当前处于特定批次视图，时间筛选已锁定' if batch_id else '数据时间范围（按报销日期，非导入时间）' }}"
+            {% if batch_id %}disabled{% endif %}>
+      <option value="all" {% if range_mode == 'all' or batch_id %}selected{% endif %}>全部时间</option>
       <option value="this_month" {% if range_mode == 'this_month' %}selected{% endif %}>本月</option>
       <option value="last_month" {% if range_mode == 'last_month' %}selected{% endif %}>上月</option>
       <option value="last_3m" {% if range_mode == 'last_3m' %}selected{% endif %}>近三个月</option>
@@ -266,17 +304,20 @@
       <option value="1y" {% if range_mode == '1y' %}selected{% endif %}>近1年</option>
       <option value="custom" {% if range_mode == 'custom' %}selected{% endif %}>自定义时间</option>
     </select>
-    <span id="customDateRange" style="display:{% if range_mode == 'custom' %}flex{% else %}none{% endif %};gap:6px;align-items:center;">
-      <input type="date" name="date_from" value="{{ date_from }}" style="width:auto;">
+    <span id="customDateRange" style="display:{% if range_mode == 'custom' and not batch_id %}flex{% else %}none{% endif %};gap:6px;align-items:center;">
+      <input type="date" name="date_from" value="{{ date_from }}" style="width:auto;" {% if batch_id %}disabled{% endif %}>
       <span class="muted">至</span>
-      <input type="date" name="date_to" value="{{ date_to }}" style="width:auto;">
+      <input type="date" name="date_to" value="{{ date_to }}" style="width:auto;" {% if batch_id %}disabled{% endif %}>
     </span>
     <button class="btn" type="submit" onclick="showTableLoading()">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-2px;"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"></polygon></svg>筛选
     </button>
     <button class="btn btn-outline" type="button" onclick="resetFilterForm()">重置</button>
   </form>
-  <div class="muted" style="margin-top:10px;">提示：如需查看超期历史数据，请在上方切换时间范围。</div>
+  <div class="muted" style="margin-top:10px;">
+    {% if batch_id %}<span class="filter-lock-hint">🔒 当前处于特定批次视图，时间筛选已锁定；点击「切回全部数据」可恢复。</span>
+    {% else %}提示：如需查看超期历史数据，请在上方切换时间范围。{% endif %}
+  </div>
 </div>
 <div class="card-divider"></div>
 <div class="list-body">
@@ -284,7 +325,7 @@
 
   {# 生效过滤标签：服务器端按当前查询参数生成，无条件则不渲染 #}
   {% set filter_tags = [] %}
-  {% if batch_id %}{% set _ = filter_tags.append({'key':'batch','text':'批次: ' ~ (batch_id[:16] ~ '…' if batch_id|length > 16 else batch_id)}) %}{% endif %}
+  {% if batch_id %}{% set _ = filter_tags.append({'key':'batch','text':'批次: ' ~ batch_name}) %}{% endif %}
   {% if status %}
     {% set _status_cn = {'unmatched':'未匹配','matched':'已匹配'}.get(status, status) %}
     {% set _ = filter_tags.append({'key': 'status', 'text': '状态: ' ~ _status_cn}) %}
@@ -310,29 +351,34 @@
     </div>
     <div class="toolbar-actions">
       <span class="muted" id="selInfo">已选 0 条</span>
+      <div class="col-settings" id="colSettings">
+        <button class="btn btn-outline btn-sm" type="button" onclick="toggleRebColPanel(event)" title="选择要显示的列">⚙ 列设置</button>
+        <div class="col-settings-panel" id="colSettingsPanel" onclick="event.stopPropagation()"></div>
+      </div>
       <button class="btn btn-outline btn-sm" id="btnBatchExp" type="button" disabled>导出 Excel</button>
       <button class="btn btn-danger btn-sm" id="btnBatchDel" onclick="batchDelete()" disabled>批量删除</button>
     </div>
   </div>
 
-  {% if rows %}
+  {# 表格主体抽成宏：全部数据视图按批次分组，每组一个表格，批次标题在表格外 #}
+  {% macro reb_table(group_rows, columns, col_widths) %}
   <div class="table-scroll">
     <table class="reb-table">
+      <colgroup>
+        {% for w in col_widths %}<col class="{% if loop.index0 < columns|length %}col-c{{ loop.index0 }}{% elif loop.index0 == columns|length %}col-state{% else %}col-action{% endif %}" {% if w.px %}data-px="{{ w.px }}" style="width:{{ w.px }}px"{% endif %}{% if w.fit %} data-fit="1"{% endif %}>{% endfor %}
+      </colgroup>
       <thead>
         <tr>
-          {% for c in columns %}<th{% if c.key == 'amount' %} class="num"{% endif %}>{{ c.label }}</th>{% endfor %}
+          {% for c in columns %}<th class="col-c{{ loop.index0 }} al-{{ c.align or 'center' }}{% if c.key == 'amount' %} num{% elif c.key == '_seq' %} col-seq{% endif %}">{{ c.label }}</th>{% endfor %}
           <th class="col-state">状态</th><th class="col-action">操作</th>
         </tr>
       </thead>
       <tbody>
-        {% for r in rows %}
-        {% if r._group_break %}
-        <tr class="group-row"><td colspan="{{ columns|length + 2 }}">{{ r._group_name }}（本批次 {{ r._group_count }} 条）</td></tr>
-        {% endif %}
+        {% for r in group_rows %}
         <tr id="row-{{ r.id }}"{% if not r.matched %} class="row-unmatched"{% endif %}>
           {% for c in columns %}
           {% set cell = r.cells[loop.index0] %}
-          <td{% if c.key == '_seq' %} class="cell-seq"{% elif c.key == 'reimburse_no' %} class="cell-reimburse-no"{% elif cell.amount %} class="cell-amount"{% elif cell.long %} class="cell-long" title="{{ cell.text }}"{% elif cell.cat is defined %} class="cell-cat"{% endif %}>
+          <td class="col-c{{ loop.index0 }} al-{{ c.align or 'center' }}{% if c.key == '_seq' %} cell-seq{% elif c.key == 'reimburse_no' %} cell-reimburse-no{% elif cell.amount %} cell-amount{% elif cell.long %} cell-long{% elif cell.cat is defined %} cell-cat{% endif %}"{% if cell.text %} title="{{ cell.text }}"{% endif %}>
             {%- if cell.amount -%}<b>{{ cell.text }}</b>
             {%- elif cell.long -%}<span class="text-ellipsis">{{ cell.text }}</span>
             {%- elif cell.cat is defined -%}
@@ -379,6 +425,22 @@
       </tbody>
     </table>
   </div>
+  {% endmacro %}
+
+  {% if rows %}
+  {% if all_batches %}
+  {% for g in view_groups %}
+  <div class="batch-group">
+    <div class="batch-group-head">
+      <span>{{ g.name }}</span>
+      <span class="batch-group-count">本批次 {{ g.count }} 条</span>
+    </div>
+    {{ reb_table(g.rows, columns, col_widths) }}
+  </div>
+  {% endfor %}
+  {% else %}
+  {{ reb_table(rows, columns, col_widths) }}
+  {% endif %}
   {{ render_pager(pager) }}
   {% else %}<div class="empty-state">
     <svg class="empty-icon" viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 8h28v32H10z"/><path d="M17 17h14M17 24h14M17 31h9"/></svg>
@@ -497,10 +559,10 @@
   </div>
 </div>
 
-<!-- ===================== 同名文件覆盖确认 ===================== -->
+<!-- ===================== 文件重复导入确认 ===================== -->
 <div id="sameFileConfirm" class="modal" style="width:520px;top:50%;transform:translate(-50%,-50%);">
-  <h2 style="margin-bottom:10px;">检测到同名文件</h2>
-  <p class="muted" style="line-height:1.8;">系统已拦截本次导入，请选择放弃或覆盖。覆盖只会在新文件校验通过后执行，失败时旧批次保持不变。</p>
+  <h2 style="margin-bottom:10px;">该文件已导入</h2>
+  <p class="muted" style="line-height:1.8;">系统按文件内容（MD5）识别到重复导入。是否覆盖旧批次，或放弃导入？覆盖只会在新文件校验通过后执行，失败时旧批次保持不变。</p>
   <div id="sameFileSummary" class="same-file-card"></div>
   <div style="display:flex;justify-content:flex-end;gap:10px;margin-top:18px;">
     <button type="button" class="btn btn-outline" onclick="abandonSameFileImport()">放弃导入</button>
@@ -589,7 +651,10 @@ const CUSTOM_OPT = '__custom__';
 const CURRENT_BATCH = {{ batch_id | tojson }};
 const BATCHES = {{ batches | tojson }};
 
-function batchDisplayName(b){ return b.source_file || b.template_name || '手动录入'; }
+function batchDisplayName(b){
+  const name = b.source_file || b.template_name || '手动录入';
+  return name.replace(/\.[^.]+$/, '') || name;
+}
 function formatBatchTime(value){
   const text = String(value || '').replace('T', ' ');
   return text ? text.slice(0, 16) : '时间未知';
@@ -968,10 +1033,14 @@ async function wizConfirm(onDuplicate){
 
 function showSameFileConfirm(existing){
   wizState.sameFileConflict = existing;
+  const oldName = existing.file_name || existing.source_file || '';
+  const newName = (wizState.file && wizState.file.name) || '';
   document.getElementById('sameFileSummary').innerHTML =
-    `<div>旧文件：<b>${esc(existing.file_name || wizState.file.name)}</b></div>
+    `<div>旧文件：<b>${esc(oldName || newName)}</b></div>
      <div>导入时间：${esc(formatBatchTime(existing.created_at))}</div>
-     <div>旧批次包含 <b>${Number(existing.row_count || 0)}</b> 条报销单</div>`;
+     <div>旧批次包含 <b>${Number(existing.row_count || 0)}</b> 条报销单</div>
+     ${oldName && newName && oldName !== newName
+        ? `<div style="color:var(--danger-text);">文件内容完全相同（仅文件名不同，已按 MD5 识别）</div>` : ''}`;
   hideEl('importWizard');
   showEl('sameFileConfirm');
 }
@@ -1045,7 +1114,7 @@ function renderSuccess(d){
     <div class="import-result-stats">
       <div><b>${parsed}</b><span>共解析</span></div>
       <div><b>${imported}</b><span>成功导入</span></div>
-      <div><b>${skipped}</b><span>跳过</span></div>
+      <div><b>${skipped}</b><span>${d.duplicates_skipped ? '跳过重复' : '跳过'}</span></div>
     </div>
   </div>`;
   if(d.duplicates_skipped){
@@ -1345,6 +1414,103 @@ async function confirmBatchDelete(){
 document.getElementById('modalBg').addEventListener('click', () => {
   ['importWizard','dupConfirm','manualEntry','templateManager','templateEditor'].forEach(hideEl);
 });
+
+// ===== 列设置：选择显示列（与发票页同款，localStorage 持久化） =====
+// 状态、操作不参与设置，始终固定在最后两列
+const REB_COLS = {{ columns | tojson }};
+const REB_COL_LAYOUT = {{ col_widths | tojson }};
+const REB_COL_STORAGE = 'reimburse_columns_visible';
+
+function rebColKey(c){ return c.custom ? 'custom:' + c.custom : (c.key || c.label); }
+function loadRebColVisibility(){
+  let saved = null;
+  try{ saved = JSON.parse(localStorage.getItem(REB_COL_STORAGE)); }catch(e){ saved = null; }
+  const map = {};
+  REB_COLS.forEach(c => {
+    const k = rebColKey(c);
+    map[k] = (saved && typeof saved[k] === 'boolean') ? saved[k] : true;
+  });
+  return map;
+}
+function applyRebColVisibility(map){
+  // 1) 列显隐：服务端列顺序即索引，th/td/col 同步开关
+  REB_COLS.forEach((c, i) => {
+    const show = !!map[rebColKey(c)];
+    document.querySelectorAll('.col-c' + i).forEach(el => el.classList.toggle('col-hidden', !show));
+  });
+  // 2) 布局：所有可见数据列按各自内容基础宽度等比例缩放铺满表格，
+  //    宽度分配均匀，不会让某一列独占剩余空白；状态/操作固定像素
+  const table = document.querySelector('.reb-table');
+  const tw = (table && table.offsetWidth) || 1000;
+  const colEls = i => document.querySelectorAll('col.col-c' + i);
+  const tailPxOf = cls => {
+    const el = document.querySelector('col.' + cls);
+    return el ? (parseFloat(el.dataset.px) || 0) : 0;
+  };
+  const visible = [];
+  REB_COLS.forEach((c, i) => {
+    const els = colEls(i);
+    if(!els.length) return;
+    if(!map[rebColKey(c)]){ els.forEach(el => { el.style.width = '0'; }); return; }
+    visible.push({i, px: parseFloat(els[0].dataset.px) || 60,
+                  fit: els[0].dataset.fit === '1'});
+  });
+  const tailState = tailPxOf('col-state'), tailAction = tailPxOf('col-action');
+  // 长文本列按内容定宽（不随表格放大，减少空白），
+  // 其余列（含状态/操作）等比例吸收剩余宽度，整体仍然均衡
+  const fitCols = visible.filter(x => x.fit);
+  const growCols = visible.filter(x => !x.fit);
+  const fitSum = fitCols.reduce((s, x) => s + x.px, 0);
+  const growSum = growCols.reduce((s, x) => s + x.px, 0) + tailState + tailAction;
+  const room = Math.max(0, tw - fitSum);
+  const scale = growSum > 0 ? room / growSum : 1;
+  fitCols.forEach(x => {
+    const w = x.px + 'px';
+    colEls(x.i).forEach(el => { el.style.width = w; });
+  });
+  growCols.forEach(x => {
+    const w = Math.max(1, x.px * scale).toFixed(1) + 'px';
+    colEls(x.i).forEach(el => { el.style.width = w; });
+  });
+  document.querySelectorAll('col.col-state').forEach(el => {
+    el.style.width = (tailState * scale).toFixed(1) + 'px';
+  });
+  document.querySelectorAll('col.col-action').forEach(el => {
+    el.style.width = (tailAction * scale).toFixed(1) + 'px';
+  });
+}
+function saveRebColVisibility(map){
+  try{ localStorage.setItem(REB_COL_STORAGE, JSON.stringify(map)); }catch(e){}
+}
+function renderRebColPanel(){
+  const map = loadRebColVisibility();
+  const panel = document.getElementById('colSettingsPanel');
+  if(!panel) return;
+  panel.innerHTML = REB_COLS.map(c => `
+    <label><input type="checkbox" data-key="${esc(rebColKey(c))}" ${map[rebColKey(c)] ? 'checked' : ''}>
+    <span>${esc(c.label)}</span></label>
+  `).join('');
+  panel.querySelectorAll('input[type=checkbox]').forEach(cb => {
+    cb.addEventListener('change', () => {
+      const m = loadRebColVisibility();
+      m[cb.dataset.key] = cb.checked;
+      applyRebColVisibility(m);
+      saveRebColVisibility(m);
+    });
+  });
+}
+function toggleRebColPanel(e){
+  e.stopPropagation();
+  const wrap = document.getElementById('colSettings');
+  if(!wrap.classList.contains('open')){ renderRebColPanel(); wrap.classList.add('open'); }
+  else wrap.classList.remove('open');
+}
+document.addEventListener('click', e => {
+  document.querySelectorAll('.col-settings.open').forEach(wrap => {
+    if(!wrap.contains(e.target)) wrap.classList.remove('open');
+  });
+});
+applyRebColVisibility(loadRebColVisibility());
 
 // ===== 筛选条件持久化初始化 =====
 document.addEventListener('DOMContentLoaded', function(){

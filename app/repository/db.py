@@ -127,6 +127,8 @@ CREATE TABLE IF NOT EXISTS reimburse (
     batch_id       TEXT NOT NULL,
     template_id    INTEGER,
     source_file    TEXT NOT NULL DEFAULT '',
+    -- 上传文件内容 MD5：同一文件（即使改了文件名）导入前即可拦截覆盖/放弃
+    file_hash      TEXT NOT NULL DEFAULT '',
     reimburse_no   TEXT NOT NULL,
     submitter      TEXT NOT NULL DEFAULT '',
     reimburse_date TEXT,
@@ -447,6 +449,7 @@ def _migrate(conn: sqlite3.Connection) -> None:
     for col, ddl in [
         ("template_id", "ALTER TABLE reimburse ADD COLUMN template_id INTEGER"),
         ("source_file", "ALTER TABLE reimburse ADD COLUMN source_file TEXT NOT NULL DEFAULT ''"),
+        ("file_hash",   "ALTER TABLE reimburse ADD COLUMN file_hash TEXT NOT NULL DEFAULT ''"),
         ("extra_data",  "ALTER TABLE reimburse ADD COLUMN extra_data TEXT NOT NULL DEFAULT '{}'"),
         ("source_row",  "ALTER TABLE reimburse ADD COLUMN source_row INTEGER"),
         ("parent_id",   "ALTER TABLE reimburse ADD COLUMN parent_id INTEGER"),
