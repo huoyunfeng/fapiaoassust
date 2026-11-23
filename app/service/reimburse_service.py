@@ -26,8 +26,8 @@ from app.infra.logger import get_logger
 from app.repository import db
 from app.repository.repos import (category_dict_repo, conflict_repo, match_repo,
                                   reimburse_category_repo, reimburse_repo)
-from app.domain.categorize import (STATUS_CONFIRMED, STATUS_PENDING,
-                                   normalize_category)
+from app.domain.categorize import (STATUS_CONFIRMED, STATUS_LEGACY, STATUS_PENDING,
+                                   known_category)
 from app.service.mapping_service import mapping_service
 from app.service.template_service import template_service
 
@@ -683,7 +683,8 @@ def delete_reimburse(reimburse_id: int, operator: str = None) -> dict:
         reimburse_repo.soft_delete(conn, reimburse_id)
         # 汇总匹配的 match_pair 删空后，清理悬空的父级 match_result，防脏数据
         n_orphan = match_repo.delete_unpaired_summary(conn)
-        from app.service import audit_service
+        from app.service import audit_service, category_service
+        category_service.defer_recheck([reimburse_id], inherit=False)
         audit_service.log(conn, "delete", "reimburse", reimburse_id,
                           row.get("reimburse_no") or f"#{reimburse_id}",
                           "有效", "已删除（移入回收站）", operator, "删除报销单")
@@ -713,7 +714,8 @@ def _delete_batch_in_tx(conn, batch_id: str, operator: str,
         n_match += match_repo.delete_for_reimburse(conn, rid)
     n = reimburse_repo.soft_delete_batch(conn, batch_id)
     n_orphan = match_repo.delete_unpaired_summary(conn)
-    from app.service import audit_service
+    from app.service import audit_service, category_service
+    category_service.defer_recheck(ids, inherit=False)
     audit_service.log(conn, "delete", "reimburse_batch", batch_id,
                       batch_id, "有效", "已删除（移入回收站）", operator,
                       f"删除批次 {n} 行")
@@ -836,13 +838,17 @@ def list_reimburses(batch_id: str = None, keyword: str = None,
         own_map = reimburse_category_repo.decisions(conn)
         conflicts = conflict_repo.all(conn)
         dict_names = category_dict_repo.names(conn, enabled_only=False)
+        disabled_names = set(category_dict_repo.disabled_names(conn))
     for r in rows:
         r["matched"] = r["id"] in active_ids
+        own = own_map.get(r["id"]) or {}
         _attach_category(
             r, invoices.get(r["id"]) or [], decisions,
-            (own_map.get(r["id"]) or {}).get("category") or "",
+            own.get("category") or "",
             conflicts.get(r["id"]), dict_names, r["matched"],
-            r["id"] in manual_ids)
+            r["id"] in manual_ids,
+            own.get("source") or "", int(own.get("version") or 0),
+            disabled_names)
         _attach_dup(r)
     return rows
 
@@ -850,16 +856,17 @@ def list_reimburses(batch_id: str = None, keyword: str = None,
 def _attach_category(row: dict, invoice_ids: List[int], decisions: dict,
                      manual_category: str, conflict: Optional[dict],
                      dict_names: List[str], matched: bool,
-                     manual_match: bool = False) -> None:
-    """报销单分类载荷：自身分类 + 发票侧分类 + 冲突标记。
+                     manual_match: bool = False,
+                     category_source: str = "", category_version: int = 0,
+                     disabled_names: set = None) -> None:
+    """报销单分类载荷：自身分类 + 发票侧分类 + 冲突标记 + 来源/版本。
 
     报销单分类是独立存储的（reimburse_category），未匹配时修改它不会触碰发票；
-    已匹配时页面据此提示「仅改报销单 / 同步更新关联发票」。
-
-    主动（人工）匹配：发票侧已确认分类即视为双方已确认，报销单无需再次确认。
+    category_source='linked' 表示该分类由关联发票继承而来（前端显示 Tooltip）。
     """
     own_raw = (manual_category or "").strip() or (row.get("expense_type") or "").strip()
-    own = normalize_category(own_raw, dict_names) if own_raw else ""
+    own = known_category(own_raw, dict_names) if own_raw else ""
+    legacy = bool(own_raw and not own)
     inv_cats = sorted({(decisions.get(iid) or {}).get("category") or ""
                        for iid in invoice_ids} - {""})
     inv_confirmed = sorted(
@@ -868,6 +875,8 @@ def _attach_category(row: dict, invoice_ids: List[int], decisions: dict,
          if (decisions.get(iid) or {}).get("status") == STATUS_CONFIRMED} - {""})
     status = STATUS_CONFIRMED if own else ""
     source = "manual" if (manual_category or "").strip() else ("reimburse" if own else "")
+    if category_source:
+        source = category_source
     suggest = ""
     hint = ""
     # 已匹配且报销单自身无分类：按模块五口径借用发票侧分类，只作建议并标【待确认】
@@ -883,9 +892,16 @@ def _attach_category(row: dict, invoice_ids: List[int], decisions: dict,
             suggest = "、".join(inv_cats)
             status = STATUS_PENDING
             hint = "关联发票分类不一致（%s），请确认报销单分类" % suggest
+    if legacy:
+        own, status, source = own_raw.strip(), STATUS_LEGACY, "legacy"
+    elif own and disabled_names and own in disabled_names:
+        # 分类已被字典禁用：历史值保留原文，标灰降级展示
+        status, source = STATUS_LEGACY, "disabled"
+        hint = "该分类已在字典中禁用，历史数据保留原文展示"
     row["category"] = own
     row["cat_status"] = status
     row["cat_source"] = source
+    row["cat_version"] = category_version
     row["cat_suggest"] = suggest
     row["cat_hint"] = hint
     row["cat_invoice_id"] = invoice_ids[0] if invoice_ids else None

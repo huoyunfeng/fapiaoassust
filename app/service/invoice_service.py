@@ -25,8 +25,8 @@ from app.infra.filestore import FileStore
 from app.infra.logger import get_logger
 from app.infra.ocr import register_ocr_backend
 from app.domain.categorize import (STANDARD_CATEGORIES, STATUS_CONFIRMED,
-                                   STATUS_PENDING, categorize_item,
-                                   normalize_category, resolve_category)
+                                   STATUS_LEGACY, STATUS_PENDING, categorize_item,
+                                   known_category, normalize_category, resolve_category)
 from app.repository import db
 from app.repository.repos import (alias_repo, category_dict_repo, category_repo,
                                   conflict_repo, invoice_repo, log_repo, match_repo,
@@ -672,6 +672,16 @@ def delete_invoice(invoice_id: int, operator: str = None) -> dict:
                 takeover = cand_id
                 logger.info("发票 #%s 删除后，重复发票 #%s 接管其生效匹配", invoice_id, cand_id)
 
+        # 删除/接管改变生效明细集合；提交后由统一引擎生成或清理差异。
+        from app.service import category_service
+        affected = set()
+        for snap in active_snaps:
+            if snap["row"].get("reimburse_id") is not None:
+                affected.add(snap["row"]["reimburse_id"])
+            affected.update(snap["pairs"])
+        affected.discard(None)
+        category_service.defer_recheck(sorted(affected))
+
     msg = "发票已移入回收站（匹配记录已清理，可在 20 秒内撤销）"
     if takeover:
         msg += f"；重复发票 #{takeover} 已接管原匹配关系"
@@ -904,11 +914,13 @@ def render_pdf_page(invoice_id: int, page: int = 0, scale: float = 2.5) -> Optio
 
 
 def _resolve_rows(rows: List[dict], memory: Dict[tuple, dict],
-                  alias_map: Dict[str, str] = None) -> Dict[int, dict]:
+                  alias_map: Dict[str, str] = None,
+                  valid_categories: List[str] = None) -> Dict[int, dict]:
     """批量把发票行解析为分类决策（纯计算，不访问数据库）。
 
     行需含：id、item_summary、expense_type、submitter、manual_category，
     以及能判断"是否有报销单"的字段（reimburse_id 或 expense_type 非 NULL）。
+    valid_categories: 当前字典全量分类名（含禁用），用于保留历史原文。
     """
     alias_map = alias_map or {}
     out: Dict[int, dict] = {}
@@ -932,6 +944,7 @@ def _resolve_rows(rows: List[dict], memory: Dict[tuple, dict],
             submitter_memory=memory.get(("submitter", sub)) if sub else None,
             has_reimburse=has_reb,
             reimburse_manual_category=r.get("reimburse_manual_category") or "",
+            valid_categories=valid_categories,
         )
     return out
 
@@ -941,7 +954,8 @@ def resolve_categories(conn, invoice_ids) -> Dict[int, dict]:
     if not invoice_ids:
         return {}
     exp_rows = invoice_repo.expense_rows(conn, ids=list(invoice_ids))
-    return _resolve_rows(exp_rows, category_repo.memory_all(conn), alias_repo.all(conn))
+    return _resolve_rows(exp_rows, category_repo.memory_all(conn), alias_repo.all(conn),
+                         category_dict_repo.names(conn, enabled_only=False))
 
 
 def _attach_categories(conn, rows: List[dict]) -> None:
@@ -951,7 +965,11 @@ def _attach_categories(conn, rows: List[dict]) -> None:
     ids = [r["id"] for r in rows]
     exp_rows = invoice_repo.expense_rows(conn, ids=ids)
     by_id = {e["id"]: e for e in exp_rows}
-    decisions = _resolve_rows(exp_rows, category_repo.memory_all(conn), alias_repo.all(conn))
+    decisions = _resolve_rows(exp_rows, category_repo.memory_all(conn), alias_repo.all(conn),
+                              category_dict_repo.names(conn, enabled_only=False))
+    disabled = set(category_dict_repo.disabled_names(conn))
+    manual_versions = {iid: int(d.get("version") or 0)
+                       for iid, d in category_repo.decisions(conn, ids).items()}
     for r in rows:
         d = decisions.get(r["id"]) or {}
         e = by_id.get(r["id"]) or {}
@@ -960,7 +978,12 @@ def _attach_categories(conn, rows: List[dict]) -> None:
         r["category_source"] = d.get("source") or ""
         r["category_suggest"] = d.get("suggested") or ""
         r["category_hint"] = d.get("hint") or ""
+        # 分类已被字典禁用：历史数据保留原文并标灰，禁止清洗成「其他费用」
+        if r["category"] and r["category"] in disabled:
+            r["category_status"] = STATUS_LEGACY
+            r["category_hint"] = "该分类已在字典中禁用，历史数据保留原文展示"
         r["category_raw"] = d.get("raw_category") or ""
+        r["category_version"] = manual_versions.get(r["id"], 0)
         r["reimburse_no"] = e.get("reimburse_no") or ""
         r["expense_type"] = e.get("expense_type") or ""
         # 匹配状态与分类差异（已匹配但双方分类不一致 -> 列表黄色标记提示）
@@ -980,14 +1003,20 @@ def _attach_categories(conn, rows: List[dict]) -> None:
 def list_invoices(status: str = None, keyword: str = None,
                   category: str = None, date_from: str = None, date_to: str = None,
                   limit: int = 500, offset: int = 0,
-                  since: str = None, owner_user_id: int = None) -> List[dict]:
+                  since: str = None, owner_user_id: int = None,
+                  cat_status: str = None) -> List[dict]:
     """since: 冷热分离下界（按开票日期，None = 取全部历史）。
     owner_user_id: 数据隔离（员工只能取自己的发票；财务/管理员传 None）。
+    cat_status='pending': 只看系统推测、待财务确认的分类。
     """
     with db.read() as conn:
-        if category:
-            ids = _category_ids(conn, category, status, keyword, date_from, date_to,
-                                since=since, owner_user_id=owner_user_id)
+        if cat_status == "pending" or category:
+            if cat_status == "pending":
+                ids = _pending_ids(conn, status, keyword, date_from, date_to,
+                                   since=since, owner_user_id=owner_user_id)
+            else:
+                ids = _category_ids(conn, category, status, keyword, date_from, date_to,
+                                    since=since, owner_user_id=owner_user_id)
             page_ids = ids[offset:offset + limit]
             rows = (invoice_repo.list(conn, ids=page_ids, limit=len(page_ids))
                     if page_ids else [])
@@ -1025,15 +1054,33 @@ def _category_ids(conn, category: str, status: str = None, keyword: str = None,
         conn, status=status, keyword=keyword, date_from=date_from, date_to=date_to,
         exclude_status=_drill_exclude(status, category), light=True, since=since,
         owner_user_id=owner_user_id)
-    decisions = _resolve_rows(rows, category_repo.memory_all(conn), alias_repo.all(conn))
+    decisions = _resolve_rows(rows, category_repo.memory_all(conn), alias_repo.all(conn),
+                              category_dict_repo.names(conn, enabled_only=False))
     return sorted(i for i, d in decisions.items() if d["category"] == category)
+
+
+def _pending_ids(conn, status: str = None, keyword: str = None,
+                 date_from: str = None, date_to: str = None,
+                 since: str = None, owner_user_id: int = None) -> List[int]:
+    """待确认分类的发票 id 列表（仪表盘黄色提示条下钻用）。"""
+    rows = invoice_repo.expense_rows(
+        conn, status=status, keyword=keyword, date_from=date_from, date_to=date_to,
+        exclude_status=_drill_exclude(status, "pending"), light=True, since=since,
+        owner_user_id=owner_user_id)
+    decisions = _resolve_rows(rows, category_repo.memory_all(conn), alias_repo.all(conn),
+                              category_dict_repo.names(conn, enabled_only=False))
+    return sorted(i for i, d in decisions.items() if d["status"] == STATUS_PENDING)
 
 
 def count_invoices(status: str = None, keyword: str = None, category: str = None,
                    date_from: str = None, date_to: str = None,
-                   since: str = None, owner_user_id: int = None) -> int:
+                   since: str = None, owner_user_id: int = None,
+                   cat_status: str = None) -> int:
     """发票总数（与 list_invoices 同筛选口径，分页用）。"""
     with db.read() as conn:
+        if cat_status == "pending":
+            return len(_pending_ids(conn, status, keyword, date_from, date_to,
+                                    since=since, owner_user_id=owner_user_id))
         if category:
             return len(_category_ids(conn, category, status, keyword, date_from, date_to,
                                      since=since, owner_user_id=owner_user_id))
@@ -1045,14 +1092,19 @@ def count_invoices(status: str = None, keyword: str = None, category: str = None
 def page_of_invoice(invoice_id: int, status: str = None, keyword: str = None,
                     page_size: int = 20, category: str = None,
                     date_from: str = None, date_to: str = None,
-                    since: str = None, owner_user_id: int = None) -> Optional[int]:
+                    since: str = None, owner_user_id: int = None,
+                    cat_status: str = None) -> Optional[int]:
     """focus 定位：发票在筛选结果（id 升序）中所在的页码（1 起），不存在返回 None。"""
     with db.read() as conn:
         if invoice_repo.get(conn, invoice_id) is None:
             return None
-        if category:
-            ids = _category_ids(conn, category, status, keyword, date_from, date_to,
-                                since=since, owner_user_id=owner_user_id)
+        if cat_status == "pending" or category:
+            if cat_status == "pending":
+                ids = _pending_ids(conn, status, keyword, date_from, date_to,
+                                   since=since, owner_user_id=owner_user_id)
+            else:
+                ids = _category_ids(conn, category, status, keyword, date_from, date_to,
+                                    since=since, owner_user_id=owner_user_id)
             pos = ids.index(invoice_id) if invoice_id in ids else None
             return (pos // page_size + 1) if pos is not None else None
         pos = invoice_repo.position_of(conn, invoice_id, status=status, keyword=keyword,
@@ -1094,7 +1146,7 @@ def expense_breakdown(date_from: str = None, date_to: str = None, top_n: int = 5
         memory = category_repo.memory_all(conn)
         alias_map = alias_repo.all(conn)
         dict_names = category_dict_repo.names(conn, enabled_only=False)
-    decisions = _resolve_rows(rows, memory, alias_map)
+    decisions = _resolve_rows(rows, memory, alias_map, dict_names)
 
     merged: Dict[str, dict] = {}
     total_amount = 0.0
@@ -1111,12 +1163,16 @@ def expense_breakdown(date_from: str = None, date_to: str = None, top_n: int = 5
         inv_confirmed = (d["status"] == STATUS_CONFIRMED
                          and d.get("source") in ("manual", "memory"))
         reb_cat = ""
+        reb_status = STATUS_CONFIRMED
         if not inv_confirmed and r.get("reimburse_id") is not None:
-            reb_cat = normalize_category(
-                (r.get("reimburse_manual_category") or "").strip()
-                or (r.get("expense_type") or "").strip(), dict_names)
+            raw_reb = ((r.get("reimburse_manual_category") or "").strip()
+                       or (r.get("expense_type") or "").strip())
+            if raw_reb:
+                known = known_category(raw_reb, dict_names)
+                reb_cat = known or raw_reb
+                reb_status = STATUS_CONFIRMED if known else STATUS_LEGACY
         if reb_cat:
-            d = {"category": reb_cat, "status": STATUS_CONFIRMED}
+            d = {"category": reb_cat, "status": reb_status}
         amount = float(r.get("total_amount") or 0)
         m = merged.setdefault(d["category"], {
             "name": d["category"], "amount": 0.0, "count": 0,
@@ -1191,29 +1247,29 @@ def expense_breakdown(date_from: str = None, date_to: str = None, top_n: int = 5
 
 def _apply_manual_category(conn, invoice_id: int, category: str,
                            learn_submitter: bool = True,
-                           learn: bool = True) -> dict:
+                           learn: bool = True,
+                           expected_version: Optional[int] = None) -> dict:
     """在调用方事务内写入人工分类并学习纠正记忆。
 
     学习规则（喂给系统经验）：
     - 该提交人：记录「原填写的费用类型 -> 修正后分类」（原值可为空）
     - 该发票明细：记录「原分类 -> 修正后分类」，下次同类明细优先使用
 
-    learn=False（单条修改）：个例修正不扩散——不学习记忆，避免其他同类
-    发票的分类显示被连带改变；learn=True（批量修改/报销单联动）才学习。
-
-    learn_submitter=False（一对多匹配改单张发票时）：提交人记忆粒度是
-    「提交人+报销单费用类型」，会传染同一报销单的其他明细发票，故此时
-    只学发票明细记忆。
+    learn=False（批量修改 / 一键同步）：强制不学习，防止管理动作污染 AI 记忆。
+    expected_version: 乐观锁版本；不匹配时抛 CategoryLockError（整笔回滚）。
     """
     row = invoice_repo.get(conn, invoice_id)
-    if row is None:
+    if row is None or row.get("deleted_at"):
         return {"ok": False, "message": "发票不存在或已删除", "learned": []}
     exp_rows = invoice_repo.expense_rows(conn, ids=[invoice_id])
     memory = category_repo.memory_all(conn)
-    before = _resolve_rows(exp_rows, memory, alias_repo.all(conn)).get(invoice_id) or {}
+    before = _resolve_rows(exp_rows, memory, alias_repo.all(conn),
+                           category_dict_repo.names(conn, enabled_only=False)).get(
+        invoice_id) or {}
     item_row = exp_rows[0] if exp_rows else {}
 
-    category_repo.upsert(conn, invoice_id, category)
+    new_version = category_repo.upsert(conn, invoice_id, category,
+                                       expected_version=expected_version)
 
     learned = []
     if learn and before.get("category") != category:
@@ -1227,7 +1283,8 @@ def _apply_manual_category(conn, invoice_id: int, category: str,
             category_repo.memory_upsert(conn, "item", item,
                                         before.get("category") or "", category)
             learned.append("发票明细")
-    return {"ok": True, "learned": learned, "before": before.get("category") or ""}
+    return {"ok": True, "learned": learned, "before": before.get("category") or "",
+            "version": new_version}
 
 
 def _invoice_label(row: dict) -> str:
@@ -1235,130 +1292,244 @@ def _invoice_label(row: dict) -> str:
     return ("#%s %s" % (row.get("id"), no)).strip()
 
 
+def _category_context(conn, invoice_id: int) -> dict:
+    """读取有效发票及其生效主从关系；软删除记录一律视为不存在。"""
+    row = invoice_repo.get(conn, invoice_id)
+    if row is None or row.get("deleted_at"):
+        return {"ok": False, "message": "发票不存在或已删除"}
+    exp_rows = invoice_repo.expense_rows(conn, ids=[invoice_id])
+    reb_id = exp_rows[0].get("reimburse_id") if exp_rows else None
+    linked_ids = (match_repo.matched_invoice_ids(conn, [reb_id]).get(reb_id) or []) \
+        if reb_id is not None else []
+    return {"ok": True, "row": row, "exp_rows": exp_rows, "reimburse_id": reb_id,
+            "linked_ids": linked_ids,
+            "one_to_one": reb_id is not None and len(linked_ids) <= 1}
+
+
+def preflight_invoice_category_conn(conn, invoice_id: int, category: str, *,
+                                    sync_reimburse: Optional[bool] = None,
+                                    version: Optional[int] = None,
+                                    reimburse_version: Optional[int] = None) -> dict:
+    """所有发票分类入口共用的写入前策略：有效性、乐观锁及 1:1 明确选择。"""
+    category = (category or "").strip()
+    if category not in category_dict_repo.names(conn, enabled_only=False):
+        return {"ok": False, "message": "无效的费用分类，请从分类字典中选择"}
+    ctx = _category_context(conn, invoice_id)
+    if not ctx.get("ok"):
+        return ctx
+    cur = category_repo.get(conn, invoice_id)
+    cur_ver = int(cur["version"]) if cur else 0
+    if version is not None and int(version) != cur_ver:
+        return {"ok": False, "stale": True, "stale_ids": [invoice_id],
+                "message": "数据已被他人修改，请刷新后重试"}
+    reb_id = ctx["reimburse_id"]
+    rc = reimburse_category_repo.get(conn, reb_id) or {} if reb_id is not None else {}
+    if ctx["one_to_one"] and sync_reimburse is None:
+        return {"ok": False, "need_confirm": True, "confirm": "one_to_one",
+                "message": "当前为 1 对 1 匹配，修改发票分类是否同步更新报销单总账？",
+                "context": ctx, "version": cur_ver,
+                "reimburse_category": rc.get("category") or "",
+                "reimburse_category_source": rc.get("source") or "",
+                "reimburse_version": int(rc.get("version") or 0),
+                "overwrite_manual": (rc.get("source") or "") == "manual"}
+    if ctx["one_to_one"] and sync_reimburse and reimburse_version is not None:
+        if int(reimburse_version) != int(rc.get("version") or 0):
+            return {"ok": False, "stale": True, "stale_ids": [reb_id],
+                    "message": "数据已被他人修改，请刷新后重试"}
+    return {"ok": True, "context": ctx, "version": cur_ver,
+            "reimburse_version": int(rc.get("version") or 0)}
+
+
+def apply_invoice_category_conn(conn, invoice_id: int, category: str, *,
+                                learn: bool = True, learn_submitter: bool = True,
+                                sync_reimburse: bool = True,
+                                expected_version: Optional[int] = None,
+                                expected_reimburse_version: Optional[int] = None) -> dict:
+    """同事务应用发票人工分类与主从联动，不直接生成或删除冲突。"""
+    category = (category or "").strip()
+    ctx = _category_context(conn, invoice_id)
+    if not ctx.get("ok"):
+        return ctx
+    if category not in category_dict_repo.names(conn, enabled_only=False):
+        return {"ok": False, "message": "无效的费用分类，请从分类字典中选择"}
+    row = ctx["row"]
+    reb_id = ctx["reimburse_id"]
+    one_to_one = ctx["one_to_one"]
+    res = _apply_manual_category(conn, invoice_id, category,
+                                 learn_submitter=learn_submitter, learn=learn,
+                                 expected_version=expected_version)
+    if not res.get("ok"):
+        return res
+    linked_sync = False
+    reimburse_version = None
+    if reb_id is not None and one_to_one and sync_reimburse:
+        reb_res = apply_reimburse_category_conn(
+            conn, reb_id, category, expected_version=expected_reimburse_version,
+            sync_invoices=False, source="linked", audit=False)
+        if not reb_res.get("ok"):
+            return reb_res
+        linked_sync = True
+        reimburse_version = reb_res.get("version")
+    return {"ok": True, "learned": res.get("learned") or [],
+            "before": res.get("before") or "", "version": res.get("version"),
+            "reimburse_version": reimburse_version, "matched": reb_id is not None,
+            "reimburse_id": reb_id, "one_to_one": one_to_one,
+            "linked_sync": linked_sync, "mismatch": False}
+
+
 def set_invoice_category(invoice_id: int, category: str,
-                         operator: str = "admin") -> dict:
+                         operator: str = "admin",
+                         sync_reimburse: Optional[bool] = None,
+                         version: Optional[int] = None,
+                         reimburse_version: Optional[int] = None) -> dict:
     """确认/修正一张发票的费用分类（人工决策最高优先），并按「主从法则」联动：
 
     - 未匹配：只改发票自身（孤岛）；
-    - 一对一匹配：连带将其绑定的报销单分类同步更新；
-    - 一对多匹配：绝对只改当前这张发票，不改报销单总分类、不动其他关联发票，
-      若与报销单分类不一致则打「分类差异」标记。
+    - 一对一匹配：先返回 need_confirm，由前端询问「是否同步更新报销单总账」；
+    - 一对多匹配：只改当前这张发票，不动报销单，差异自动打标。
+    报销单已被人工确认时，need_confirm 载荷会带上 overwrite_manual 警告标记。
     """
-    from app.service import category_service   # 惰性导入，避免循环依赖
+    from app.repository.repos import CategoryLockError
+    from app.service import category_service
 
     category = (category or "").strip()
-    with db.tx() as conn:
-        if category not in category_dict_repo.names(conn, enabled_only=False):
-            return {"ok": False, "message": "无效的费用分类，请从分类字典中选择"}
-        row = invoice_repo.get(conn, invoice_id)
-        if row is None:
-            return {"ok": False, "message": "发票不存在或已删除"}
-        exp_rows = invoice_repo.expense_rows(conn, ids=[invoice_id])
-        before = _resolve_rows(exp_rows, category_repo.memory_all(conn),
-                               alias_repo.all(conn)).get(invoice_id) or {}
-        reb_id = (exp_rows[0].get("reimburse_id") if exp_rows else None)
-        linked_ids = (match_repo.matched_invoice_ids(conn, [reb_id]).get(reb_id) or []) \
-            if reb_id is not None else []
-        # 单条修改=个例修正：不学习记忆（learn=False），避免其他同类发票
-        # 的分类显示被连带改变；扩散归类由「批量修改」面板显式确认后执行
-        res = _apply_manual_category(conn, invoice_id, category,
-                                     learn_submitter=False, learn=False)
-        if not res.get("ok"):
-            return res
-        learned = res.get("learned") or []
-
-        linked_sync = False
-        mismatch = False
-        if reb_id is not None:
-            if len(linked_ids) <= 1:
-                # 一对一：连带同步报销单主分类，两边天然一致
-                reimburse_category_repo.upsert(conn, reb_id, category, "linked")
-                category_service.clear_conflict(conn, reb_id)
-                linked_sync = True
+    try:
+        with db.tx() as conn:
+            pre = preflight_invoice_category_conn(
+                conn, invoice_id, category, sync_reimburse=sync_reimburse,
+                version=version, reimburse_version=reimburse_version)
+            if not pre.get("ok"):
+                pre.pop("context", None)
+                return pre
+            ctx = pre["context"]
+            row = ctx["row"]
+            reb_id = ctx["reimburse_id"]
+            linked_ids = ctx["linked_ids"]
+            before = _resolve_rows(ctx["exp_rows"], category_repo.memory_all(conn),
+                                   alias_repo.all(conn),
+                                   category_dict_repo.names(conn, enabled_only=False)).get(
+                invoice_id) or {}
+            res = apply_invoice_category_conn(
+                conn, invoice_id, category, learn=True,
+                learn_submitter=not (reb_id is not None and len(linked_ids) > 1),
+                sync_reimburse=bool(sync_reimburse), expected_version=version,
+                expected_reimburse_version=reimburse_version)
+            if not res.get("ok"):
+                raise RuntimeError(res.get("message") or "分类修改失败")
+            linked_sync = res["linked_sync"]
+            if linked_sync:
+                audit_msg = "一对一，连带同步报销单分类（来源 linked）"
+            elif reb_id is not None:
+                audit_msg = "仅改当前发票，提交后统一重算分类差异"
             else:
-                # 一对多：绝对只改当前发票，差异打标（不一致时）
-                mismatch = category_service.detect_conflict(conn, reb_id) is not None
-        audit_service.log(
-            conn, "invoice_category", "invoice", invoice_id, _invoice_label(row),
-            before.get("category") or "", category, operator,
-            "已匹配发票（报销单 #%s）：%s" % (
-                reb_id,
-                "一对一，连带同步报销单分类" if linked_sync
-                else ("一对多，仅改当前发票" if not mismatch else "一对多，仅改当前发票并标记分类差异"))
-            if reb_id else "未匹配发票，仅改自身")
+                audit_msg = "未匹配发票，仅改自身"
+            audit_service.log(
+                conn, "invoice_category", "invoice", invoice_id, _invoice_label(row),
+                before.get("category") or "", category, operator,
+                ("已匹配发票（报销单 #%s）：%s" % (reb_id, audit_msg))
+                if reb_id else audit_msg)
+    except CategoryLockError as e:
+        return {"ok": False, "stale": True, "message": e.message}
 
+    checked = category_service.recheck_after_commit([reb_id] if reb_id is not None else [])
+    mismatch = reb_id is not None and checked.get(reb_id) is not None
     msg = "已确认分类为「%s」" % category
-    if learned:
-        msg += "，系统已记住该修正（%s），下次自动套用" % "、".join(learned)
+    if res.get("learned"):
+        msg += "，系统已记住该修正（%s），下次自动套用" % "、".join(res["learned"])
     if linked_sync:
         msg += "；一对一匹配，已连带同步报销单分类"
     elif reb_id is not None:
-        msg += "；一对多匹配，仅修改当前发票" + ("，与报销单分类不一致，已标记分类差异" if mismatch else "")
+        msg += "；仅修改当前发票" + ("，与报销单分类不一致，已标记分类差异" if mismatch else "")
     return {"ok": True, "message": msg, "category": category,
-            "status": STATUS_CONFIRMED, "learned": learned,
+            "status": STATUS_CONFIRMED, "learned": res.get("learned") or [],
             "matched": reb_id is not None, "reimburse_id": reb_id,
-            "linked_sync": linked_sync, "mismatch": mismatch}
+            "linked_sync": linked_sync, "mismatch": mismatch,
+            "version": res.get("version")}
 
 
 def set_invoices_category(invoice_ids: List[int], category: str,
-                          operator: str = "admin") -> dict:
-    """批量修改发票分类（统一面板确认后执行，单事务 + 主从法则）：
+                          operator: str = "admin",
+                          versions: Dict[int, int] = None,
+                          sync_reimburse: Optional[bool] = None,
+                          reimburse_versions: Dict[int, int] = None) -> dict:
+    """批量分类共用单条预检策略；任何确认或版本问题都在写入前返回。"""
+    from app.repository.repos import CategoryLockError
+    from app.service import category_service
 
-    - 未匹配发票：只改自身；
-    - 一对一已匹配：连带同步其报销单分类；
-    - 一对多已匹配：只改该张发票，必要时打「分类差异」标记；
-    全程记录审计（含被联动更新的关联对象清单）。
-    """
-    from app.service import category_service   # 惰性导入，避免循环依赖
-
-    ids = [int(i) for i in (invoice_ids or [])]
+    ids = list(dict.fromkeys(int(i) for i in (invoice_ids or [])))
+    versions = {int(k): int(v) for k, v in (versions or {}).items()}
+    reimburse_versions = {int(k): int(v) for k, v in (reimburse_versions or {}).items()}
     category = (category or "").strip()
     if not ids:
         return {"ok": False, "message": "未选择任何发票"}
-    with db.tx() as conn:
-        if category not in category_dict_repo.names(conn, enabled_only=False):
-            return {"ok": False, "message": "无效的费用分类，请从分类字典中选择"}
-        rows = invoice_repo.expense_rows(conn, ids=ids)
-        by_id = {r["id"]: r for r in rows}
-        reb_ids = {by_id[i].get("reimburse_id") for i in ids if by_id.get(i)}
-        reb_ids.discard(None)
-        linked_map = match_repo.matched_invoice_ids(conn, list(reb_ids)) if reb_ids else {}
+    try:
+        with db.tx() as conn:
+            contexts = {}
+            confirmations = []
+            for iid in ids:
+                pre = preflight_invoice_category_conn(
+                    conn, iid, category, sync_reimburse=sync_reimburse,
+                    version=versions.get(iid),
+                    reimburse_version=None)
+                if pre.get("need_confirm"):
+                    confirmations.append(pre)
+                    continue
+                if not pre.get("ok"):
+                    pre.pop("context", None)
+                    return pre
+                contexts[iid] = pre["context"]
+            if confirmations:
+                reb_versions = {}
+                overwrite = False
+                for pre in confirmations:
+                    rid = pre["context"]["reimburse_id"]
+                    reb_versions[str(rid)] = pre["reimburse_version"]
+                    overwrite = overwrite or bool(pre.get("overwrite_manual"))
+                return {"ok": False, "need_confirm": True, "confirm": "one_to_one",
+                        "message": "所选发票包含 1 对 1 匹配，是否同步更新对应报销单总账？",
+                        "reimburse_versions": reb_versions,
+                        "overwrite_manual": overwrite}
+            # 所有发票版本和有效性与 1:1 决策先通过，再统一校验将被覆盖的总账版本。
+            for iid, ctx in contexts.items():
+                rid = ctx["reimburse_id"]
+                if ctx["one_to_one"] and sync_reimburse and rid in reimburse_versions:
+                    rc = reimburse_category_repo.get(conn, rid) or {}
+                    if int(reimburse_versions[rid]) != int(rc.get("version") or 0):
+                        return {"ok": False, "stale": True, "stale_ids": [rid],
+                                "message": "数据已被他人修改，请刷新后重试"}
 
-        unmatched_done: List[int] = []     # 未匹配：仅改自身
-        linked_rebs: List[int] = []        # 一对一：被连带同步的报销单
-        mismatch_rebs: List[int] = []      # 一对多：产生分类差异的报销单
-        for iid in ids:
-            row = by_id.get(iid)
-            if row is None:
-                continue
-            reb_id = row.get("reimburse_id")
-            one_to_many = reb_id is not None and len(linked_map.get(reb_id) or []) > 1
-            # 一对多只学发票明细记忆（提交人记忆会传染同报销单其他发票）
-            res = _apply_manual_category(conn, iid, category,
-                                         learn_submitter=not one_to_many)
-            if not res.get("ok"):
-                raise RuntimeError(res.get("message") or "批量修改失败")
-            if reb_id is None:
-                unmatched_done.append(iid)
-                continue
-            if len(linked_map.get(reb_id) or []) <= 1:
-                # 一对一：连带同步报销单主分类
-                reimburse_category_repo.upsert(conn, reb_id, category, "linked")
-                category_service.clear_conflict(conn, reb_id)
-                if reb_id not in linked_rebs:
-                    linked_rebs.append(reb_id)
-            else:
-                # 一对多：只改当前发票，差异打标
-                if category_service.detect_conflict(conn, reb_id) is not None \
-                        and reb_id not in mismatch_rebs:
-                    mismatch_rebs.append(reb_id)
-        matched_cnt = len(ids) - len(unmatched_done)
-        audit_service.log(
-            conn, "invoice_category_batch", "invoice", ",".join(map(str, ids)),
-            "批量修改 %d 张发票" % len(ids), "", category, operator,
-            "未匹配仅改自身 %d 张；一对一连带同步报销单 %s；一对多产生分类差异 %s"
-            % (len(unmatched_done), linked_rebs or "无", mismatch_rebs or "无"))
+            unmatched_done = []
+            linked_rebs = []
+            detail_rebs = []
+            affected_reb_ids = set()
+            for iid, ctx in contexts.items():
+                rid = ctx["reimburse_id"]
+                if rid is not None:
+                    affected_reb_ids.add(rid)
+                res = apply_invoice_category_conn(
+                    conn, iid, category, learn=False, learn_submitter=False,
+                    sync_reimburse=bool(sync_reimburse),
+                    expected_version=versions.get(iid),
+                    expected_reimburse_version=reimburse_versions.get(rid))
+                if not res.get("ok"):
+                    raise RuntimeError(res.get("message") or "批量修改失败")
+                if rid is None:
+                    unmatched_done.append(iid)
+                elif res.get("linked_sync"):
+                    if rid not in linked_rebs:
+                        linked_rebs.append(rid)
+                elif rid not in detail_rebs:
+                    detail_rebs.append(rid)
+            audit_service.log(
+                conn, "invoice_category_batch", "invoice", ",".join(map(str, ids)),
+                "批量修改 %d 张发票" % len(ids), "", category, operator,
+                "未匹配仅改自身 %d 张；一对一同步报销单 %s；仅改明细并统一重算 %s"
+                % (len(unmatched_done), linked_rebs or "无", detail_rebs or "无"))
+    except CategoryLockError as e:
+        return {"ok": False, "stale": True, "message": e.message}
 
+    checked = category_service.recheck_after_commit(sorted(affected_reb_ids))
+    mismatch_rebs = sorted(rid for rid, cf in checked.items() if cf is not None)
     msg = "已批量修改 %d 张发票的费用分类为「%s」" % (len(ids), category)
     parts = []
     if unmatched_done:
@@ -1366,13 +1537,13 @@ def set_invoices_category(invoice_ids: List[int], category: str,
     if linked_rebs:
         parts.append("连带同步 %d 张报销单" % len(linked_rebs))
     if mismatch_rebs:
-        parts.append("%d 张报销单产生分类差异（一对多，仅改明细）" % len(mismatch_rebs))
+        parts.append("%d 张报销单保留分类差异" % len(mismatch_rebs))
     if parts:
         msg += "：" + "；".join(parts)
     return {"ok": True, "message": msg, "category": category,
             "updated": len(ids), "unmatched": len(unmatched_done),
             "linked_reimburses": linked_rebs, "mismatch_reimburses": mismatch_rebs,
-            "matched": matched_cnt}
+            "matched": len(ids) - len(unmatched_done)}
 
 
 # ---------------------------------------------------------------- 相似记录三层判定
@@ -1508,6 +1679,8 @@ def similar_unmatched(invoice_id: int) -> dict:
         ids = [v["row"]["id"] for v in cand]
         details = {r["id"]: r for r in invoice_repo.list(conn, ids=ids, limit=len(ids))} if ids else {}
         decisions = resolve_categories(conn, ids)
+        manual_versions = {iid: int(x.get("version") or 0)
+                           for iid, x in category_repo.decisions(conn, ids).items()}
         reb_nos = {r["id"]: r.get("reimburse_no") or ""
                    for r in reimburse_repo.list(conn, limit=100000)}
     items = []
@@ -1522,6 +1695,7 @@ def similar_unmatched(invoice_id: int) -> dict:
             "invoice_no": d.get("invoice_no") or "",
             "invoice_date": d.get("invoice_date") or "",
             "total_amount": d.get("total_amount") or "",
+            "category_version": manual_versions.get(iid, 0),
             "item_summary": d.get("item_summary") or "",
             "seller_name": d.get("seller_name") or "",
             "category": dec.get("category") or "",
@@ -1538,60 +1712,118 @@ def similar_unmatched(invoice_id: int) -> dict:
     }}
 
 
-def set_reimburse_category(reimburse_id: int, category: str,
-                           operator: str = "admin", mode: str = "sync") -> dict:
-    """修改报销单分类（模块三.2：主从法则）。
-
-    - 未匹配：只写报销单侧分类，绝不触碰任何发票（孤岛）；
-    - 已匹配：无条件强制联动——不管关联 1 张还是 5 张发票，
-      全部同步为新分类（主账分类变了，底下明细必须跟）。
-    mode 参数仅为兼容旧接口保留，已匹配时固定按 sync 执行。
-    """
-    from app.service import category_service   # 惰性导入，避免循环依赖
+def apply_reimburse_category_conn(conn, reimburse_id: int, category: str,
+                                  operator: str = "admin",
+                                  expected_version: Optional[int] = None,
+                                  sync_invoices: bool = True,
+                                  source: str = "manual",
+                                  audit: bool = True) -> dict:
+    """报销单分类唯一写入服务，可按业务场景决定是否同步全部明细。"""
+    from app.service import category_service
 
     category = (category or "").strip()
+    if category not in category_dict_repo.names(conn, enabled_only=False):
+        return {"ok": False, "message": "无效的费用分类，请从分类字典中选择"}
+    rb = reimburse_repo.get(conn, reimburse_id)
+    if rb is None or rb.get("deleted_at"):
+        return {"ok": False, "message": "报销单不存在或已删除"}
+    cur = reimburse_category_repo.get(conn, reimburse_id)
+    cur_ver = int(cur["version"]) if cur else 0
+    if expected_version is not None and int(expected_version) != cur_ver:
+        return {"ok": False, "stale": True,
+                "message": "数据已被他人修改，请刷新后重试"}
+    ids = match_repo.matched_invoice_ids(conn, [reimburse_id]).get(reimburse_id) or []
+    old_cat, _ = category_service.reimburse_explicit(conn, rb)
+    new_version = reimburse_category_repo.upsert(
+        conn, reimburse_id, category, source, expected_version=expected_version)
+    if sync_invoices:
+        for iid in ids:
+            res = apply_invoice_category_conn(
+                conn, iid, category, learn=False, learn_submitter=False,
+                sync_reimburse=False)
+            if not res.get("ok"):
+                raise RuntimeError(res.get("message") or "同步发票分类失败")
+    if audit:
+        detail = ("已匹配：强制联动同步 %d 张关联发票 %s（不学习记忆）" % (len(ids), ids)
+                  if sync_invoices and ids else
+                  ("未匹配状态：仅改报销单，独立于发票" if not ids else "仅更新报销单分类"))
+        audit_service.log(conn, "reimburse_category", "reimburse", reimburse_id,
+                          rb.get("reimburse_no") or "", old_cat, category, operator, detail)
+    matched = bool(ids)
+    message = ("已将报销单及 %d 张关联发票的分类统一为「%s」" % (len(ids), category)
+               if sync_invoices and ids else
+               "已更新报销单分类为「%s」（未同步其他发票）" % category)
+    return {"ok": True, "message": message, "category": category,
+            "status": STATUS_CONFIRMED, "learned": [], "matched": matched,
+            "mode": "sync" if sync_invoices and ids else "self",
+            "invoice_count": len(ids) if sync_invoices else 0,
+            "version": new_version}
+
+
+def set_reimburse_category(reimburse_id: int, category: str,
+                           operator: str = "admin", mode: str = "sync",
+                           version: Optional[int] = None) -> dict:
+    """修改报销单分类（主从法则）：
+
+    - 未匹配：只写报销单侧分类，绝不触碰任何发票（孤岛）；
+    - 已匹配：无条件强制联动全部关联发票（主账分类变了，明细必须跟）；
+    - version 为乐观锁版本，过期返回 stale 提示。
+    mode 参数仅为兼容旧接口保留，已匹配时固定按 sync 执行。
+    """
+    category = (category or "").strip()
+    from app.service import category_service
+    with db.tx() as conn:
+        res = apply_reimburse_category_conn(
+            conn, reimburse_id, category, operator, expected_version=version)
+    if not res.get("ok"):
+        return res
+    category_service.recheck_after_commit([reimburse_id])
+    return res
+
+
+def set_reimburses_category(reimburse_ids: List[int], category: str,
+                            operator: str = "admin",
+                            versions: Dict[int, int] = None) -> dict:
+    """批量确认报销单分类（单事务；全部预检通过后逐条强制联动明细）。
+
+    批量动作一律 learn=False；versions 提供时逐条校验乐观锁。
+    """
+    ids = list(dict.fromkeys(int(i) for i in (reimburse_ids or [])))
+    category = (category or "").strip()
+    versions = {int(k): int(v) for k, v in (versions or {}).items()}
+    if not ids:
+        return {"ok": False, "message": "未选择任何报销单"}
+    from app.service import category_service
+    synced = 0
     with db.tx() as conn:
         if category not in category_dict_repo.names(conn, enabled_only=False):
             return {"ok": False, "message": "无效的费用分类，请从分类字典中选择"}
-        rb = reimburse_repo.get(conn, reimburse_id)
-        if rb is None:
-            return {"ok": False, "message": "报销单不存在或已删除"}
-        ids = match_repo.matched_invoice_ids(conn, [reimburse_id]).get(reimburse_id) or []
-        old_cat, _ = category_service.reimburse_explicit(conn, rb)
-
-        if not ids:
-            reimburse_category_repo.upsert(conn, reimburse_id, category)
-            audit_service.log(
-                conn, "reimburse_category", "reimburse", reimburse_id,
-                rb.get("reimburse_no") or "", old_cat, category, operator,
-                "未匹配状态：仅改报销单，独立于发票")
-            return {"ok": True, "matched": False, "mode": "self",
-                    "message": "已更新报销单分类为「%s」（未匹配，未影响任何发票）" % category,
-                    "category": category, "status": STATUS_CONFIRMED,
-                    "invoice_count": 0}
-
-        # 已匹配：无条件强制联动全部关联发票
-        reimburse_category_repo.upsert(conn, reimburse_id, category)
-        learned: List[str] = []
-        for iid in ids:
-            res = _apply_manual_category(conn, iid, category)
+        stale_ids = []
+        for rid in ids:
+            rb = reimburse_repo.get(conn, rid)
+            if rb is None or rb.get("deleted_at"):
+                return {"ok": False, "message": "报销单 #%s 不存在或已删除" % rid}
+            cur = reimburse_category_repo.get(conn, rid)
+            cur_ver = int(cur["version"]) if cur else 0
+            if rid in versions and versions[rid] != cur_ver:
+                stale_ids.append(rid)
+        if stale_ids:
+            return {"ok": False, "stale": True, "stale_ids": stale_ids,
+                    "message": "数据已被他人修改，请刷新后重试"}
+        for rid in ids:
+            res = apply_reimburse_category_conn(
+                conn, rid, category, operator, expected_version=versions.get(rid))
             if not res.get("ok"):
-                raise RuntimeError(res.get("message") or "同步发票分类失败")
-            for label in res.get("learned") or []:
-                if label not in learned:
-                    learned.append(label)
-        category_service.clear_conflict(conn, reimburse_id)
+                raise RuntimeError(res.get("message") or "批量修改失败")
+            synced += int(res.get("invoice_count") or 0)
         audit_service.log(
-            conn, "reimburse_category", "reimburse", reimburse_id,
-            rb.get("reimburse_no") or "", old_cat, category, operator,
-            "已匹配：强制联动同步 %d 张关联发票 %s" % (len(ids), ids))
-
-    msg = "已将报销单及 %d 张关联发票的分类统一为「%s」" % (len(ids), category)
-    if learned:
-        msg += "，系统已记住该修正（%s）" % "、".join(learned)
-    return {"ok": True, "message": msg, "category": category,
-            "status": STATUS_CONFIRMED, "learned": learned,
-            "matched": True, "mode": "sync", "invoice_count": len(ids)}
+            conn, "reimburse_category_batch", "reimburse", ",".join(map(str, ids)),
+            "批量确认 %d 张报销单" % len(ids), "", category, operator,
+            "批量确认报销单分类，同步发票 %d 张（不学习记忆）" % synced)
+    category_service.recheck_after_commit(ids)
+    return {"ok": True, "updated": len(ids), "invoice_synced": synced,
+            "message": "已将 %d 张报销单的分类统一为「%s」，同步 %d 张关联发票"
+                       % (len(ids), category, synced)}
 
 
 def export_excel(status: str = None, keyword: str = None, ids: list = None,

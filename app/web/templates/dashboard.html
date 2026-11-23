@@ -488,7 +488,7 @@ function renderExpenseBreakdown(data, fallbackLabel){
     let html = '';
     if(data.has_pending){
       html += '<span>⚠ 含待确认推测数据 ' + fmtMoney(data.pending_amount) + '（' + data.pending_count + ' 笔）</span>'
-        + '<a href="/invoices" title="去发票列表确认分类">去确认 ›</a>';
+        + '<a href="/invoices?cat_status=pending&range=all" title="去发票列表集中确认分类">去确认 ›</a>';
     }
     if(data.has_conflict){
       html += '<span style="color:#b45309;">⚠ 存在 ' + data.conflict_count + ' 笔分类差异数据</span>'

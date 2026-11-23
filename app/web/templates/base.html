@@ -119,7 +119,12 @@ td.num{font-variant-numeric:tabular-nums;}
   cursor:pointer;border:1px solid transparent;white-space:nowrap;line-height:1.6;}
 .cat-tag:hover{filter:brightness(.96);}
 .cat-tag.confirmed{background:var(--success-bg);color:var(--success-text);border-color:var(--success-border);}
-.cat-tag.pending{background:var(--warning-bg);color:var(--warning-text);border-color:var(--warning-border);}
+.cat-tag.pending{background:var(--warning-bg);color:var(--warning-text);border-color:var(--warning-border);font-style:italic;}
+/* 历史分类不在当前字典中：保留原文 + 灰色降级展示（禁止静默改写） */
+.cat-tag.legacy{background:#f1f5f9;color:#94a3b8;border-color:#e2e8f0;}
+/* 已确认 / 待确认的图形区分：✓ 实心绿点 vs ? 黄色问号 */
+.cat-tag .cat-ok{font-size:11px;font-weight:700;color:#16a34a;}
+.cat-tag.linked::after{content:'↗';font-size:10px;color:#2563eb;}
 /* 未报销的游离发票：系统推测分类用 dashed 边框区分 */
 .cat-tag.orphan{border-style:dashed;}
 /* 未匹配发票的报销单：标签只读，不出现手型 */
@@ -140,6 +145,9 @@ td.num{font-variant-numeric:tabular-nums;}
 .cat-tag .cat-warn{color:#dc2626;font-weight:700;}
 /* 分类差异（黄色警示，非阻塞）：发票与报销单分类不一致 */
 .cat-tag .cat-warn-y{color:#d97706;font-weight:700;}
+/* [分类差异] 标签：仅明细侧与总账不一致时出现，极小浅橙文字 */
+.cat-tag .cat-diff{display:inline-block;margin-left:4px;padding:0 4px;border-radius:3px;
+  background:#fff7ed;color:#d97706;border:1px solid #fed7aa;font-size:10px;line-height:14px;}
 .dropdown{position:relative;display:inline-block;}
 /* 下拉菜单挂载到 body，fixed 定位，避免被表格容器截断 */
 .dropdown-menu{display:none;position:fixed;background:#fff;border:1px solid var(--border);border-radius:6px;box-shadow:0 4px 14px rgba(0,0,0,.1);min-width:96px;z-index:100;overflow:hidden;}
@@ -893,28 +901,52 @@ function openCatMenu(e, el){
   const cur = el.dataset.cat || '';
   const suggest = el.dataset.suggest || '';
   const pending = el.dataset.status === 'PENDING';
+  const m = document.createElement('div');
+  m.className = 'cat-menu';
+  m.addEventListener('click', ev => ev.stopPropagation());
 
-  let html = '';
+  const addHead = text => {
+    const node = document.createElement('div');
+    node.className = 'cat-menu-head';
+    node.textContent = text;
+    m.appendChild(node);
+  };
+  const addSep = () => {
+    const node = document.createElement('div');
+    node.className = 'cat-menu-sep';
+    m.appendChild(node);
+  };
+  const addItem = (text, handler, extraClass = '') => {
+    const node = document.createElement('button');
+    node.type = 'button';
+    node.className = 'cat-menu-item' + (extraClass ? ' ' + extraClass : '');
+    node.textContent = text;
+    node.addEventListener('click', handler);
+    m.appendChild(node);
+    return node;
+  };
+
   if(pending && suggest && suggest !== cur){
-    html += '<div class="cat-menu-head">系统推测为「' + suggest + '」</div>'
-          + '<button class="cat-menu-item accept" onclick="saveCategory(\'' + suggest + '\')">✓ 一键确认为 ' + suggest + '</button>'
-          + '<div class="cat-menu-sep"></div><div class="cat-menu-head">或改为：</div>';
+    addHead('系统推测为「' + suggest + '」');
+    addItem('✓ 一键确认为 ' + suggest, () => saveCategory(suggest), 'accept');
+    addSep();
+    addHead('或改为：');
   }else{
-    html += '<div class="cat-menu-head">修改费用分类</div>';
+    addHead('修改费用分类');
   }
   CAT_STD.forEach(c => {
     const isCur = (c === cur);
-    html += '<button class="cat-menu-item' + (isCur ? ' current' : '') + '" onclick="saveCategory(\'' + c + '\')">'
-          + c + (isCur ? '<span class="cat-check">✓ 当前</span>' : '') + '</button>';
+    const item = addItem(c, () => saveCategory(c), isCur ? 'current' : '');
+    if(isCur){
+      const check = document.createElement('span');
+      check.className = 'cat-check';
+      check.textContent = '✓ 当前';
+      item.appendChild(check);
+    }
   });
   // 模块一：下拉菜单底部支持新增自定义分类（相似词会提示合并）
-  html += '<div class="cat-menu-sep"></div>'
-        + '<button class="cat-menu-item" onclick="addCategoryDlg()">＋ 新增自定义分类</button>';
-
-  const m = document.createElement('div');
-  m.className = 'cat-menu';
-  m.innerHTML = html;
-  m.addEventListener('click', ev => ev.stopPropagation());
+  addSep();
+  addItem('＋ 新增自定义分类', addCategoryDlg);
   document.body.appendChild(m);
 
   // 定位：默认在标签下方，右侧/底部空间不足时自动左移或翻到上方
@@ -943,20 +975,17 @@ async function saveCategory(cat){
   const kind = el.dataset.kind;
   const id = el.dataset.id;
   const matched = el.dataset.matched === '1';
+  const version = el.dataset.version || '';
   if(kind === 'reb' && matched){
     const ok = await confirmDlg(
       '该报销单已匹配发票。修改分类将无条件同步其关联的所有发票明细分类（主从联动），是否继续？');
     if(!ok) return;
-    await _saveRebCategory(id, cat, 'sync');
+    await _saveRebCategory(id, cat, 'sync', version);
   }else if(kind === 'reb'){
-    await _saveRebCategory(id, cat, 'self');
-  }else if(matched){
-    const ok = await confirmDlg(
-      '该发票已匹配报销单，将按主从法则处理：一对一匹配连带同步报销单；一对多只改当前发票（可能与报销单产生分类差异）。是否继续？');
-    if(!ok) return;
-    await _saveInvCategory(id, cat);
+    await _saveRebCategory(id, cat, 'self', version);
   }else{
-    await _saveInvCategory(id, cat);
+    // 发票侧：先提交，由后端判定是否 1:1（需要用户拍板是否同步总账）
+    await _saveInvCategory(id, cat, version, null);
   }
 }
 
@@ -975,22 +1004,43 @@ async function _getData(url){
   }catch(e){ return {ok:false, message:'网络错误：' + e.message}; }
 }
 
-async function _saveRebCategory(id, cat, mode){
+async function _saveRebCategory(id, cat, mode, version){
   const fd = new FormData();
   fd.append('category', cat);
   fd.append('mode', mode);
+  if(version !== undefined && version !== null && version !== '') fd.append('version', version);
   const d = await _postData('/api/reimburses/' + id + '/category', fd);
   if(!d || d.ok === false){ toast((d && d.message) || '保存失败', false); return; }
   toast(d.message || ('已保存分类：' + cat));
   setTimeout(() => location.reload(), 700);
 }
 
-async function _saveInvCategory(id, cat){
+async function _saveInvCategory(id, cat, version, sync, reimburseVersion){
   const fd = new FormData();
   fd.append('category', cat);
+  if(version !== undefined && version !== null && version !== '') fd.append('version', version);
+  if(sync === true) fd.append('sync_reimburse', '1');
+  else if(sync === false) fd.append('sync_reimburse', '0');
+  if(reimburseVersion !== undefined && reimburseVersion !== null && reimburseVersion !== '')
+    fd.append('reimburse_version', reimburseVersion);
   const d = await _postData('/api/invoices/' + id + '/category', fd);
-  if(!d || d.ok === false){ toast((d && d.message) || '保存失败', false); return; }
-  // 统一触发：无论是否匹配，都查找「相似记录」池，弹批量确认面板（三层判定：归类大类/商家字号/摘要关键词）
+  if(d && d.need_confirm){
+    // 1:1 匹配：必须由用户明确选择是否同步总账；人工已确认时额外警告覆盖风险
+    let msg = d.message || '修改发票分类是否同步更新报销单总账？';
+    if(d.reimburse_category) msg += '\n当前总账分类：' + d.reimburse_category;
+    if(d.overwrite_manual) msg += '\n⚠️ 该报销单分类已被人工确认，继续将覆盖人工决策！';
+    const opt = await chooseDlg('主从联动确认', msg, [
+      {v:'sync', label:'是，同步更新总账'},
+      {v:'self', label:'否，只改这张发票', cls:'btn-outline'}]);
+    if(!opt) return;
+    return _saveInvCategory(id, cat, version, opt === 'sync', d.reimburse_version);
+  }
+  if(!d || d.ok === false){
+    if(d && d.stale) toast('数据已被他人修改，请刷新后重试', false);
+    else toast((d && d.message) || '保存失败', false);
+    return;
+  }
+  // 未匹配 / 已匹配都触发相似记录批量面板；相似条目携带各自版本号做乐观锁
   const sim = await _getData('/api/invoices/' + id + '/similar');
   if(sim && sim.items && sim.items.length){
     toast(d.message || ('已保存分类：' + cat));
@@ -1019,7 +1069,7 @@ function openBatchPanel(category, items, basis){
   const m = document.getElementById('modal');
   const rows = items.map(it => `
     <tr>
-      <td style="text-align:center;"><input type="checkbox" class="batch-chk" value="${it.id}" data-matched="${it.matched ? 1 : 0}" checked></td>
+      <td style="text-align:center;"><input type="checkbox" class="batch-chk" value="${it.id}" data-version="${it.category_version || 0}" data-matched="${it.matched ? 1 : 0}" checked></td>
       <td>#${it.id}</td>
       <td>${_escHtml(it.invoice_no || '—')}</td>
       <td>${_escHtml(it.invoice_date || '—')}</td>
@@ -1088,16 +1138,35 @@ function openBatchPanel(category, items, basis){
     const hasMatched = sel.some(x => x.dataset.matched === '1');
     let warn = '确定将勾选的 ' + sel.length + ' 条记录统一修改为【' + category + '】吗？';
     if(hasMatched){
-      warn += '\n⚠️ 注意：选中包含已匹配数据，该操作会同步更新关联的报销单，系统将自动执行财务主从账目联动同步！';
+      warn += '\n⚠️ 选中包含已匹配数据；如存在 1 对 1 匹配，下一步需确认是否同步更新报销单总账。';
     }
     const ok = await confirmDlg(warn);
     if(!ok) return;
     const fd = new FormData();
     fd.append('ids', sel.map(x => x.value).join(','));
     fd.append('category', category);
-    const d = await _postData('/api/invoices/category/batch', fd);
+    const verMap = {};
+    sel.forEach(x => { verMap[x.value] = parseInt(x.dataset.version || '0', 10) || 0; });
+    fd.append('versions', JSON.stringify(verMap));
+    let d = await _postData('/api/invoices/category/batch', fd);
+    if(d && d.need_confirm){
+      let msg = d.message || '所选发票包含 1 对 1 匹配，是否同步更新对应报销单总账？';
+      if(d.overwrite_manual) msg += '\n⚠️ 部分报销单分类已被人工确认，同步将覆盖人工决策！';
+      const opt = await chooseDlg('主从联动确认', msg, [
+        {v:'sync', label:'是，同步更新总账'},
+        {v:'self', label:'否，只改发票明细', cls:'btn-outline'}]);
+      if(!opt) return;
+      // 首轮仅预检，确认后沿用原发票版本，并携带首轮快照中的总账版本。
+      fd.set('sync_reimburse', opt === 'sync' ? '1' : '0');
+      fd.set('reimburse_versions', JSON.stringify(d.reimburse_versions || {}));
+      d = await _postData('/api/invoices/category/batch', fd);
+    }
     closeModal();
-    if(!d || d.ok === false){ toast((d && d.message) || '批量更新失败', false); return; }
+    if(!d || d.ok === false){
+      toast((d && d.stale) ? '数据已被他人修改，请刷新后重试'
+                           : ((d && d.message) || '批量更新失败'), false);
+      return;
+    }
     toast(d.message || '批量更新成功');
     setTimeout(() => location.reload(), 700);
   };
@@ -1140,13 +1209,25 @@ window.addEventListener('resize', closeCatMenu);
 function confirmDlg(msg){
   return new Promise(resolve=>{
     const m = document.getElementById('modal');
-    m.innerHTML = '<p style="margin-bottom:16px;white-space:pre-line;line-height:1.6;">' + msg + '</p>'
-      + '<div style="text-align:right;">'
-      + '<button class="btn btn-outline" id="cfCancel">取消</button> '
-      + '<button class="btn btn-danger" id="cfOk">确认</button></div>';
+    m.replaceChildren();
+    const text = document.createElement('p');
+    text.style.cssText = 'margin-bottom:16px;white-space:pre-line;line-height:1.6;';
+    text.textContent = msg;
+    const actions = document.createElement('div');
+    actions.style.textAlign = 'right';
+    const cancel = document.createElement('button');
+    cancel.className = 'btn btn-outline';
+    cancel.id = 'cfCancel';
+    cancel.textContent = '取消';
+    const ok = document.createElement('button');
+    ok.className = 'btn btn-danger';
+    ok.id = 'cfOk';
+    ok.textContent = '确认';
+    actions.append(cancel, document.createTextNode(' '), ok);
+    m.append(text, actions);
     openModal();
-    document.getElementById('cfOk').onclick = ()=>{closeModal();resolve(true);};
-    document.getElementById('cfCancel').onclick = ()=>{closeModal();resolve(false);};
+    ok.onclick = ()=>{closeModal();resolve(true);};
+    cancel.onclick = ()=>{closeModal();resolve(false);};
     document.getElementById('modalBg').onclick = ()=>{closeModal();resolve(false);};
   });
 }
@@ -1155,17 +1236,36 @@ function confirmDlg(msg){
 function chooseDlg(title, msg, options){
   return new Promise(resolve=>{
     const m = document.getElementById('modal');
-    const btns = options.map((o, i) =>
-      `<button class="btn ${o.cls || ''}" data-opt="${i}">${o.label}</button>`).join(' ');
-    m.innerHTML = '<h2 style="margin-bottom:10px;font-size:16px;">' + title + '</h2>'
-      + '<p style="margin-bottom:16px;white-space:pre-line;line-height:1.6;">' + msg + '</p>'
-      + '<div style="text-align:right;">' + btns
-      + ' <button class="btn btn-outline" data-cancel="1">取消</button></div>';
+    m.replaceChildren();
+    const heading = document.createElement('h2');
+    heading.style.cssText = 'margin-bottom:10px;font-size:16px;';
+    heading.textContent = title;
+    const text = document.createElement('p');
+    text.style.cssText = 'margin-bottom:16px;white-space:pre-line;line-height:1.6;';
+    text.textContent = msg;
+    const actions = document.createElement('div');
+    actions.style.textAlign = 'right';
+    options.forEach((option, index) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'btn ' + (option.cls || '');
+      button.dataset.opt = String(index);
+      button.textContent = option.label;
+      actions.appendChild(button);
+      actions.appendChild(document.createTextNode(' '));
+    });
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.className = 'btn btn-outline';
+    cancel.dataset.cancel = '1';
+    cancel.textContent = '取消';
+    actions.appendChild(cancel);
+    m.append(heading, text, actions);
     openModal();
     m.querySelectorAll('button[data-opt]').forEach(b=>{
       b.onclick = ()=>{ const v = options[+b.dataset.opt].v; closeModal(); resolve(v); };
     });
-    m.querySelector('button[data-cancel]').onclick = ()=>{ closeModal(); resolve(null); };
+    cancel.onclick = ()=>{ closeModal(); resolve(null); };
     document.getElementById('modalBg').onclick = ()=>{ closeModal(); resolve(null); };
   });
 }
@@ -1173,8 +1273,8 @@ function chooseDlg(title, msg, options){
 function promptDlg(msg, def=''){
   return new Promise(resolve=>{
     const m = document.getElementById('modal');
-    m.innerHTML = '<p style="margin-bottom:10px;line-height:1.6;">' + msg + '</p>'
-      + '<input id="pfInput" style="width:100%;" value="' + (def||'').replace(/"/g,'&quot;') + '">'
+    m.innerHTML = '<p style="margin-bottom:10px;line-height:1.6;white-space:pre-line;">' + _escHtml(msg) + '</p>'
+      + '<input id="pfInput" style="width:100%;" value="' + _escHtml(def || '') + '">'
       + '<div style="text-align:right;margin-top:14px;">'
       + '<button class="btn btn-outline" id="pfCancel">取消</button> '
       + '<button class="btn" id="pfOk">确定</button></div>';

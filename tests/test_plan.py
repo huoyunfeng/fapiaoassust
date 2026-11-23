@@ -623,37 +623,39 @@ class TestCategoryEngine:
         assert row["category_status"] == "PENDING"
         assert row["category_source"] == "orphan"
 
-    def test_manual_confirm_not_spread_to_similar(self, env):
-        """单条修改=个例修正：不学习记忆，同明细的其他发票不受影响（不扩散）。"""
+    def test_single_edit_learns_batch_never_learns(self, env):
+        """单条手动修改可学习记忆；批量修改强制不学习，避免管理动作污染学习模型。"""
         env["inv"].import_files([
             ("a.xml", "", xml_invoice("ENG4000001", "100.00",
                                       item_name="*餐饮服务*星巴克咖啡")),
             ("b.xml", "", xml_invoice("ENG4000002", "200.00",
                                       item_name="*餐饮服务*星巴克咖啡")),
+            ("c.xml", "", xml_invoice("ENG4000003", "300.00",
+                                      item_name="*餐饮服务*星巴克咖啡")),
         ])
         rows = env["inv"].list_invoices()
-        assert len(rows) == 2
-        first = rows[0]
-        second = rows[1]
+        assert len(rows) == 3
+        first, second, third = rows[0], rows[1], rows[2]
         assert first["category"] == "餐饮费" and first["category_status"] == "PENDING"
 
-        res = env["inv"].set_invoice_category(first["id"], "办公费")
+        # 批量修改：强制不学习，同摘要的其他发票保持系统推测
+        res = env["inv"].set_invoices_category([first["id"]], "办公费")
         assert res["ok"] is True
-        assert not (res.get("learned") or [])     # 单条不学习记忆
-
         rows = env["inv"].list_invoices()
-        r1 = [r for r in rows if r["id"] == first["id"]][0]
-        r2 = [r for r in rows if r["id"] == second["id"]][0]
-        assert r1["category"] == "办公费" and r1["category_status"] == "CONFIRMED"
-        # 关键断言：同摘要的另一张发票分类不被连带改变（仍为系统推测）
-        assert r2["category"] == "餐饮费" and r2["category_status"] == "PENDING"
+        by_id = {r["id"]: r for r in rows}
+        assert by_id[first["id"]]["category"] == "办公费"
+        assert by_id[second["id"]]["category_status"] == "PENDING"
+        assert by_id[third["id"]]["category_status"] == "PENDING"
 
-        # 批量修改才学习记忆并扩散
-        res2 = env["inv"].set_invoices_category([second["id"]], "办公费")
+        # 单条手动修改：学习发票明细记忆，同摘要的第三张自动套用
+        res2 = env["inv"].set_invoice_category(second["id"], "差旅费")
         assert res2["ok"] is True
+        assert "发票明细" in (res2.get("learned") or [])
         rows = env["inv"].list_invoices()
-        r2 = [r for r in rows if r["id"] == second["id"]][0]
-        assert r2["category"] == "办公费" and r2["category_status"] == "CONFIRMED"
+        by_id = {r["id"]: r for r in rows}
+        assert by_id[third["id"]]["category"] == "差旅费"
+        assert by_id[third["id"]]["category_source"] == "memory"
+        assert by_id[third["id"]]["category_status"] == "CONFIRMED"
 
         # 非法分类被拒绝
         assert env["inv"].set_invoice_category(first["id"], "乱填分类")["ok"] is False
@@ -683,9 +685,11 @@ class TestCategoryEngine:
         inv_id = _ensure_match(env, "ENG7000001", "RE7")
 
         before = [r for r in env["inv"].list_invoices() if r["id"] == inv_id][0]
-        assert before["category"] == "其他费用"   # 报销单自由填写的类型先收敛到标准大类
+        # 非字典历史值保留原文并标灰，不再静默改写为「其他费用」
+        assert before["category"] == "某项目支出"
+        assert before["category_status"] == "LEGACY"
 
-        env["inv"].set_invoice_category(inv_id, "餐饮费")
+        env["inv"].set_invoice_category(inv_id, "餐饮费", sync_reimburse=True)
         after = [r for r in env["inv"].list_invoices() if r["id"] == inv_id][0]
         assert after["category"] == "餐饮费"
         assert after["category_status"] == "CONFIRMED"
@@ -693,7 +697,7 @@ class TestCategoryEngine:
         assert after["category_raw"] == "某项目支出"
 
     def test_normalize_and_merge_non_standard_type(self, env):
-        """第五层：报销单自由填写的类型收敛到标准大类，图表不出现细碎名称。"""
+        """历史自由填写的类型：工具函数仍可收敛，但展示层保留原文并标灰（可追溯）。"""
         from app.domain.categorize import STANDARD_CATEGORIES, normalize_category
         assert normalize_category("差旅") == "差旅费"
         assert normalize_category("某项目支出") == "其他费用"
@@ -707,10 +711,12 @@ class TestCategoryEngine:
         _ensure_match(env, "ENG6000001", "RE6")
 
         row = env["inv"].list_invoices()[0]
-        assert row["category"] == "其他费用"
-        assert row["category_raw"] == "某项目支出"
+        assert row["category"] == "某项目支出"
+        assert row["category_status"] == "LEGACY"
         data = env["inv"].expense_breakdown()
-        assert all(i["name"] in STANDARD_CATEGORIES for i in data["items"])
+        names = [i["name"] for i in data["items"]]
+        assert "某项目支出" in names      # 保留原文，财务可追溯
+        assert "其他费用" not in names
 
     def test_submitter_correction_memory(self, env):
         """第三层：修正员工填错的类型后，同提交人的同一错误值自动纠正。"""
@@ -730,8 +736,8 @@ class TestCategoryEngine:
         _ensure_match(env, "ENG5000002", "RE52")
 
         assert [r for r in env["inv"].list_invoices() if r["id"] == inv1][0]["category"] == "办公费"
-        # 批量修改=财务明确确认同类归属：学习提交人记忆并扩散
-        res = env["inv"].set_invoices_category([inv1], "餐饮费")
+        # 单条手动修改=财务明确纠正：学习提交人记忆并扩散（批量操作强制不学习）
+        res = env["inv"].set_invoice_category(inv1, "餐饮费", sync_reimburse=True)
         assert res["ok"] is True
 
         # 同提交人另一张（仍填「办公费」）被记忆纠正为餐饮费
@@ -857,7 +863,8 @@ class TestCategoryGovernance:
         assert any("餐饮费" in b for b in sim["basis"])      # 顶部提示依据
 
         # 批量：已匹配（一对一）连带同步其报销单；未匹配仅改自身
-        res = env["inv"].set_invoices_category(free_ids + [matched_id], "办公费")
+        res = env["inv"].set_invoices_category(
+            free_ids + [matched_id], "办公费", sync_reimburse=True)
         assert res["ok"] is True and res["updated"] == 3
         assert res["unmatched"] == 2 and res["matched"] == 1
         with env["db"].read() as conn:
@@ -881,7 +888,7 @@ class TestCategoryGovernance:
              "办公费", "100.00", "ISO0000001", "", ""]]))
         inv_id = _ensure_match(env, "ISO0000001", "ISOR1")
 
-        res = env["inv"].set_invoice_category(inv_id, "交通费")
+        res = env["inv"].set_invoice_category(inv_id, "交通费", sync_reimburse=True)
         assert res["ok"] is True and res["matched"] is True
         assert res["linked_sync"] is True and res["mismatch"] is False
         inv = [r for r in env["inv"].list_invoices() if r["id"] == inv_id][0]
@@ -966,7 +973,10 @@ class TestCategoryGovernance:
         # 2) 以发票为准 -> 报销单分类改为发票侧分类
         env["inv"].set_invoice_category(inv1, "交通费")
         env["inv"].set_invoice_category(inv2, "交通费")
-        assert category_service.resolve_conflict(rb["id"], "invoice")["ok"] is True
+        pending = category_service.resolve_conflict(rb["id"], "invoice")
+        assert pending["ok"] is False and pending["need_invoice"] is True
+        assert category_service.resolve_conflict(
+            rb["id"], "invoice", invoice_id=inv1)["ok"] is True
         rb2 = [x for x in env["reb"].list_reimburses() if x["reimburse_no"] == "CFR1"][0]
         assert rb2["category"] == "交通费"
 
@@ -1020,8 +1030,8 @@ class TestCategoryGovernance:
             ["UMR1", "钱七", "2026-09-10", "2026-09-01", "2026-09-30",
              "办公费", "100.00", "UM0000001", "", ""]]))
         inv_id = _ensure_match(env, "UM0000001", "UMR1")
-        # 一对一：改发票连带同步报销单 -> 两边都是交通费
-        env["inv"].set_invoice_category(inv_id, "交通费")
+        # 一对一：改发票连带同步报销单 -> 两边都是交通费（1:1 需显式确认同步）
+        env["inv"].set_invoice_category(inv_id, "交通费", sync_reimburse=True)
         mid = env["match"].list_matches(["MATCHED", "CONFIRMED"])[0]["id"]
 
         assert env["match"].unmatch(mid)["ok"] is True
@@ -1138,7 +1148,8 @@ class TestCategoryGovernance:
         assert category_service.merge_category(cid, cid)["ok"] is False
         # 合并到系统预设分类
         res = category_service.merge_category(cid, target["id"])
-        assert res["ok"] is True and res["moved"] == 2   # 发票 1 条 + 报销单 1 条（单条修改不学记忆）
+        # 发票 1 条 + 报销单 1 条 + 单条修改产生的明细记忆 1 条
+        assert res["ok"] is True and res["moved"] == 3
         # 源分类已禁用但保留备查
         after = {c["name"]: c for c in category_service.list_categories(include_disabled=True)}
         assert after["研发加班餐"]["enabled"] == 0
@@ -1157,6 +1168,165 @@ class TestCategoryGovernance:
         category_service.toggle_category(c2)  # 禁用
         r3 = category_service.add_category("夜宵餐补", force=True)["id"]
         assert category_service.merge_category(r3, c2)["ok"] is False
+
+    # ------------------------------------------------------------
+    # 终极重构：主从隔离 / 乐观锁 / 冲突原始字段 / 继承持久化
+    # ------------------------------------------------------------
+    def test_one_to_one_requires_explicit_sync_choice(self, env):
+        """1:1 改发票必须先询问；选「否」只改明细并打分类差异。"""
+        env["inv"].import_files([("a.xml", "", xml_invoice(
+            "LOCK1INV01", "100.00", item_name="*餐饮服务*餐饮服务"))])
+        env["reb"].import_excel("r.xlsx", make_excel([
+            ["LOCK1R1", "张三", "2026-09-10", "2026-09-01", "2026-09-30",
+             "办公费", "100.00", "LOCK1INV01", "", ""]]))
+        inv_id = _ensure_match(env, "LOCK1INV01", "LOCK1R1")
+
+        # 未传 sync_reimburse -> 不写入，返回 need_confirm
+        res = env["inv"].set_invoice_category(inv_id, "交通费")
+        assert res["ok"] is False and res["need_confirm"] is True
+        inv = [r for r in env["inv"].list_invoices() if r["id"] == inv_id][0]
+        assert inv["category"] == "办公费"
+
+        # 选择「只改发票」：报销单保持办公费，差异打标
+        res2 = env["inv"].set_invoice_category(inv_id, "交通费", sync_reimburse=False)
+        assert res2["ok"] is True and res2["linked_sync"] is False
+        rb = [x for x in env["reb"].list_reimburses() if x["reimburse_no"] == "LOCK1R1"][0]
+        assert rb["category"] == "办公费" and rb["cat_conflict"] is True
+
+    def test_conflict_ignores_pure_system_inference(self, env):
+        """冲突只认原始人工字段：发票侧纯系统推测不算差异。"""
+        from app.service import category_service
+        env["inv"].import_files([("a.xml", "", xml_invoice(
+            "INFER00001", "100.00", item_name="*餐饮服务*餐饮服务"))])
+        env["reb"].import_excel("r.xlsx", make_excel([
+            ["INFER1", "李四", "2026-09-10", "2026-09-01", "2026-09-30",
+             "办公费", "100.00", "INFER00001", "", ""]]))
+        _ensure_match(env, "INFER00001", "INFER1")
+        with env["db"].read() as conn:
+            rid = env["reimburse_repo"].list(conn)[0]["id"]
+            assert category_service.detect_conflict(conn, rid) is None
+        assert category_service.count_unresolved() == 0
+
+    def test_keep_resolution_survives_recheck(self, env):
+        """「保留差异」是终态：分类未变化时重复检测不得重新打开。"""
+        from app.service import category_service
+        from app.repository.repos import conflict_repo
+        env["inv"].import_files([
+            ("a.xml", "", xml_invoice("KEEP000001", "60.00", item_name="*餐饮服务*餐饮服务")),
+            ("b.xml", "", xml_invoice("KEEP000002", "40.00", item_name="*运输服务*出租车")),
+        ])
+        env["reb"].import_excel("r.xlsx", make_excel([
+            ["KEEPR1", "王五", "2026-09-10", "2026-09-01", "2026-09-30",
+             "办公费", "100.00", "", "", ""]]))
+        rows = env["inv"].list_invoices()
+        with env["db"].read() as conn:
+            rid = env["reimburse_repo"].list(conn)[0]["id"]
+        _seed_many_to_one(env, [r["id"] for r in rows], rid)
+        env["inv"].set_invoice_category(rows[0]["id"], "餐饮费")
+        assert category_service.resolve_conflict(rid, "keep")["ok"] is True
+        with env["db"].tx() as conn:
+            assert category_service.detect_conflict(conn, rid) is not None
+        with env["db"].read() as conn:
+            assert (conflict_repo.get(conn, rid) or {}).get("resolution") == "keep"
+        assert category_service.count_unresolved() == 0
+
+    def test_resolve_invoice_requires_explicit_choice(self, env):
+        """一对多分类不一致时，以发票为准必须指定 invoice_id。"""
+        from app.service import category_service
+        env["inv"].import_files([
+            ("a.xml", "", xml_invoice("PICK000001", "60.00", item_name="*餐饮服务*餐饮服务")),
+            ("b.xml", "", xml_invoice("PICK000002", "40.00", item_name="*运输服务*出租车")),
+        ])
+        env["reb"].import_excel("r.xlsx", make_excel([
+            ["PICKR1", "赵六", "2026-09-10", "2026-09-01", "2026-09-30",
+             "办公费", "100.00", "", "", ""]]))
+        rows = env["inv"].list_invoices()
+        with env["db"].read() as conn:
+            rid = env["reimburse_repo"].list(conn)[0]["id"]
+        _seed_many_to_one(env, [r["id"] for r in rows], rid)
+        env["inv"].set_invoice_category(rows[0]["id"], "餐饮费")
+        env["inv"].set_invoice_category(rows[1]["id"], "交通费")
+
+        r1 = category_service.resolve_conflict(rid, "invoice")
+        assert r1["ok"] is False and r1["need_invoice"] is True
+        assert {x["category"] for x in r1["invoices"]} == {"餐饮费", "交通费"}
+
+        r2 = category_service.resolve_conflict(rid, "invoice", invoice_id=rows[0]["id"])
+        assert r2["ok"] is True
+        rb = [x for x in env["reb"].list_reimburses() if x["reimburse_no"] == "PICKR1"][0]
+        assert rb["category"] == "餐饮费"
+
+    def test_delete_invoice_cascades_conflict(self, env):
+        """删除制造差异的发票后，冲突记录必须被同步收敛。"""
+        from app.service import category_service
+        from app.repository.repos import conflict_repo
+        env["inv"].import_files([
+            ("a.xml", "", xml_invoice("DELC000001", "60.00", item_name="*餐饮服务*餐饮服务")),
+            ("b.xml", "", xml_invoice("DELC000002", "40.00", item_name="*运输服务*出租车")),
+        ])
+        env["reb"].import_excel("r.xlsx", make_excel([
+            ["DELCR1", "孙八", "2026-09-10", "2026-09-01", "2026-09-30",
+             "办公费", "100.00", "", "", ""]]))
+        rows = env["inv"].list_invoices()
+        with env["db"].read() as conn:
+            rid = env["reimburse_repo"].list(conn)[0]["id"]
+        _seed_many_to_one(env, [r["id"] for r in rows], rid)
+        env["inv"].set_invoice_category(rows[0]["id"], "餐饮费")
+        assert category_service.count_unresolved() == 1
+
+        assert env["inv"].delete_invoice(rows[0]["id"])["ok"] is True
+        with env["db"].read() as conn:
+            assert conflict_repo.get(conn, rid) is None
+        assert category_service.count_unresolved() == 0
+
+    def test_manual_match_persists_linked_category(self, env):
+        """主动匹配：报销单无分类时持久化继承唯一发票分类，来源标记 linked。"""
+        env["inv"].import_files([("a.xml", "", xml_invoice(
+            "LINK000001", "100.00", item_name="*餐饮服务*餐饮服务"))])
+        inv_id = env["inv"].list_invoices()[0]["id"]
+        env["inv"].set_invoice_category(inv_id, "差旅费")
+        env["reb"].import_excel("r.xlsx", make_excel([
+            ["LINKR1", "钱七", "2026-09-10", "2026-09-01", "2026-09-30",
+             "", "100.00", "", "", ""]]))
+        with env["db"].read() as conn:
+            rid = env["reimburse_repo"].list(conn)[0]["id"]
+        assert env["match"].manual_match(inv_id, rid)["ok"] is True
+        rb = [x for x in env["reb"].list_reimburses() if x["reimburse_no"] == "LINKR1"][0]
+        assert rb["category"] == "差旅费"
+        assert rb["cat_source"] == "linked" and rb["cat_status"] == "CONFIRMED"
+
+    def test_pending_category_filter_for_dashboard_drill(self, env):
+        """仪表盘黄色提示条下钻：cat_status=pending 只返回系统推测待确认的发票。"""
+        env["inv"].import_files([
+            ("a.xml", "", xml_invoice("PEND000001", "100.00", item_name="*餐饮服务*餐饮服务")),
+            ("b.xml", "", xml_invoice("PEND000002", "200.00", item_name="*运输服务*出租车")),
+        ])
+        rows = env["inv"].list_invoices()
+        env["inv"].set_invoice_category(rows[0]["id"], "餐饮费")
+        pending = env["inv"].list_invoices(cat_status="pending")
+        assert [r["id"] for r in pending] == [rows[1]["id"]]
+        assert env["inv"].count_invoices(cat_status="pending") == 1
+        assert env["inv"].page_of_invoice(rows[1]["id"], cat_status="pending") == 1
+
+    def test_optimistic_lock_rejects_stale_write(self, env):
+        """并发保护：版本号过期时拒绝写入，提示刷新后重试。"""
+        env["inv"].import_files([("a.xml", "", xml_invoice(
+            "VER0000001", "100.00", item_name="*餐饮服务*餐饮服务"))])
+        inv_id = env["inv"].list_invoices()[0]["id"]
+        r1 = env["inv"].set_invoice_category(inv_id, "办公费")
+        assert r1["ok"] is True and r1["version"] == 1
+        r2 = env["inv"].set_invoice_category(inv_id, "交通费", version=0)
+        assert r2["ok"] is False and r2["stale"] is True
+        assert "刷新" in r2["message"]
+
+        env["reb"].import_excel("r.xlsx", make_excel([
+            ["VERR1", "吴十", "2026-09-10", "2026-09-01", "2026-09-30",
+             "", "88.00", "", "", ""]]))
+        rb_id = [x for x in env["reb"].list_reimburses() if x["reimburse_no"] == "VERR1"][0]["id"]
+        b1 = env["inv"].set_reimburse_category(rb_id, "餐饮费")
+        assert b1["ok"] is True
+        b2 = env["inv"].set_reimburse_category(rb_id, "交通费", version=0)
+        assert b2["ok"] is False and b2["stale"] is True
 
 
 # =====================================================================
@@ -1277,6 +1447,227 @@ class TestAmbiguousCandidates:
             audit = conn.execute(
                 "SELECT action, detail FROM audit_log WHERE action='match_arbitrate'").fetchone()
             assert audit is not None and "踢出" in (audit["detail"] or "")
+
+
+# =====================================================================
+# 分类引擎审查回归：11 个隔离边界场景
+# =====================================================================
+class TestCategoryReviewBoundaries:
+
+    @staticmethod
+    def _pair(env, inv_no, reb_no, reb_category="办公费", invoice_category=""):
+        env["inv"].import_files(
+            [("a.xml", "", xml_invoice(inv_no, "100.00"))], skip_match=True)
+        with env["db"].read() as conn:
+            inv = env["invoice_repo"].list(conn)[0]
+        if invoice_category:
+            assert env["inv"].set_invoice_category(inv["id"], invoice_category)["ok"]
+        env["reb"].import_excel("r.xlsx", make_excel([[
+            reb_no, "张三", "2026-09-10", "2026-09-01", "2026-09-30",
+            reb_category, "100.00", inv_no, "", ""]]))
+        with env["db"].read() as conn:
+            reb = env["reimburse_repo"].list(conn)[0]
+            active = env["match_repo"].active_for_invoice(conn, inv["id"])
+        if active is None:
+            assert env["match"].manual_match(inv["id"], reb["id"])["ok"]
+        return inv["id"], reb["id"]
+
+    @staticmethod
+    def _group(env, prefix, categories, reb_category="办公费"):
+        files = [(f"{i}.xml", "", xml_invoice(f"{prefix}{i}", "50.00"))
+                 for i in range(len(categories))]
+        env["inv"].import_files(files, skip_match=True)
+        env["reb"].import_excel("r.xlsx", make_excel([[
+            prefix + "R", "张三", "2026-09-10", "2026-09-01", "2026-09-30",
+            reb_category, str(50 * len(categories)), "", "", ""]]))
+        rows = env["inv"].list_invoices()
+        with env["db"].read() as conn:
+            rid = env["reimburse_repo"].list(conn)[0]["id"]
+        for row, category in zip(rows, categories):
+            if category:
+                assert env["inv"].set_invoice_category(row["id"], category)["ok"]
+        return [r["id"] for r in rows], rid
+
+    def test_review_batch_one_to_one_requires_sync_gate(self, env):
+        iid, rid = self._pair(env, "RVB000001", "RVBR1")
+        assert env["inv"].set_reimburse_category(rid, "办公费")["ok"]
+        with env["db"].read() as conn:
+            before = conn.execute(
+                "SELECT category, version FROM invoice_category WHERE invoice_id = ?",
+                (iid,)).fetchone()
+        result = env["inv"].set_invoices_category([iid], "交通费")
+        assert result["ok"] is False and result["need_confirm"] is True
+        assert str(rid) in result["reimburse_versions"]
+        with env["db"].read() as conn:
+            after = conn.execute(
+                "SELECT category, version FROM invoice_category WHERE invoice_id = ?",
+                (iid,)).fetchone()
+            assert dict(after) == dict(before)
+            assert conn.execute(
+                "SELECT category FROM reimburse_category WHERE reimburse_id = ?",
+                (rid,)).fetchone()["category"] == "办公费"
+
+    def test_review_invoice_arbitration_keeps_remaining_difference(self, env):
+        from app.service import category_service
+        from app.repository.repos import conflict_repo
+        ids, rid = self._group(env, "RVA", ["餐饮费", "交通费"])
+        _seed_many_to_one(env, ids, rid)
+        category_service.recheck_after_commit([rid])
+        result = category_service.resolve_conflict(
+            rid, "invoice", invoice_id=ids[0])
+        assert result["ok"] is True
+        with env["db"].read() as conn:
+            cf = conflict_repo.get(conn, rid)
+            assert cf is not None and "交通费" in cf["detail"]
+        rb = [r for r in env["reb"].list_reimburses() if r["id"] == rid][0]
+        assert rb["category"] == "餐饮费" and rb["cat_conflict"] is True
+
+    def test_review_same_category_group_still_requires_invoice_choice(self, env):
+        from app.service import category_service
+        ids, rid = self._group(env, "RVS", ["餐饮费", "餐饮费"])
+        _seed_many_to_one(env, ids, rid)
+        category_service.recheck_after_commit([rid])
+        result = category_service.resolve_conflict(rid, "invoice")
+        assert result["ok"] is False and result["need_invoice"] is True
+        assert len(result["invoices"]) == 2
+
+    def test_review_quick_fix_rechecks_conflict_when_match_is_lost(self, env):
+        from app.service import category_service
+        from app.repository.repos import conflict_repo
+        iid, rid = self._pair(
+            env, "RVQ000001", "RVQR1", invoice_category="交通费")
+        assert category_service.count_unresolved() == 1
+        with env["db"].read() as conn:
+            mid = env["match_repo"].active_for_invoice(conn, iid)["id"]
+        result = env["match"].quick_fix(match_id=mid, reb_fields={"amount": "120.00"})
+        assert result["ok"] is True and result["status"] != "MATCHED"
+        with env["db"].read() as conn:
+            assert conflict_repo.get(conn, rid) is None
+        assert category_service.count_unresolved() == 0
+
+    def test_review_unmatch_rechecks_remaining_manual_group(self, env):
+        from app.service import category_service
+        from app.repository.repos import conflict_repo
+        ids, rid = self._group(env, "RVU", ["餐饮费", "交通费", "办公费"])
+        result = env["match"].manual_batch_bind(ids, rid)
+        assert result["ok"] is True
+        assert category_service.count_unresolved() == 1
+        with env["db"].read() as conn:
+            mid = env["match_repo"].active_for_invoice(conn, ids[0])["id"]
+        assert env["match"].unmatch(mid)["ok"] is True
+        with env["db"].read() as conn:
+            active = set()
+            for iid in ids[1:]:
+                assert env["match_repo"].active_for_invoice(conn, iid) is not None
+                active.add(iid)
+            assert active == set(ids[1:])
+            assert conflict_repo.get(conn, rid) is not None
+
+    def test_review_auto_match_persists_linked_category(self, env):
+        from app.repository.repos import reimburse_category_repo
+        env["inv"].import_files(
+            [("a.xml", "", xml_invoice("RVL000001", "100.00"))], skip_match=True)
+        iid = env["inv"].list_invoices()[0]["id"]
+        assert env["inv"].set_invoice_category(iid, "差旅费")["ok"]
+        env["reb"].import_excel("r.xlsx", make_excel([[
+            "RVLR1", "张三", "2026-09-10", "2026-09-01", "2026-09-30",
+            "", "100.00", "RVL000001", "", ""]]))
+        with env["db"].read() as conn:
+            rid = env["reimburse_repo"].list(conn)[0]["id"]
+            active = env["match_repo"].active_for_invoice(conn, iid)
+        if active is None:
+            summary = env["match"].run_matching()
+            assert summary["auto_matched"] == 1
+        with env["db"].read() as conn:
+            rc = reimburse_category_repo.get(conn, rid)
+        assert rc["category"] == "差旅费" and rc["source"] == "linked"
+
+    def test_review_auto_match_sync_displays_linked_source(self, env):
+        env["inv"].import_files(
+            [("a.xml", "", xml_invoice("RVD000001", "100.00"))], skip_match=True)
+        iid = env["inv"].list_invoices()[0]["id"]
+        assert env["inv"].set_invoice_category(iid, "餐饮费")["ok"]
+        env["reb"].import_excel("r.xlsx", make_excel([[
+            "RVDR1", "张三", "2026-09-10", "2026-09-01", "2026-09-30",
+            "", "100.00", "RVD000001", "", ""]]))
+        with env["db"].read() as conn:
+            rid = env["reimburse_repo"].list(conn)[0]["id"]
+            active = env["match_repo"].active_for_invoice(conn, iid)
+        if active is None:
+            assert env["match"].run_matching()["auto_matched"] == 1
+        result = env["inv"].set_invoice_category(iid, "差旅费", sync_reimburse=True)
+        assert result["ok"] is True and result["linked_sync"] is True
+        rb = [r for r in env["reb"].list_reimburses()
+              if r["reimburse_no"] == "RVDR1"][0]
+        assert rb["category"] == "差旅费" and rb["cat_source"] == "linked"
+
+    def test_review_deleted_invoice_cannot_be_recategorized(self, env):
+        env["inv"].import_files(
+            [("a.xml", "", xml_invoice("RVX000001", "100.00"))], skip_match=True)
+        iid = env["inv"].list_invoices()[0]["id"]
+        assert env["inv"].set_invoice_category(iid, "餐饮费")["ok"]
+        with env["db"].read() as conn:
+            from app.repository.repos import category_repo
+            version = category_repo.get(conn, iid)["version"]
+        assert env["inv"].delete_invoice(iid)["ok"]
+        result = env["inv"].set_invoice_category(
+            iid, "交通费", version=version, sync_reimburse=False)
+        assert result["ok"] is False and "不存在或已删除" in result["message"]
+
+    def test_review_reimburse_delete_clears_conflict_counter(self, env):
+        from app.service import category_service
+        from app.repository.repos import conflict_repo
+        _, rid = self._pair(
+            env, "RVC000001", "RVCR1", invoice_category="交通费")
+        assert category_service.count_unresolved() == 1
+        assert env["reb"].delete_reimburse(rid)["ok"] is True
+        assert category_service.count_unresolved() == 0
+        with env["db"].read() as conn:
+            assert conflict_repo.get(conn, rid) is None
+
+    def test_review_dictionary_merge_rechecks_and_versions(self, env):
+        from app.service import category_service
+        from app.repository.repos import category_repo, conflict_repo
+        custom_id = category_service.add_category("研发餐补", force=True)["id"]
+        iid, rid = self._pair(
+            env, "RVM000001", "RVMR1", invoice_category="研发餐补")
+        assert category_service.count_unresolved() == 1
+        with env["db"].read() as conn:
+            old_version = category_repo.get(conn, iid)["version"]
+        target_id = {c["name"]: c["id"] for c in category_service.list_categories()}["办公费"]
+        assert category_service.merge_category(custom_id, target_id)["ok"] is True
+        with env["db"].read() as conn:
+            current = category_repo.get(conn, iid)
+            assert current["category"] == "办公费"
+            assert current["version"] == old_version + 1
+            assert conflict_repo.get(conn, rid) is None
+        assert category_service.count_unresolved() == 0
+
+    def test_review_confirm_many_to_one_detects_after_all_siblings(self, env):
+        from app.service import category_service
+        from app.repository.repos import conflict_repo
+        ids, rid = self._group(env, "RVG", ["餐饮费", "交通费"])
+        with env["db"].tx() as conn:
+            conn.execute("DELETE FROM match_pair")
+            conn.execute("DELETE FROM match_result")
+            match_ids = []
+            for iid in ids:
+                mid = env["match_repo"].insert(conn, {
+                    "invoice_id": iid, "reimburse_id": None,
+                    "match_type": "many_to_one", "match_score": 0.9,
+                    "status": "SUSPICIOUS", "diff_fields": [],
+                    "message": "组合确认边界测试"})
+                env["match_repo"].insert_pair(conn, mid, iid, rid)
+                match_ids.append(mid)
+        assert env["match"].confirm(match_ids[0])["ok"] is True
+        with env["db"].read() as conn:
+            for mid in match_ids:
+                assert env["match_repo"].get(conn, mid)["status"] == "CONFIRMED"
+            for iid in ids:
+                assert env["invoice_repo"].get(conn, iid)["status"] == "MATCHED"
+            cf = conflict_repo.get(conn, rid)
+            assert cf is not None and "交通费" in cf["detail"]
+        assert category_service.count_unresolved() == 1
 
 
 # =====================================================================

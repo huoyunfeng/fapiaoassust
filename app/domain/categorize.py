@@ -51,6 +51,7 @@ STANDARD_CATEGORIES = ("餐饮费", "交通费", "差旅费", "办公费", "通�
 
 STATUS_CONFIRMED = "CONFIRMED"   # 已确认（报销单类型 / 人工修正 / 记忆规则）
 STATUS_PENDING = "PENDING"       # 待确认（系统推测，需财务核实）
+STATUS_LEGACY = "LEGACY"         # 历史值：不在当前字典中，保留原文展示并标灰
 
 MISMATCH_HINT = "发票内容与费用类型不匹配"
 
@@ -114,11 +115,34 @@ def similar_categories(name: str, names) -> list:
     return out
 
 
+def known_category(text: str, valid=None) -> str:
+    """把文本匹配到字典中的已有分类；匹配不到返回空串（调用方保留原文）。
+
+    与 normalize_category 的区别：绝不做「发票明细推测」兜底，
+    避免把历史/自由填写的分类静默改写成「其他费用」。
+    """
+    s = (text or "").strip()
+    if not s:
+        return ""
+    names = tuple(valid) if valid else STANDARD_CATEGORIES
+    if s in names:
+        return s
+    for c in names:
+        if c.startswith(s) or s in c:
+            return c
+    stem = _stem(s)
+    for c in names:
+        if _stem(c) == stem:
+            return c
+    return ""
+
+
 def resolve_category(item_summary: str, expense_type: str = "",
                      submitter: str = "", manual_category: str = "",
                      item_memory: dict = None, submitter_memory: dict = None,
                      has_reimburse: bool = False,
-                     reimburse_manual_category: str = "") -> dict:
+                     reimburse_manual_category: str = "",
+                     valid_categories: list = None) -> dict:
     """费用分类决策：报销单（业务实质）> 模板 > 发票（税务凭证）。
 
     优先级：
@@ -153,8 +177,11 @@ def resolve_category(item_summary: str, expense_type: str = "",
         mem = submitter_memory or {}
         if not reb_manual and mem.get("wrong_value") and mem.get("wrong_value") == exp:
             return _out(mem["category"], STATUS_CONFIRMED, "memory")
-        # 自由填写的类型（如项目名/「差旅」）收敛到标准大类，避免图表出现细碎名
-        cat = normalize_category(chosen)
+        # 自由填写的类型（如「差旅」）只做字典近似收敛；匹配不到字典时保留原文并标灰，
+        # 绝不静默改写为「其他费用」，保证历史账目可追溯。
+        cat = known_category(chosen, valid_categories)
+        if not cat:
+            return _out(chosen, STATUS_LEGACY, "reimburse", "", "")
         raw = exp if exp and cat != exp else ""
         # 追加校验：明细与填写类型明显不符时给轻量提示（不拦截）
         hint = "" if (suggested == cat or DEFAULT_CATEGORY in (suggested, cat)) else MISMATCH_HINT

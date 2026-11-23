@@ -1170,6 +1170,8 @@ function openFix(matchId){
   if(!d) return;
   S.fix = {
     id: d.id, invoice_id: d.invoice_id, reimburse_id: d.reimburse_id, status: d.status,
+    category_version: d.category_version ?? 0,
+    reimburse_version: d.reimburse_version ?? 0,
     base: {
       invoice_no: d.invoice_no || '',
       invoice_total: d.invoice_total === null ? '' : String(d.invoice_total),
@@ -1200,8 +1202,18 @@ function openFix(matchId){
 
   const sel = document.getElementById('fixCategory');
   const cats = S.data.categories || [];
-  sel.innerHTML = '<option value="">（保持不变）</option>' +
-    cats.map(c => `<option value="${esc(c)}"${c === d.category ? ' selected' : ''}>${esc(c)}</option>`).join('');
+  sel.replaceChildren();
+  const keep = document.createElement('option');
+  keep.value = '';
+  keep.textContent = '（保持不变）';
+  sel.appendChild(keep);
+  cats.forEach(c => {
+    const option = document.createElement('option');
+    option.value = c;
+    option.textContent = c;
+    option.selected = c === d.category;
+    sel.appendChild(option);
+  });
 
   document.getElementById('fixBg').classList.add('on');
   document.getElementById('fixDrawer').classList.add('on');
@@ -1250,8 +1262,10 @@ function quickCategory(from){
     if(!d.expense_type){ toast('报销单费用类型为空，无法同步', false); return; }
     const sel = document.getElementById('fixCategory');
     if(![...sel.options].find(o => o.value === d.expense_type)){
-      sel.insertAdjacentHTML('beforeend',
-        `<option value="${esc(d.expense_type)}">${esc(d.expense_type)}</option>`);
+      const option = document.createElement('option');
+      option.value = d.expense_type;
+      option.textContent = d.expense_type;
+      sel.appendChild(option);
     }
     sel.value = d.expense_type;
     toast(`发票分类将同步为「${d.expense_type}」`);
@@ -1287,11 +1301,28 @@ async function submitFix(){
   if(rebAmount && rebAmount !== f.base.reb_amount) payload.reb_amount = rebAmount;
   if(rebNo && rebNo !== f.base.reb_invoice_no) payload.reb_invoice_no = rebNo;
   if(rebExpType && rebExpType !== f.base.reb_expense_type) payload.reb_expense_type = rebExpType;
-  if(category) payload.category = category;
+  if(category){
+    payload.category = category;
+    payload.category_version = f.category_version;
+  }
 
   await withLoading(btn, async () => {
     try {
-      const d = await postForm('/api/report/quick-fix', payload);
+      let d = await postForm('/api/report/quick-fix', payload);
+      if(d && d.need_confirm){
+        let msg = d.message || '当前为 1 对 1 匹配，修改发票分类是否同步更新报销单总账？';
+        if(d.reimburse_category) msg += '\n当前总账分类：' + d.reimburse_category;
+        if(d.overwrite_manual) msg += '\n⚠️ 该报销单分类已被人工确认，同步将覆盖人工决策！';
+        const opt = await chooseDlg('主从联动确认', msg, [
+          {v:'sync', label:'是，同步更新总账'},
+          {v:'self', label:'否，只改这张发票', cls:'btn-outline'}]);
+        if(!opt) return;
+        // 首轮只做预检；复用完整载荷，避免二次确认丢失金额、票号或原因字段。
+        payload.sync_reimburse = opt === 'sync' ? 1 : 0;
+        payload.category_version = f.category_version;
+        payload.reimburse_version = d.reimburse_version ?? f.reimburse_version;
+        d = await postForm('/api/report/quick-fix', payload);
+      }
       if(d.__stale){ closeFix(); await handleStale(d); return; }
       if(!d || d.ok === false){
         notice('操作未生效', d.message || '快捷修复失败');

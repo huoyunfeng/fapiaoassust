@@ -147,7 +147,9 @@
       <tr><th>报销单号</th><th>提交人</th><th class="num">发票数</th><th>发票侧分类</th>
           <th>报销单侧分类</th><th>说明</th><th class="center">状态</th><th class="center">处理</th></tr>
       {% for c in conflicts %}
-      <tr id="cf-{{ c.reimburse_id }}">
+      <tr id="cf-{{ c.reimburse_id }}"
+          data-invoice-versions='{{ c.invoice_versions|tojson }}'
+          data-reimburse-version="{{ c.reimburse_version or 0 }}">
         <td>{{ c.reimburse_no }}</td>
         <td class="muted">{{ c.submitter or '—' }}</td>
         <td class="num">{{ c.invoice_count }}</td>
@@ -260,14 +262,54 @@
   if(map[tab]) activateTab(map[tab]);
 })();
 // 分类差异仲裁：reimburse=以报销单为准 / invoice=以发票为准 / keep=保留差异
+async function _postJson(url, fd){
+  try{
+    const r = await fetch(url, {method:'POST', body: fd});
+    const j = await r.json();
+    return (j && j.data) ? j.data : j;
+  }catch(e){ return {ok:false, message:'网络错误：' + e.message}; }
+}
 async function resolveCf(rid, mode){
   const label={reimburse:'以报销单为主（强制拉平明细）', invoice:'以发票为准', keep:'保留差异'}[mode] || mode;
-  if(!await confirmDlg('确认按「' + label + '」处理该分类差异？\n操作将记入审计日志。')) return;
+  const row = document.getElementById('cf-' + rid);
+  let versions = {};
+  try{ versions = JSON.parse((row && row.dataset.invoiceVersions) || '{}'); }
+  catch(e){ toast('分类版本数据无效，请刷新后重试', false); return; }
   const fd=new FormData(); fd.set('mode',mode); fd.set('operator','admin');
-  post(`/api/conflicts/${rid}/resolve`, fd).then(j=>{
-    const d = j.data || j;
+  fd.set('versions', JSON.stringify(versions));
+  const reimburseVersion = row && row.dataset.reimburseVersion;
+  if(reimburseVersion !== null && reimburseVersion !== undefined && reimburseVersion !== '')
+    fd.set('reimburse_version', reimburseVersion);
+  if(mode !== 'invoice'){
+    if(!await confirmDlg('确认按「' + label + '」处理该分类差异？\n操作将记入审计日志。')) return;
+    const d = await _postJson(`/api/conflicts/${rid}/resolve`, fd);
     if(d && d.ok !== false) setTimeout(()=>location.reload(), 700);
-  });
+    else toast((d && d.message) || '操作失败', false);
+    return;
+  }
+  // 以发票为准：一对多且分类不一致时，服务端返回 need_invoice，必须由用户明确选择
+  let d = await _postJson(`/api/conflicts/${rid}/resolve`, fd);
+  if(d && d.need_invoice){
+    const opt = await chooseDlg('选择以哪张发票为准', d.message || '请选择生效的发票分类：',
+      (d.invoices || []).map(x => ({
+        v: String(x.invoice_id),
+        label: (x.invoice_no || ('#' + x.invoice_id)) + '（' + x.category + '）'
+      })));
+    if(!opt) return;
+    fd.set('invoice_id', opt);
+    const picked = (d.invoices || []).find(x => String(x.invoice_id) === opt);
+    if(picked && versions[opt] === undefined){
+      versions[opt] = Number(picked.version) || 0;
+      fd.set('versions', JSON.stringify(versions));
+    }
+    d = await _postJson(`/api/conflicts/${rid}/resolve`, fd);
+  }
+  if(d && d.ok !== false){
+    if(d && d.message) toast(d.message);
+    setTimeout(()=>location.reload(), 700);
+  }else{
+    toast((d && d.message) || '操作失败', false);
+  }
 }
 async function act(action, id, btn, extraNote){
   // 点击即锁定，避免弹窗阶段重复点击

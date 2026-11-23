@@ -140,6 +140,7 @@
 {% elif range_mode == 'all' %}{% set _ = filter_tags.append({'key': 'time', 'text': '时间: 全部时间'}) %}
 {% endif %}
 {% if category %}{% set _ = filter_tags.append({'key': 'category', 'text': '分类: ' ~ category}) %}{% endif %}
+{% if cat_status == 'pending' %}{% set _ = filter_tags.append({'key': 'cat_status', 'text': '待确认分类'}) %}{% endif %}
 
 <div class="card list-card">
   <!-- 搜索区与表格同处一张白底卡片，中间用极细浅灰线分割 -->
@@ -155,6 +156,7 @@
       <input name="q" value="{{ q }}" placeholder="发票号/抬头/摘要关键词" style="flex:1;min-width:220px;">
       {# 保留下钻分类参数，筛选表单提交后不丢失分类过滤 #}
       {% if category %}<input type="hidden" name="category" value="{{ category }}">{% endif %}
+      {% if cat_status %}<input type="hidden" name="cat_status" value="{{ cat_status }}">{% endif %}
       {# 时间范围：按开票日期筛选，支持 7 个快捷选项 + 自定义起止日期 #}
       <select name="range" id="rangeSelect" onchange="toggleCustomDates(this.value)" title="数据时间范围（按开票日期，非导入时间）">
         <option value="all" {% if range_mode == 'all' %}selected{% endif %}>全部时间</option>
@@ -204,6 +206,7 @@
         <div class="col-settings-panel" id="colSettingsPanel" onclick="event.stopPropagation()"></div>
       </div>
       {% if request.state.user.role != 'employee' %}
+      <button class="btn btn-outline btn-sm" id="btnBatchCat" onclick="batchCategory()" disabled>批量确认分类</button>
       <button class="btn btn-danger btn-sm" id="btnBatchDel" onclick="batchDelete()" disabled>批量删除</button>
       {% endif %}
     </div>
@@ -269,6 +272,8 @@
             {%- if i.category_source == 'orphan' -%}未报销 · 系统推测为{{ i.category }}，请点击核实
             {%- else -%}系统根据发票推测为{{ i.category }}，请核实
             {%- endif -%}
+          {%- elif i.category_status == 'LEGACY' -%}
+            历史分类「{{ i.category }}」不在当前字典中，保留原文展示
           {%- else -%}已确认（点击可修改分类）
           {%- endif -%}
           {%- if i.category_raw %}；报销单填写「{{ i.category_raw }}」{% endif -%}
@@ -276,12 +281,13 @@
           {%- if i.category_matched %}；该发票已匹配，修改只改发票分类，不影响报销单{% endif -%}
           {%- if i.category_conflict %}；⚠️ 分类差异：{{ i.category_conflict_detail }}{% endif -%}
         {%- endset -%}
-        <span class="cat-tag {% if i.category_status == 'PENDING' %}pending{% else %}confirmed{% endif %}{% if i.category_source == 'orphan' %} orphan{% endif %}"
+        <span class="cat-tag {% if i.category_status == 'PENDING' %}pending{% elif i.category_status == 'LEGACY' %}legacy{% else %}confirmed{% endif %}{% if i.category_source == 'orphan' %} orphan{% endif %}"
               data-kind="inv" data-id="{{ i.id }}" data-cat="{{ i.category }}"
+              data-version="{{ i.category_version or 0 }}"
               data-matched="{{ '1' if i.category_matched else '0' }}"
               data-suggest="{{ i.category_suggest }}" data-status="{{ i.category_status }}"
               data-source="{{ i.category_source }}" data-hint="{{ i.category_hint or '' }}"
-              title="{{ _tip }}"{% if not is_emp %} onclick="openCatMenu(event, this)"{% endif %}>{{ i.category }}{% if i.category_status == 'PENDING' %}<span class="cat-q">?</span>{% endif %}{% if i.category_hint %}<span class="cat-warn">!</span>{% endif %}{% if i.category_conflict %}<span class="cat-warn-y" title="{{ i.category_conflict_detail }}">⚠</span>{% endif %}</span>
+              title="{{ _tip }}"{% if not is_emp %} onclick="openCatMenu(event, this)"{% endif %}>{% if i.category_status == 'CONFIRMED' %}<span class="cat-ok">✓</span>{% endif %}{{ i.category }}{% if i.category_status == 'PENDING' %}<span class="cat-q">?</span>{% endif %}{% if i.category_hint %}<span class="cat-warn">!</span>{% endif %}{% if i.category_conflict %}<span class="cat-diff" title="{{ i.category_conflict_detail }}">分类差异</span>{% endif %}</span>
         {% elif not i.category_matched %}
         {% if is_emp %}—
         {% else %}<span class="cat-tag orphan" data-kind="inv" data-id="{{ i.id }}" data-cat=""
@@ -487,8 +493,56 @@ function refreshSel(){
   const ids = selectedIds();
   document.getElementById('selInfo').textContent = '已选 ' + ids.length + ' 张';
   document.getElementById('btnBatchDel').disabled = ids.length === 0;
+  const bc = document.getElementById('btnBatchCat');
+  if(bc) bc.disabled = ids.length === 0;
   const all = document.querySelectorAll('.chk-inv');
   document.getElementById('chkAll').checked = all.length > 0 && ids.length === all.length;
+}
+// 批量确认分类：统一走后端预检；1:1 必须由用户明确选择是否同步总账
+function batchCategory(){
+  const ids = selectedIds();
+  if(!ids.length){ toast('请先选择要确认分类的发票', false); return; }
+  const m = document.getElementById('modal');
+  const opts = CAT_STD.map(c => '<option value="' + _escHtml(c) + '">' + _escHtml(c) + '</option>').join('');
+  m.innerHTML = '<h2 style="margin-bottom:10px;">批量确认分类</h2>'
+    + '<p class="muted" style="margin-bottom:12px;">已选 ' + ids.length + ' 张发票。如存在 1:1 匹配，下一步需确认是否同步总账；1:N 只改当前发票明细。</p>'
+    + '<select id="bcSel" style="width:100%;padding:8px;border:1px solid var(--border);border-radius:6px;margin-bottom:16px;">' + opts + '</select>'
+    + '<div style="text-align:right;"><button class="btn btn-outline" id="bcCancel">取消</button> '
+    + '<button class="btn" id="bcOk">确认修改</button></div>';
+  openModal();
+  document.getElementById('bcCancel').onclick = closeModal;
+  document.getElementById('bcOk').onclick = async () => {
+    const cat = document.getElementById('bcSel').value;
+    const verMap = {};
+    ids.forEach(id => {
+      const tag = document.querySelector('#row-' + id + ' .cat-tag[data-kind="inv"]');
+      verMap[id] = parseInt((tag && tag.dataset.version) || '0', 10) || 0;
+    });
+    const fd = new FormData();
+    fd.append('ids', ids.join(','));
+    fd.append('category', cat);
+    fd.append('versions', JSON.stringify(verMap));
+    let d = await _postData('/api/invoices/category/batch', fd);
+    if(d && d.need_confirm){
+      let msg = d.message || '所选发票包含 1 对 1 匹配，是否同步更新对应报销单总账？';
+      if(d.overwrite_manual) msg += '\n⚠️ 部分报销单分类已被人工确认，同步将覆盖人工决策！';
+      const opt = await chooseDlg('主从联动确认', msg, [
+        {v:'sync', label:'是，同步更新总账'},
+        {v:'self', label:'否，只改发票明细', cls:'btn-outline'}]);
+      if(!opt) return;
+      fd.set('sync_reimburse', opt === 'sync' ? '1' : '0');
+      fd.set('reimburse_versions', JSON.stringify(d.reimburse_versions || {}));
+      d = await _postData('/api/invoices/category/batch', fd);
+    }
+    closeModal();
+    if(!d || d.ok === false){
+      toast((d && d.stale) ? '数据已被他人修改，请刷新后重试'
+                           : ((d && d.message) || '批量更新失败'), false);
+      return;
+    }
+    toast(d.message || '批量更新成功');
+    setTimeout(() => location.reload(), 700);
+  };
 }
 function toggleAll(el){
   document.querySelectorAll('.chk-inv').forEach(c=>c.checked = el.checked);
@@ -695,8 +749,9 @@ function removeFilter(which){
     u.searchParams.delete('date_to');
   }
   if(which === 'category') u.searchParams.delete('category');
+  if(which === 'cat_status') u.searchParams.delete('cat_status');
   if(which === 'all'){
-    ['q', 'status', 'category', 'range', 'date_from', 'date_to']
+    ['q', 'status', 'category', 'cat_status', 'range', 'date_from', 'date_to']
       .forEach(k => u.searchParams.delete(k));
   }
   u.searchParams.delete('page');

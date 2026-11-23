@@ -167,12 +167,12 @@ def _write_note(conn, reb_row: dict, notes: Optional[List[str]]) -> None:
         reimburse_repo.update_remark(conn, reb_row["id"], text)
 
 
-def _detect_conflict(conn, reimburse_id: Optional[int]) -> bool:
-    """匹配生效后校验双方分类，不一致则落「分类差异」（模块四）。"""
+def _defer_category_recheck(reimburse_id: Optional[int], inherit: bool = True) -> None:
+    """匹配关系稳定后登记提交后重算；组合确认由调用方在全部兄弟生效后调用。"""
     if reimburse_id is None:
-        return False
-    from app.service import category_service   # 惰性导入，避免服务层循环依赖
-    return category_service.detect_conflict(conn, reimburse_id) is not None
+        return
+    from app.service import category_service
+    category_service.defer_recheck([reimburse_id], inherit=inherit)
 
 
 def _ambiguity_note(tied_ids: List[int], inv_rows: Dict[int, dict], reb_row: dict) -> str:
@@ -222,6 +222,7 @@ def run_matching(operator: str = None, progress=None) -> dict:
         if progress:
             progress(processed, total, phase)
 
+    matched_reimburse_ids = set()
     with db.tx() as conn:
         summary["cleared"] = match_repo.delete_non_active(conn)
         company_tax_nos = company_repo.tax_nos(conn)
@@ -291,8 +292,7 @@ def run_matching(operator: str = None, progress=None) -> dict:
                     available.discard(inv_id)
                     done.add(reb_row["id"])
                     summary["auto_matched"] += 1
-                    if _detect_conflict(conn, reb_row["id"]):
-                        summary["category_conflict"] += 1
+                    matched_reimburse_ids.add(reb_row["id"])
                     _write_note(conn, reb_row, [])
 
                 elif "amount" in ps.conflict_fields:
@@ -467,6 +467,10 @@ def run_matching(operator: str = None, progress=None) -> dict:
         # ---- 收尾：清理本轮被占用后残留的候选，避免出现「点确认必然失败」的行 ----
         summary["cleared"] += match_repo.delete_orphan_candidates(conn)
 
+    if matched_reimburse_ids:
+        from app.service import category_service
+        checked = category_service.recheck_after_commit(matched_reimburse_ids, inherit=True)
+        summary["category_conflict"] = sum(cf is not None for cf in checked.values())
     if progress:
         progress(total, total, "匹配完成")
     logger.info("匹配完成: %s (by %s)", summary, operator)
@@ -578,7 +582,7 @@ def confirm(match_id: int, operator: str = None, note: str = "",
                                                   if m["match_type"] == T_MANY_TO_ONE
                                                   else (reb_row or {}).get("amount")))
             # 匹配生效瞬间校验双方分类（模块四）
-            _detect_conflict(conn, reb_id)
+            _defer_category_recheck(reb_id)
             # 已生效匹配：清掉报销单备注里的不匹配说明
             reb_row = reimburse_repo.get(conn, reb_id)
             if reb_row:
@@ -593,6 +597,7 @@ def confirm(match_id: int, operator: str = None, note: str = "",
             _append_message(conn, sib["id"], "组合匹配：随主记录一并确认闭环")
         # 人工终裁：踢出同发票其他候选 + 同报销单未选中的候选
         _finalize_binding(conn, match_id, m["invoice_id"], reb_id, operator)
+        # 继承与冲突检测由提交后的统一重算完成，确保组合内全部兄弟已生效。
         from app.service import audit_service
         inv = invoice_repo.get(conn, m["invoice_id"]) or {}
         reb = reimburse_repo.get(conn, reb_id) if reb_id else {}
@@ -760,7 +765,7 @@ def auto_correct(match_id: int, operator: str = None) -> dict:
                 (ps.score, f"一键更正：{trail}，重新精确匹配成功", warns, match_id))
             change_invoice_status(conn, m["invoice_id"], "MATCHED",
                                   f"一键更正后精确匹配 (match#{match_id})", operator)
-            _detect_conflict(conn, m["reimburse_id"])
+            _defer_category_recheck(m["reimburse_id"])
             _write_note(conn, reb_row, [])
             from app.service import audit_service
             fix2_detail["changes"].append(
@@ -869,7 +874,7 @@ def manual_match(invoice_id: int, reimburse_id: int, operator: str = None,
                               f"人工指定匹配 (match#{mid})", operator,
                               matched_amount=reb.get("amount"))
         # 匹配生效瞬间校验双方分类（模块四）
-        _detect_conflict(conn, reimburse_id)
+        _defer_category_recheck(reimburse_id)
         # 已生效匹配：清掉报销单备注里的不匹配说明
         reb_row = reimburse_repo.get(conn, reimburse_id)
         if reb_row:
@@ -974,7 +979,7 @@ def manual_batch_bind(invoice_ids: List[int], reimburse_id: int,
             _finalize_binding(conn, mid, inv["id"], reimburse_id, operator)
             match_ids.append(mid)
 
-        _detect_conflict(conn, reimburse_id)
+        _defer_category_recheck(reimburse_id)
         reb_row = reimburse_repo.get(conn, reimburse_id)
         if reb_row:
             _write_note(conn, reb_row, [])
@@ -1091,7 +1096,7 @@ def exempt_match(match_id: int, operator: str = None, reason: str = "") -> dict:
                      (f"临时豁免：{reason.strip()}；原阻断原因：{blocks}", match_id))
         change_invoice_status(conn, m["invoice_id"], "MATCHED",
                               f"临时豁免强制绑定 (match#{match_id})", operator)
-        _detect_conflict(conn, reb_id)
+        _defer_category_recheck(reb_id)
         _write_note(conn, reb, [])
         _finalize_binding(conn, match_id, m["invoice_id"], reb_id, operator)
         from app.service import audit_service
@@ -1119,7 +1124,10 @@ def quick_fix(match_id: int = None, invoice_id: int = None,
               reb_fields: dict = None, category: str = "",
               force_bind: bool = False, operator: str = None,
               reason: str = "", expect_status: str = "",
-              reason_option: str = "", exempt: bool = False) -> dict:
+              reason_option: str = "", exempt: bool = False,
+              sync_reimburse: Optional[bool] = None,
+              category_version: Optional[int] = None,
+              reimburse_version: Optional[int] = None) -> dict:
     """快捷修复：人工干预后的单点重算（不触发全量匹配）。
 
     事务内四步（核心闭环）：
@@ -1194,6 +1202,16 @@ def quick_fix(match_id: int = None, invoice_id: int = None,
             else:
                 parsed_reb[key] = str(raw).strip()
 
+        # 分类与所有字段修改共用预检：确认或版本校验失败时不得留下部分写入。
+        if category:
+            from app.service import invoice_service
+            pre_cat = invoice_service.preflight_invoice_category_conn(
+                conn, invoice_id, category, sync_reimburse=sync_reimburse,
+                version=category_version, reimburse_version=reimburse_version)
+            if not pre_cat.get("ok"):
+                pre_cat.pop("context", None)
+                return pre_cat
+
         # message 摘要用短标签（金额/票号），变更对比表用完整字段名（报销金额/发票号）
         msg_labels = {"invoice_no": "票号", "invoice_code": "发票代码",
                       "invoice_date": "日期", "total_amount": "价税合计",
@@ -1226,9 +1244,16 @@ def quick_fix(match_id: int = None, invoice_id: int = None,
                                     "old": old_v or "空", "new": v})
 
         if category:
-            old_cat = (category_repo.get(conn, invoice_id) or {}).get("category") or ""
+            from app.service import invoice_service
+            res_cat = invoice_service.apply_invoice_category_conn(
+                conn, invoice_id, category, learn=True,
+                sync_reimburse=bool(sync_reimburse),
+                expected_version=category_version,
+                expected_reimburse_version=reimburse_version)
+            if not res_cat.get("ok"):
+                return {"ok": False, "message": res_cat.get("message") or "分类修改失败"}
+            old_cat = res_cat.get("before") or ""
             if old_cat != category:
-                category_repo.upsert(conn, invoice_id, category, "manual")
                 trail.append(f"发票分类: {old_cat or '未分类'} -> {category}")
                 changes.append({"field": "发票分类",
                                 "old": old_cat or "未分类", "new": category})
@@ -1299,7 +1324,6 @@ def quick_fix(match_id: int = None, invoice_id: int = None,
         if new_status == "MATCHED":
             change_invoice_status(conn, invoice_id, "MATCHED",
                                   f"快捷修复后匹配成功 (match#{mid})", operator)
-            _detect_conflict(conn, reimburse_id)
             _write_note(conn, reb, [])
             _finalize_binding(conn, mid, invoice_id, reimburse_id, operator)
         else:
@@ -1308,6 +1332,11 @@ def quick_fix(match_id: int = None, invoice_id: int = None,
                 change_invoice_status(conn, invoice_id, "NORMAL",
                                       f"快捷修复后不再匹配 (match#{mid})", operator)
             _write_note(conn, reb, list(ps.field_notes))
+
+        # 生效、失效以及分类调整都在原事务提交后统一重算；明确“只改发票”时不自动继承。
+        _defer_category_recheck(
+            reimburse_id,
+            inherit=(new_status == "MATCHED" and not (category and sync_reimburse is False)))
 
         from app.service import audit_service
         fix_detail = {
@@ -1380,7 +1409,6 @@ def unmatch(match_id: int, operator: str = None, reason: str = "",
                        .get(m["invoice_id"]) or "")
             detail = ("解除后双方分类各自保留：发票「%s」/ 报销单「%s」"
                       % (inv_cat or "—", reb_cat or "—"))
-            category_service.clear_conflict(conn, reb_id)
 
         match_repo.update_status(conn, match_id, "REJECTED", operator)
         _append_message(conn, match_id, f"解除匹配: {reason or '无备注'}")
@@ -1429,6 +1457,8 @@ def unmatch(match_id: int, operator: str = None, reason: str = "",
                           "已匹配", "已解除", operator,
                           (reason or "无备注") + "；" + detail,
                           detail_json=unm_detail)
+        # 旧单据可能仍有多张生效明细：提交后按最终关系重算，保留剩余真实差异。
+        _defer_category_recheck(reb_id, inherit=False)
         # 资源释放后：同一事务内唤醒因「发票被占用」失败的单据
         # 排除本次被解除的单据自身，避免刚解除就被队列立刻重新占用
         requeue = release_invoices_and_requeue(
@@ -1574,10 +1604,13 @@ def release_invoices_and_requeue(conn, invoice_ids, operator: str,
         if mid is None:
             continue
         consumed[no] = fresh["reimburse_no"] or f"#{rid}"
-        allocated.append({"reimburse_no": fresh["reimburse_no"] or "",
+        allocated.append({"reimburse_id": rid,
+                          "reimburse_no": fresh["reimburse_no"] or "",
                           "invoice_no": no, "match_id": mid})
 
     if allocated:
+        for item in allocated:
+            _defer_category_recheck(item["reimburse_id"])
         logger.info("排队重算完成 %s 张：%s", len(allocated),
                     "、".join(a["reimburse_no"] or "?" for a in allocated))
     return {"released": len(pool), "auto_matched": len(allocated),
@@ -1627,7 +1660,6 @@ def _bind_from_release_pool(conn, invoice_id: int, reb_row: dict,
     change_invoice_status(conn, invoice_id, "MATCHED",
                           f"排队自动匹配 (match#{mid})", operator,
                           matched_amount=reb_row.get("amount"))
-    _detect_conflict(conn, reb_row["id"])
     latest = reimburse_repo.get(conn, reb_row["id"]) or reb_row
     _write_note(conn, latest, [])
     _finalize_binding(conn, mid, invoice_id, reb_row["id"], operator)

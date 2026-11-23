@@ -211,11 +211,13 @@ def _range_bounds(range_: str):
 @pages.get("/invoices", response_class=HTMLResponse)
 def invoices_page(request: Request, status: str = "", q: str = "",
                   category: str = "", date_from: str = "", date_to: str = "",
+                  cat_status: str = "",
                   range_: str = Query("", alias="range"),
                   page: int = 1, page_size: int = 20, focus_id: int = 0):
     # 路由联动语义参数：unmatched 映射为 NORMAL（未匹配发票 = NORMAL 状态）
     if status == "unmatched":
         status = "NORMAL"
+    cat_status = cat_status if cat_status in ("pending",) else ""
     page_size = _norm_page_size(page_size)
     status_f, kw = status or None, q or None
     category_f = category or None
@@ -249,7 +251,8 @@ def invoices_page(request: Request, status: str = "", q: str = "",
     total = invoice_service.count_invoices(status=status_f, keyword=kw,
                                            category=category_f,
                                            date_from=date_from_f, date_to=date_to_f,
-                                           since=None, owner_user_id=owner)
+                                           since=None, owner_user_id=owner,
+                                           cat_status=cat_status)
     # focus 定位：目标行可能不在第 1 页，先算它所在的页码
     if focus_id:
         page = invoice_service.page_of_invoice(focus_id, status_f, kw, page_size,
@@ -257,19 +260,22 @@ def invoices_page(request: Request, status: str = "", q: str = "",
                                                date_from=date_from_f,
                                                date_to=date_to_f,
                                                since=None,
-                                               owner_user_id=owner) or page
+                                               owner_user_id=owner,
+                                               cat_status=cat_status) or page
     pages_n = max(1, (total + page_size - 1) // page_size)
     page = min(max(1, page), pages_n)
     rows = invoice_service.list_invoices(status=status_f, keyword=kw,
                                          category=category_f,
                                          date_from=date_from_f, date_to=date_to_f,
                                          limit=page_size, offset=(page - 1) * page_size,
-                                         since=None, owner_user_id=owner)
+                                         since=None, owner_user_id=owner,
+                                         cat_status=cat_status)
     _attach_risk(rows)
     return templates.TemplateResponse(request, "invoices.html", {
         "request": request, "rows": rows,
         "status": status, "q": q,
-        "category": category, "date_from": date_from_f or "", "date_to": date_to_f or "",
+        "category": category, "cat_status": cat_status,
+        "date_from": date_from_f or "", "date_to": date_to_f or "",
         "range_mode": range_mode,
         "categories": category_service.enabled_names(),
         "counts": invoice_service.invoice_status_counts(owner_user_id=owner),
@@ -637,7 +643,12 @@ def _category_payload(row: dict) -> dict:
     inv_cat = row.get("cat_invoice_category") or ""
     conflict = bool(row.get("cat_conflict"))
     detail = row.get("cat_conflict_detail") or ""
+    source = row.get("cat_source") or ""
     tips = []
+    if source == "linked":
+        tips.append("由关联发票继承而来（source=linked）")
+    elif source == "legacy":
+        tips.append("历史分类不在当前字典中，保留原文展示")
     if matched:
         tips.append("该报销单已匹配发票；修改分类将无条件同步所有关联发票（主从联动）")
         if inv_cat:
@@ -649,7 +660,8 @@ def _category_payload(row: dict) -> dict:
     return {
         "category": category,
         "status": row.get("cat_status") or "",
-        "source": row.get("cat_source") or "",
+        "source": source,
+        "version": int(row.get("cat_version") or 0),
         "suggest": suggest,
         "hint": hint,
         "invoice_id": row.get("cat_invoice_id"),

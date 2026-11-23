@@ -43,6 +43,42 @@ def _stale(err) -> JSONResponse:
                         content={"ok": False, "code": "STALE", "message": err.message})
 
 
+def _version_map(raw: str, field: str = "versions") -> dict:
+    """严格解析 id->非负整数版本映射，非法结构不得静默降级为空映射。"""
+    try:
+        data = json.loads(raw or "{}")
+        if not isinstance(data, dict):
+            raise ValueError
+        result = {}
+        for key, value in data.items():
+            key_text, value_text = str(key).strip(), str(value).strip()
+            if (not key_text.isdigit() or isinstance(value, bool)
+                    or not value_text.isdigit()):
+                raise ValueError
+            result[int(key_text)] = int(value_text)
+        return result
+    except (json.JSONDecodeError, TypeError, ValueError):
+        raise ValueError(f"{field} 必须是合法的 id->版本 JSON")
+
+
+def _sync_flag(raw: str) -> Optional[bool]:
+    text = str(raw or "").strip()
+    if text == "":
+        return None
+    if text not in ("0", "1"):
+        raise ValueError("sync_reimburse 只能为空、0 或 1")
+    return text == "1"
+
+
+def _optional_version(raw: str, field: str) -> Optional[int]:
+    text = str(raw or "").strip()
+    if text == "":
+        return None
+    if not text.isdigit():
+        raise ValueError(f"{field} 必须是非负整数")
+    return int(text)
+
+
 # ---------------------------------------------------------------- 发票
 @api.post("/invoices/upload")
 async def upload_invoices(request: Request, files: List[UploadFile] = File(...),
@@ -163,9 +199,20 @@ async def update_item_summary(invoice_id: int, item_summary: str = Form(""),
 
 @api.post("/invoices/{invoice_id}/category")
 async def set_invoice_category(invoice_id: int, category: str = Form(""),
-                               operator: str = Form("admin")):
-    """确认/修正发票的费用分类（人工决策最高优先，并学习纠正记忆）。"""
-    return _j(invoice_service.set_invoice_category(invoice_id, category, operator))
+                               operator: str = Form("admin"),
+                               sync_reimburse: str = Form(""),
+                               version: str = Form(""),
+                               reimburse_version: str = Form("")):
+    """确认/修正发票费用分类（人工决策最高优先）。
+
+    sync_reimburse: 空=1:1 时返回 need_confirm 让前端询问；1=同步总账；0=只改明细。
+    version: 乐观锁版本（列表渲染时下发），过期返回 stale 提示。
+    """
+    sync = None if sync_reimburse == "" else bool(int(sync_reimburse or 0))
+    ver = int(version) if str(version).strip().isdigit() else None
+    rver = int(reimburse_version) if str(reimburse_version).strip().isdigit() else None
+    return _j(invoice_service.set_invoice_category(
+        invoice_id, category, operator, sync, ver, rver))
 
 
 @api.get("/invoices/{invoice_id}/similar")
@@ -178,10 +225,34 @@ def similar_unmatched_invoices(request: Request, invoice_id: int):
 
 @api.post("/invoices/category/batch")
 async def batch_invoice_category(ids: str = Form(""), category: str = Form(""),
-                                 operator: str = Form("admin")):
-    """批量修改发票分类：只作用于未匹配发票（模块二）。"""
+                                 operator: str = Form("admin"),
+                                 versions: str = Form(""),
+                                 sync_reimburse: str = Form(""),
+                                 reimburse_versions: str = Form("")):
+    """批量修改发票分类；空 sync 为预检，0/1 为确认后的明确选择。"""
     invoice_ids = [int(x) for x in ids.split(",") if x.strip().isdigit()]
-    return _j(invoice_service.set_invoices_category(invoice_ids, category, operator))
+    try:
+        ver_map = _version_map(versions)
+        reb_ver_map = _version_map(reimburse_versions, "reimburse_versions")
+        sync = _sync_flag(sync_reimburse)
+    except ValueError as e:
+        return _j({"ok": False, "message": str(e)})
+    return _j(invoice_service.set_invoices_category(
+        invoice_ids, category, operator, ver_map,
+        sync_reimburse=sync, reimburse_versions=reb_ver_map))
+
+
+@api.post("/reimburses/category/batch")
+async def batch_reimburse_category(ids: str = Form(""), category: str = Form(""),
+                                   operator: str = Form("admin"),
+                                   versions: str = Form("")):
+    """批量确认报销单分类（同步全部关联发票，不学习记忆）。"""
+    rid_list = [int(x) for x in ids.split(",") if x.strip().isdigit()]
+    try:
+        ver_map = {int(k): int(v) for k, v in (json.loads(versions or "{}") or {}).items()}
+    except (ValueError, TypeError, json.JSONDecodeError):
+        return _j({"ok": False, "message": "versions 必须是合法的 id->版本 JSON"})
+    return _j(invoice_service.set_reimburses_category(rid_list, category, operator, ver_map))
 
 
 @api.post("/invoices/{invoice_id}/delete")
@@ -364,13 +435,16 @@ async def manual_reimburse(
 @api.post("/reimburses/{reimburse_id}/category")
 async def set_reimburse_category(reimburse_id: int, category: str = Form(""),
                                  operator: str = Form("admin"),
-                                 mode: str = Form("sync")):
+                                 mode: str = Form("sync"),
+                                 version: str = Form("")):
     """报销单费用类型。
 
-    未匹配：只改报销单自身分类，绝不影响发票（模块二）；
-    已匹配：mode='self' 仅改报销单 / mode='sync' 同步全部关联发票（模块三）。
+    未匹配：只改报销单自身分类，绝不影响发票；
+    已匹配：强制同步全部关联发票（主从法则）；version 为乐观锁版本。
     """
-    return _j(invoice_service.set_reimburse_category(reimburse_id, category, operator, mode))
+    ver = int(version) if str(version).strip().isdigit() else None
+    return _j(invoice_service.set_reimburse_category(
+        reimburse_id, category, operator, mode, ver))
 
 
 @api.post("/reimburses/{reimburse_id}/delete")
@@ -631,8 +705,16 @@ async def report_quick_fix(
     category: str = Form(""), force_bind: int = Form(0),
     operator: str = Form("admin"), reason: str = Form(""),
     expect_status: str = Form(""), reason_option: str = Form(""),
+    sync_reimburse: str = Form(""), category_version: str = Form(""),
+    reimburse_version: str = Form(""),
 ):
     """快捷修复：单点重匹配（改金额/补票号/改分类/强制绑定）。"""
+    try:
+        sync = _sync_flag(sync_reimburse)
+        cat_ver = _optional_version(category_version, "category_version")
+        reb_ver = _optional_version(reimburse_version, "reimburse_version")
+    except ValueError as e:
+        return _j({"ok": False, "message": str(e)})
     inv_fields, reb_fields = {}, {}
     if invoice_no.strip():
         inv_fields["invoice_no"] = invoice_no.strip()
@@ -650,7 +732,8 @@ async def report_quick_fix(
             inv_fields=inv_fields, reb_fields=reb_fields,
             category=category.strip(), force_bind=bool(force_bind),
             operator=operator, reason=reason, expect_status=expect_status,
-            reason_option=reason_option))
+            reason_option=reason_option, sync_reimburse=sync,
+            category_version=cat_ver, reimburse_version=reb_ver))
     except match_service.StaleError as e:
         return _stale(e)
     except InvalidTransition as e:
@@ -818,9 +901,23 @@ def list_conflicts(include_resolved: int = 1):
 
 @api.post("/conflicts/{reimburse_id}/resolve")
 async def resolve_conflict(reimburse_id: int, mode: str = Form(...),
-                           operator: str = Form("admin")):
-    """冲突仲裁：reimburse=以报销单为准 / invoice=以发票为准 / keep=保留差异。"""
-    return _j(category_service.resolve_conflict(reimburse_id, mode, operator))
+                           invoice_id: str = Form(""),
+                           operator: str = Form("admin"),
+                           versions: str = Form(""),
+                           reimburse_version: str = Form("")):
+    """冲突仲裁：reimburse=以报销单为准 / invoice=以发票为准 / keep=保留差异。
+
+    一对多且发票分类不一致时，invoice 模式必须携带 invoice_id 明确指定。
+    """
+    iid = int(invoice_id) if str(invoice_id).strip().isdigit() else None
+    try:
+        ver_map = _version_map(versions)
+        rver = _optional_version(reimburse_version, "reimburse_version")
+    except ValueError as e:
+        return _j({"ok": False, "message": str(e)})
+    return _j(category_service.resolve_conflict(
+        reimburse_id, mode, operator, iid,
+        versions=ver_map, reimburse_version=rver))
 
 
 # ---------------------------------------------------------------- 审计日志（模块六）

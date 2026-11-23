@@ -355,6 +355,7 @@ select:disabled,input:disabled{background:#f5f6f8;color:#a8adb5;cursor:not-allow
         <button class="btn btn-outline btn-sm" type="button" onclick="toggleRebColPanel(event)" title="选择要显示的列">⚙ 列设置</button>
         <div class="col-settings-panel" id="colSettingsPanel" onclick="event.stopPropagation()"></div>
       </div>
+      <button class="btn btn-outline btn-sm" id="btnBatchCat" type="button" onclick="batchRebCategory()" disabled>批量确认分类</button>
       <button class="btn btn-outline btn-sm" id="btnBatchExp" type="button" disabled>导出 Excel</button>
       <button class="btn btn-danger btn-sm" id="btnBatchDel" onclick="batchDelete()" disabled>批量删除</button>
     </div>
@@ -369,6 +370,7 @@ select:disabled,input:disabled{background:#f5f6f8;color:#a8adb5;cursor:not-allow
       </colgroup>
       <thead>
         <tr>
+          <th class="col-check" style="width:36px;"><input type="checkbox" onchange="toggleRebAll(this)" title="全选"></th>
           {% for c in columns %}<th class="col-c{{ loop.index0 }} al-{{ c.align or 'center' }}{% if c.key == 'amount' %} num{% elif c.key == '_seq' %} col-seq{% endif %}">{{ c.label }}</th>{% endfor %}
           <th class="col-state">状态</th><th class="col-action">操作</th>
         </tr>
@@ -376,6 +378,7 @@ select:disabled,input:disabled{background:#f5f6f8;color:#a8adb5;cursor:not-allow
       <tbody>
         {% for r in group_rows %}
         <tr id="row-{{ r.id }}"{% if not r.matched %} class="row-unmatched"{% endif %}>
+          <td class="col-check" style="text-align:center;" onclick="event.stopPropagation()"><input type="checkbox" class="chk-reb" value="{{ r.id }}" onchange="refreshRebSel()"></td>
           {% for c in columns %}
           {% set cell = r.cells[loop.index0] %}
           <td class="col-c{{ loop.index0 }} al-{{ c.align or 'center' }}{% if c.key == '_seq' %} cell-seq{% elif c.key == 'reimburse_no' %} cell-reimburse-no{% elif cell.amount %} cell-amount{% elif cell.long %} cell-long{% elif cell.cat is defined %} cell-cat{% endif %}"{% if cell.text %} title="{{ cell.text }}"{% endif %}>
@@ -383,12 +386,13 @@ select:disabled,input:disabled{background:#f5f6f8;color:#a8adb5;cursor:not-allow
             {%- elif cell.long -%}<span class="text-ellipsis">{{ cell.text }}</span>
             {%- elif cell.cat is defined -%}
               {%- if cell.cat.category -%}
-              <span class="cat-tag {% if cell.cat.status == 'PENDING' %}pending{% else %}confirmed{% endif %}"
+              <span class="cat-tag {% if cell.cat.status == 'PENDING' %}pending{% elif cell.cat.status == 'LEGACY' %}legacy{% else %}confirmed{% endif %}{% if cell.cat.source == 'linked' %} linked{% endif %}"
                     data-kind="reb" data-id="{{ cell.cat.reimburse_id }}" data-cat="{{ cell.cat.category }}"
+                    data-version="{{ cell.cat.version or 0 }}"
                     data-matched="{{ '1' if cell.cat.matched else '0' }}"
                     data-suggest="{{ cell.cat.suggest or '' }}" data-status="{{ cell.cat.status }}"
                     data-source="{{ cell.cat.source }}" data-hint="{{ cell.cat.hint or '' }}"
-                    title="{{ cell.cat.tip }}" onclick="openCatMenu(event, this)">{{ cell.cat.category }}{% if cell.cat.conflict %}<span class="cat-warn-y" title="{{ cell.cat.conflict_detail }}">⚠</span>{% endif %}</span>
+                    title="{{ cell.cat.tip }}" onclick="openCatMenu(event, this)">{% if cell.cat.status == 'CONFIRMED' %}<span class="cat-ok">✓</span>{% endif %}{{ cell.cat.category }}{% if cell.cat.status == 'PENDING' %}<span class="cat-q">?</span>{% endif %}{% if cell.cat.conflict %}<span class="cat-diff" title="{{ cell.cat.conflict_detail }}">分类差异</span>{% endif %}</span>
               {%- else -%}
               <span class="cat-tag orphan" data-kind="reb" data-id="{{ cell.cat.reimburse_id }}" data-cat=""
                     data-matched="{{ '1' if cell.cat.matched else '0' }}" data-status=""
@@ -765,6 +769,50 @@ function resetFilterForm(){
 
 /* ===== 批量删除占位（后续有复选框时启用） ===== */
 function batchDelete(){ toast('批量删除功能暂未开放', 'warn'); }
+
+/* ===== 批量确认分类：勾选多条后统一修改（主从联动 + 不学习记忆） ===== */
+function selectedRebIds(){
+  return [...document.querySelectorAll('.chk-reb:checked')].map(c => c.value);
+}
+function refreshRebSel(){
+  const ids = selectedRebIds();
+  const info = document.getElementById('selInfo');
+  if(info) info.textContent = '已选 ' + ids.length + ' 条';
+  const btn = document.getElementById('btnBatchCat');
+  if(btn) btn.disabled = ids.length === 0;
+}
+function toggleRebAll(el){
+  // 全部数据视图会按批次渲染多张表，全选仅作用于当前批次/当前表格。
+  const scope = el.closest('.batch-group') || el.closest('.table-scroll') || el.closest('table');
+  if(!scope) return;
+  scope.querySelectorAll('.chk-reb').forEach(c => { c.checked = el.checked; });
+  refreshRebSel();
+}
+async function batchRebCategory(){
+  const ids = selectedRebIds();
+  if(!ids.length){ toast('请先选择要确认分类的报销单', false); return; }
+  const opt = await chooseDlg('批量确认分类',
+    '已选 ' + ids.length + ' 条报销单。已匹配的报销单会强制同步其全部关联发票（主从联动），批量操作不写入 AI 记忆。',
+    CAT_STD.map(c => ({v: c, label: c})));
+  if(!opt) return;
+  const verMap = {};
+  ids.forEach(id => {
+    const tag = document.querySelector('#row-' + id + ' .cat-tag[data-kind="reb"]');
+    verMap[id] = parseInt((tag && tag.dataset.version) || '0', 10) || 0;
+  });
+  const fd = new FormData();
+  fd.append('ids', ids.join(','));
+  fd.append('category', opt);
+  fd.append('versions', JSON.stringify(verMap));
+  const d = await _postData('/api/reimburses/category/batch', fd);
+  if(!d || d.ok === false){
+    toast((d && d.stale) ? '数据已被他人修改，请刷新后重试'
+                         : ((d && d.message) || '批量更新失败'), false);
+    return;
+  }
+  toast(d.message || '批量更新成功');
+  setTimeout(() => location.reload(), 700);
+}
 
 let currentTemplates = [];
 let wizState = { mode:'template', templateId:null, file:null, headerRow:1,

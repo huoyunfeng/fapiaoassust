@@ -8,8 +8,8 @@ from app.domain.features import reimburse_features
 from app.domain.normalize import to_decimal
 from app.infra.excel import export_report, export_report_stream
 from app.repository import db
-from app.repository.repos import (category_dict_repo, invoice_repo,
-                                  match_repo, reimburse_repo)
+from app.repository.repos import (category_dict_repo, category_repo, invoice_repo,
+                                  match_repo, reimburse_category_repo, reimburse_repo)
 
 from app.service.invoice_service import _raw_json, resolve_categories  # 复用解析与统一分类口径
 
@@ -154,14 +154,17 @@ def _traffic_of(row: dict) -> dict:
     return raw.get("traffic") or {}
 
 
-def _detail_payload(d: dict, cat_map: Dict[int, str]) -> dict:
+def _detail_payload(d: dict, cat_map: Dict[int, str],
+                    invoice_versions: Dict[int, int] = None,
+                    reimburse_versions: Dict[int, int] = None) -> dict:
     m, reb = d["match"], d.get("reimburse")
     feat = _reb_features(reb)
     traffic = _traffic_of(m)
+    reb_id = reb["id"] if reb else m.get("reimburse_id")
     return {
         "id": m["id"],
         "invoice_id": m["invoice_id"],
-        "reimburse_id": reb["id"] if reb else m.get("reimburse_id"),
+        "reimburse_id": reb_id,
         "status": m["status"],
         "match_type": m["match_type"],
         "score": m["match_score"],
@@ -176,6 +179,8 @@ def _detail_payload(d: dict, cat_map: Dict[int, str]) -> dict:
         "amount_diff": _num(d.get("amount_diff")),
         "message": m.get("message") or "",
         "category": cat_map.get(m["invoice_id"], ""),
+        "category_version": int((invoice_versions or {}).get(m["invoice_id"], 0) or 0),
+        "reimburse_version": int((reimburse_versions or {}).get(reb_id, 0) or 0),
         "created_at": m.get("created_at") or "",
         "pending": _is_pending_detail(d),
         "active": m["status"] in ("MATCHED", "CONFIRMED"),
@@ -232,7 +237,14 @@ def compare_payload(match_id: int) -> Optional[dict]:
             pairs = match_repo.pairs_of(conn, [match_id]).get(match_id, [])
             reb_id = pairs[0]["reimburse_id"] if pairs else None
         reb = reimburse_repo.get(conn, reb_id) if reb_id else None
-        current = _invoice_view(invoice_repo.get(conn, m["invoice_id"]), m)
+        if reb is not None and reb.get("deleted_at"):
+            reb, reb_id = None, None
+        inv = invoice_repo.get(conn, m["invoice_id"])
+        if inv is None or inv.get("deleted_at"):
+            return None
+        current = _invoice_view(inv, m)
+        inv_category = category_repo.get(conn, m["invoice_id"]) or {}
+        current["category_version"] = int(inv_category.get("version") or 0)
 
         candidates: List[dict] = []
         if reb_id:
@@ -242,9 +254,18 @@ def compare_payload(match_id: int) -> Optional[dict]:
                 "ORDER BY match_score DESC, id ASC", (reb_id,)).fetchall()
             for r in rows:
                 cm = match_repo.get(conn, r["id"])
-                candidates.append(_invoice_view(invoice_repo.get(conn, cm["invoice_id"]), cm))
+                if cm is None:
+                    continue
+                candidate_inv = invoice_repo.get(conn, cm["invoice_id"])
+                if candidate_inv is None or candidate_inv.get("deleted_at"):
+                    continue
+                candidate = _invoice_view(candidate_inv, cm)
+                candidate_category = category_repo.get(conn, cm["invoice_id"]) or {}
+                candidate["category_version"] = int(candidate_category.get("version") or 0)
+                candidates.append(candidate)
         if not candidates:
             candidates = [current]
+        reb_category = reimburse_category_repo.get(conn, reb_id) or {} if reb_id else {}
 
     feat = _reb_features(reb)
     reb = reb or {}
@@ -262,6 +283,7 @@ def compare_payload(match_id: int) -> Optional[dict]:
             "origin": feat["origin"],
             "destination": feat["destination"],
             "invoice_no": reb.get("invoice_no") or "",
+            "category_version": int(reb_category.get("version") or 0),
         },
         "invoice": current,
         "candidates": candidates,
@@ -286,7 +308,15 @@ def _sorted_details(report: dict) -> List[dict]:
         cat_map = {iid: (r.get("category") or "")
                    for iid, r in resolve_categories(conn, inv_ids).items()
                    if (r.get("status") or "") == STATUS_CONFIRMED}
-    rows = [_detail_payload(d, cat_map) for d in report["details"]]
+        invoice_versions = {
+            iid: int((row or {}).get("version") or 0)
+            for iid, row in category_repo.decisions(conn, inv_ids).items()}
+        reb_ids = [d["reimburse"]["id"] for d in report["details"] if d.get("reimburse")]
+        reimburse_versions = {
+            rid: int((row or {}).get("version") or 0)
+            for rid, row in reimburse_category_repo.decisions(conn, reb_ids).items()}
+    rows = [_detail_payload(d, cat_map, invoice_versions, reimburse_versions)
+            for d in report["details"]]
     rows.sort(key=lambda r: (r["created_at"] or "", r["id"]), reverse=True)
     rows.sort(key=lambda r: 0 if r["pending"] else 1)
     return rows

@@ -13,7 +13,8 @@ import json
 import sqlite3
 import threading
 from contextlib import contextmanager
-from typing import Iterator
+from contextvars import ContextVar
+from typing import Callable, Iterator
 
 from app.config import settings
 from app.infra.logger import get_logger
@@ -24,6 +25,7 @@ logger = get_logger(__name__)
 # 供 dispose() 在数据恢复前强制断连
 _open_conns: "set[sqlite3.Connection]" = set()
 _open_conns_lock = threading.Lock()
+_after_commit_callbacks: ContextVar = ContextVar("after_commit_callbacks", default=None)
 
 # 规则表 DDL（独立常量：旧库迁移重建时复用，避免两处定义漂移）
 RULE_DDL = """CREATE TABLE IF NOT EXISTS rule (
@@ -95,6 +97,7 @@ CREATE TABLE IF NOT EXISTS invoice_category (
     invoice_id INTEGER PRIMARY KEY,
     category   TEXT NOT NULL,
     source     TEXT NOT NULL DEFAULT 'manual',
+    version    INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
     FOREIGN KEY(invoice_id) REFERENCES invoice(id) ON DELETE CASCADE
@@ -286,6 +289,7 @@ CREATE TABLE IF NOT EXISTS reimburse_category (
     reimburse_id INTEGER PRIMARY KEY,
     category     TEXT NOT NULL,
     source       TEXT NOT NULL DEFAULT 'manual',
+    version      INTEGER NOT NULL DEFAULT 0,
     created_at   TEXT NOT NULL DEFAULT (datetime('now','localtime')),
     updated_at   TEXT NOT NULL DEFAULT (datetime('now','localtime')),
     FOREIGN KEY(reimburse_id) REFERENCES reimburse(id) ON DELETE CASCADE
@@ -405,14 +409,26 @@ def dispose() -> int:
     return n
 
 
+def after_commit(callback: Callable[[], None]) -> None:
+    """登记仅在当前事务成功提交后执行的回调；回滚时自动丢弃。"""
+    callbacks = _after_commit_callbacks.get()
+    if callbacks is None:
+        raise RuntimeError("after_commit 只能在 db.tx() 内调用")
+    callbacks.append(callback)
+
+
 @contextmanager
 def tx() -> Iterator[sqlite3.Connection]:
-    """事务上下文（不变量 I9: 所有写操作在事务内）。"""
+    """事务上下文（不变量 I9）；提交回调在原连接提交并关闭后执行。"""
     conn = connect()
+    callbacks = []
+    token = _after_commit_callbacks.set(callbacks)
+    committed = False
     try:
         conn.execute("BEGIN IMMEDIATE")
         yield conn
         conn.commit()
+        committed = True
     except Exception:
         conn.rollback()
         raise
@@ -420,6 +436,10 @@ def tx() -> Iterator[sqlite3.Connection]:
         conn.close()
         with _open_conns_lock:
             _open_conns.discard(conn)
+        _after_commit_callbacks.reset(token)
+    if committed:
+        for callback in callbacks:
+            callback()
 
 
 @contextmanager
@@ -506,7 +526,14 @@ def _migrate(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_invoice_owner ON invoice(owner_user_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_reimburse_owner ON reimburse(owner_user_id)")
 
-    # 1a1c. 账号表：强制改密标记（旧库补充列）
+    # 1a1d. 分类决策乐观锁：旧库补充 version 列（并发修改防护）
+    for table in ("invoice_category", "reimburse_category"):
+        tcols = {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        if "version" not in tcols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN version INTEGER NOT NULL DEFAULT 0")
+            logger.info("迁移: %s 表新增列 version", table)
+
+    # 1a2. 账号表：强制改密标记（旧库补充列）
     ucols = {r[1] for r in conn.execute("PRAGMA table_info(app_user)").fetchall()}
     if "must_change_pwd" not in ucols:
         conn.execute("ALTER TABLE app_user ADD COLUMN must_change_pwd INTEGER NOT NULL DEFAULT 0")

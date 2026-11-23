@@ -1835,13 +1835,14 @@ async function renameCat(id, name){
 }
 async function mergeCat(id, name){
   const opts = (CAT_LIST || []).filter(c => c.id !== id && c.enabled)
-    .map(c => '<option value="' + c.id + '">' + c.name + (c.is_builtin ? '（系统预设）' : '（自定义）') + '</option>').join('');
+    .map(c => '<option value="' + _escHtml(c.id) + '">' + _escHtml(c.name) + (c.is_builtin ? '（系统预设）' : '（自定义）') + '</option>').join('');
   if(!opts){ toast('没有可合并的目标分类', false); return; }
+  const safeName = _escHtml(name);
   const tid = await new Promise(resolve => {
     const m = document.getElementById('modal');
-    m.innerHTML = '<h2 style="margin-bottom:10px;font-size:16px;">合并分类「' + name + '」</h2>'
+    m.innerHTML = '<h2 style="margin-bottom:10px;font-size:16px;">合并分类「' + safeName + '」</h2>'
       + '<p style="margin-bottom:12px;line-height:1.7;color:#92400e;background:#fef3c7;border:1px solid #fcd34d;padding:8px 10px;border-radius:6px;">'
-      + '风险提示：合并后，所有历史发票/报销单中的「' + name + '」将全部改为目标分类，'
+      + '风险提示：合并后，所有历史发票/报销单中的「' + safeName + '」将全部改为目标分类，'
       + '原分类随即被禁用（保留备查，历史显示不受影响）。此操作会记入审计日志。</p>'
       + '<label style="font-size:13px;">合并到：</label>'
       + '<select id="mgTarget" style="width:100%;padding:8px;margin-top:4px;">' + opts + '</select>'
