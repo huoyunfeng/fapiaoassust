@@ -272,12 +272,20 @@ class InvoiceRepo:
             f"WHERE id IN ({marks})", list(ids))
         return cur.rowcount
 
-    def list_deleted(self, conn: sqlite3.Connection, limit: int = 500) -> List[dict]:
+    def list_deleted(self, conn: sqlite3.Connection, limit: int = 500,
+                     offset: int = 0) -> List[dict]:
         """回收站：已软删除的发票（按删除时间倒序）。"""
         rows = conn.execute(
             "SELECT * FROM invoice WHERE deleted_at IS NOT NULL "
-            "ORDER BY deleted_at DESC, id DESC LIMIT ?", (limit,)).fetchall()
+            "ORDER BY deleted_at DESC, id DESC LIMIT ? OFFSET ?",
+            (limit, offset)).fetchall()
         return _rows_to_dicts(rows)
+
+    def count_deleted(self, conn: sqlite3.Connection) -> int:
+        """回收站发票总数（分页用）。"""
+        return conn.execute(
+            "SELECT COUNT(*) AS n FROM invoice WHERE deleted_at IS NOT NULL"
+        ).fetchone()["n"]
 
     def deleted_before(self, conn: sqlite3.Connection, cutoff: str) -> List[dict]:
         """回收站中删除时间早于 cutoff 的发票（自动清理用）。"""
@@ -562,12 +570,20 @@ class ReimburseRepo:
             f"UPDATE reimburse SET deleted_at = NULL WHERE id IN ({marks})", list(ids))
         return cur.rowcount
 
-    def list_deleted(self, conn: sqlite3.Connection, limit: int = 500) -> List[dict]:
+    def list_deleted(self, conn: sqlite3.Connection, limit: int = 500,
+                     offset: int = 0) -> List[dict]:
         """回收站：已软删除的报销单（按删除时间倒序）。"""
         rows = conn.execute(
             "SELECT * FROM reimburse WHERE deleted_at IS NOT NULL "
-            "ORDER BY deleted_at DESC, id DESC LIMIT ?", (limit,)).fetchall()
+            "ORDER BY deleted_at DESC, id DESC LIMIT ? OFFSET ?",
+            (limit, offset)).fetchall()
         return [self._to_dict(r) for r in rows]
+
+    def count_deleted(self, conn: sqlite3.Connection) -> int:
+        """回收站报销单总数（分页用）。"""
+        return conn.execute(
+            "SELECT COUNT(*) AS n FROM reimburse WHERE deleted_at IS NOT NULL"
+        ).fetchone()["n"]
 
     def deleted_before(self, conn: sqlite3.Connection, cutoff: str) -> List[dict]:
         rows = conn.execute(

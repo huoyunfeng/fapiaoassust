@@ -399,9 +399,9 @@ async def restore_reimburses(ids: str = Form(""), operator: str = Form("admin"))
 
 # ---------------------------------------------------------------- 回收站
 @api.get("/recycle-bin")
-async def recycle_bin(limit: int = 500):
-    """回收站列表（软删除的发票 + 报销单）与自动清理周期。"""
-    return _j(recycle_service.list_deleted(limit=limit))
+async def recycle_bin(page: int = 1, page_size: int = 20):
+    """回收站分页列表（软删除的发票 + 报销单）与自动清理周期。"""
+    return _j(recycle_service.list_deleted(page=page, page_size=page_size))
 
 
 @api.post("/recycle-bin/restore")

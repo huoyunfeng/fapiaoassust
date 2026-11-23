@@ -53,10 +53,29 @@ def set_auto_clean_days(days) -> dict:
             "message": "已保存（永久保留）" if days == 0 else f"已保存（{days} 天后自动清理）"}
 
 
-def list_deleted(limit: int = 500) -> dict:
-    """回收站列表：发票 + 报销单，按删除时间倒序。"""
-    inv = invoice_service.list_deleted_invoices(limit=limit)
-    reb = reimburse_service.list_deleted_reimburses(limit=limit)
+def list_deleted(page: int = 1, page_size: int = 20) -> dict:
+    """回收站列表：发票 + 报销单，按删除时间倒序分页。
+
+    page_size 支持 20/50/100 或自定义（前端限制 1~1000）；
+    跨两张表合并排序后再切片，保证翻页顺序稳定。
+    """
+    try:
+        page = max(1, int(page))
+    except (TypeError, ValueError):
+        page = 1
+    try:
+        page_size = int(page_size)
+    except (TypeError, ValueError):
+        page_size = 20
+    page_size = max(1, min(1000, page_size))
+    offset = (page - 1) * page_size
+
+    # 各表只需取到 offset+page_size 条，合并后的前 offset+page_size 条必然完整
+    fetch = offset + page_size
+    inv = invoice_service.list_deleted_invoices(limit=fetch)
+    reb = reimburse_service.list_deleted_reimburses(limit=fetch)
+    total = (invoice_service.count_deleted_invoices()
+             + reimburse_service.count_deleted_reimburses())
     items = []
     for r in inv:
         items.append({
@@ -76,8 +95,10 @@ def list_deleted(limit: int = 500) -> dict:
             "deleted_at": r.get("deleted_at"),
             "has_file": False,
         })
-    items.sort(key=lambda x: x.get("deleted_at") or "", reverse=True)
-    return {"items": items[:limit], "total": len(items),
+    items.sort(key=lambda x: (x.get("deleted_at") or "", x["id"]), reverse=True)
+    pages = max(1, (total + page_size - 1) // page_size)
+    return {"items": items[offset:offset + page_size], "total": total,
+            "page": page, "page_size": page_size, "pages": pages,
             "auto_clean_days": get_auto_clean_days()}
 
 

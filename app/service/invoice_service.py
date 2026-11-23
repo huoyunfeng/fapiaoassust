@@ -743,10 +743,16 @@ def restore_invoices(invoice_ids: List[int], operator: str = None) -> dict:
     return result
 
 
-def list_deleted_invoices(limit: int = 500) -> List[dict]:
-    """回收站：已删除发票列表。"""
+def list_deleted_invoices(limit: int = 500, offset: int = 0) -> List[dict]:
+    """回收站：已删除发票列表（分页）。"""
     with db.read() as conn:
-        return invoice_repo.list_deleted(conn, limit=limit)
+        return invoice_repo.list_deleted(conn, limit=limit, offset=offset)
+
+
+def count_deleted_invoices() -> int:
+    """回收站：已删除发票总数。"""
+    with db.read() as conn:
+        return invoice_repo.count_deleted(conn)
 
 
 def purge_invoices(invoice_ids: List[int], operator: str = None) -> dict:

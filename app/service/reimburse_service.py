@@ -777,10 +777,16 @@ def restore_reimburses(ids: List[int], operator: str = None) -> dict:
     return result
 
 
-def list_deleted_reimburses(limit: int = 500) -> List[dict]:
-    """回收站：已删除报销单列表。"""
+def list_deleted_reimburses(limit: int = 500, offset: int = 0) -> List[dict]:
+    """回收站：已删除报销单列表（分页）。"""
     with db.read() as conn:
-        return reimburse_repo.list_deleted(conn, limit=limit)
+        return reimburse_repo.list_deleted(conn, limit=limit, offset=offset)
+
+
+def count_deleted_reimburses() -> int:
+    """回收站：已删除报销单总数。"""
+    with db.read() as conn:
+        return reimburse_repo.count_deleted(conn)
 
 
 def purge_reimburses(ids: List[int], operator: str = None) -> dict:

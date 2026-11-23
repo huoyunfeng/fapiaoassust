@@ -641,7 +641,11 @@
               <option value="0">永久保留（不自动删除）</option>
             </select>
             <span class="muted" id="sgRecycleDaysHint" style="font-size:12px;color:#909399;">当前：删除满 30 天后自动彻底删除</span>
-            <span style="margin-left:auto;" class="muted" id="sgRecycleCount" style="font-size:12px;color:#909399;"></span>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px;">
+            <span class="muted" id="sgRecycleSelInfo" style="font-size:12px;color:#909399;">已选 0 条</span>
+            <button class="btn btn-sm" id="sgRecycleBatchRestore" onclick="sgRecycleBatchDo('restore')" disabled>批量恢复</button>
+            <button class="btn btn-danger btn-sm" id="sgRecycleBatchPurge" onclick="sgRecycleBatchDo('purge')" disabled>批量彻底删除</button>
           </div>
           <div id="sgRecycleLoading" style="display:none;position:absolute;inset:0;background:rgba(255,255,255,.6);z-index:5;border-radius:8px;align-items:center;justify-content:center;">
             <div style="text-align:center;"><div class="spinner"></div><p class="muted" style="margin-top:8px;">加载中…</p></div>
@@ -649,6 +653,7 @@
           <table class="sg-zebra">
             <thead>
               <tr>
+                <th style="width:36px;text-align:center;"><input type="checkbox" id="sgRecycleChkAll" onchange="sgRecycleToggleAll(this)" title="全选"></th>
                 <th style="width:70px;">类型</th>
                 <th style="width:170px;">编号</th>
                 <th class="sg-cell-ellipsis">明细</th>
@@ -658,9 +663,29 @@
               </tr>
             </thead>
             <tbody id="sgRecycleTbody">
-              <tr><td colspan="6" class="muted" style="text-align:center;padding:24px;">加载中…</td></tr>
+              <tr><td colspan="7" class="muted" style="text-align:center;padding:24px;">加载中…</td></tr>
             </tbody>
           </table>
+          <div class="pager">
+            <span class="muted">共 <span id="sgRecycleCount">0</span> 条</span>
+            <span class="muted">每页</span>
+            <select id="sgRecyclePageSize" onchange="sgRecyclePageSizeChange(this)" title="每页显示条数">
+              <option value="20">20</option>
+              <option value="50">50</option>
+              <option value="100">100</option>
+              <option value="custom">自定义</option>
+            </select>
+            <span class="muted">条</span>
+            <span class="pager-custom" id="sgRecycleCustomWrap" style="display:none;">
+              <input type="text" class="pager-custom-input" inputmode="numeric" maxlength="4"
+                     placeholder="每页条数" oninput="pagerDigits(this)"
+                     onkeydown="if(event.key==='Enter'){event.preventDefault();sgRecycleCustomSize(this);}">
+              <button class="btn btn-outline btn-sm" type="button" onclick="sgRecycleCustomSize(this)">确定</button>
+            </span>
+            <button class="btn btn-outline btn-sm" id="sgRecyclePrev" onclick="sgRecycleGo(-1)" disabled>上一页</button>
+            <span class="muted" id="sgRecyclePageInfo">第 1 / 1 页</span>
+            <button class="btn btn-outline btn-sm" id="sgRecycleNext" onclick="sgRecycleGo(1)" disabled>下一页</button>
+          </div>
         </div>
       </div>
 
@@ -1916,6 +1941,10 @@ function _restoreSuccessModal(data){
 
 /* ===== 回收站与数据管理（模块四） ===== */
 let sgRecycleLoaded = false, sgRecycleItems = [];
+// 分页状态：page_size 支持 20/50/100 或自定义（后端限制 1~1000）
+let sgRecyclePage = 1, sgRecyclePageSize = 20, sgRecyclePages = 1;
+// 勾选项以 "kind:id" 存储，避免发票与报销单 id 重号串选
+const sgRecycleSelected = new Set();
 
 function sgRecycleEnsure(){
   if(!sgRecycleLoaded){ sgRecycleLoad(); sgRecycleLoaded = true; }
@@ -1925,22 +1954,88 @@ async function sgRecycleLoad(){
   const loading = document.getElementById('sgRecycleLoading');
   loading.style.display = 'flex';
   try{
-    const r = await fetch('/api/recycle-bin');
+    const r = await fetch(`/api/recycle-bin?page=${sgRecyclePage}&page_size=${sgRecyclePageSize}`);
     const j = await r.json(); const d = j.data || j;
+    const total = Number(d.total) || 0;
+    const pages = Math.max(1, Number(d.pages) || 1);
+    // 末页被清空后自动退回最后一页，避免停在空页
+    if(!(d.items || []).length && total > 0 && sgRecyclePage > pages){
+      sgRecyclePage = pages;
+      return sgRecycleLoad();
+    }
+    sgRecyclePage = Math.max(1, Number(d.page) || 1);
+    sgRecyclePages = pages;
     sgRecycleItems = d.items || [];
+    sgRecycleSelected.clear();
     const sel = document.getElementById('sgRecycleDays');
     if(sel && d.auto_clean_days !== undefined){
       sel.value = String(d.auto_clean_days);
       sgRecycleDaysHint(Number(d.auto_clean_days));
     }
-    document.getElementById('sgRecycleCount').textContent = `共 ${d.total || 0} 条`;
+    document.getElementById('sgRecycleCount').textContent = String(total);
+    sgRecycleSyncPageSizeUI();
     sgRenderRecycle();
   }catch(e){
     document.getElementById('sgRecycleTbody').innerHTML =
-      '<tr><td colspan="6" class="muted" style="text-align:center;padding:24px;">加载失败，请稍后重试</td></tr>';
+      '<tr><td colspan="7" class="muted" style="text-align:center;padding:24px;">加载失败，请稍后重试</td></tr>';
   }finally{
     loading.style.display = 'none';
   }
+}
+
+function sgRecycleRefreshPager(){
+  const info = document.getElementById('sgRecyclePageInfo');
+  if(info) info.textContent = `第 ${sgRecyclePage} / ${sgRecyclePages} 页`;
+  const prev = document.getElementById('sgRecyclePrev');
+  const next = document.getElementById('sgRecycleNext');
+  if(prev) prev.disabled = sgRecyclePage <= 1;
+  if(next) next.disabled = sgRecyclePage >= sgRecyclePages;
+}
+
+function sgRecycleGo(delta){
+  const target = sgRecyclePage + delta;
+  if(target < 1 || target > sgRecyclePages) return;
+  sgRecyclePage = target;
+  sgRecycleLoad();
+}
+
+function sgRecycleSyncPageSizeUI(){
+  const sel = document.getElementById('sgRecyclePageSize');
+  const wrap = document.getElementById('sgRecycleCustomWrap');
+  if(!sel || !wrap) return;
+  const isPreset = ['20', '50', '100'].indexOf(String(sgRecyclePageSize)) >= 0;
+  sel.value = isPreset ? String(sgRecyclePageSize) : 'custom';
+  wrap.style.display = isPreset ? 'none' : 'inline-flex';
+  if(!isPreset){
+    const input = wrap.querySelector('.pager-custom-input');
+    if(input) input.value = String(sgRecyclePageSize);
+  }
+}
+
+function sgRecyclePageSizeChange(sel){
+  const wrap = document.getElementById('sgRecycleCustomWrap');
+  if(sel.value === 'custom'){
+    wrap.style.display = 'inline-flex';
+    const input = wrap.querySelector('.pager-custom-input');
+    input.value = String(sgRecyclePageSize);
+    input.focus();
+    input.select();
+    return;
+  }
+  wrap.style.display = 'none';
+  sgRecyclePageSize = Number(sel.value) || 20;
+  sgRecyclePage = 1;
+  sgRecycleLoad();
+}
+
+function sgRecycleCustomSize(input){
+  let size = parseInt(input.value, 10);
+  if(!size || size < 1){ toast('请输入大于 0 的条数', false); input.focus(); return; }
+  if(size > 1000){ toast('每页最多 1000 条', false); input.focus(); return; }
+  input.value = String(size);
+  sgRecyclePageSize = size;
+  sgRecyclePage = 1;
+  sgRecycleLoad();
 }
 
 function sgRecycleDaysHint(days){
@@ -1962,7 +2057,8 @@ function _sgEsc(s){
 function sgRenderRecycle(){
   const tbody = document.getElementById('sgRecycleTbody');
   if(!sgRecycleItems.length){
-    tbody.innerHTML = '<tr><td colspan="6" class="muted" style="text-align:center;padding:24px;">回收站为空</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="7" class="muted" style="text-align:center;padding:24px;">回收站为空</td></tr>';
+    sgRecycleRefreshSel();
     return;
   }
   tbody.innerHTML = sgRecycleItems.map(item=>{
@@ -1970,7 +2066,9 @@ function sgRenderRecycle(){
     const time = _sgEsc((item.deleted_at || '').replace('T',' '));
     const sub = [item.sub, item.invoice_date ? '日期 ' + item.invoice_date : ''].filter(Boolean).join(' · ');
     const amt = item.amount == null || item.amount === '' ? '—' : Number(item.amount).toFixed(2);
+    const key = item.kind + ':' + item.id;
     return `<tr>
+      <td style="text-align:center;"><input type="checkbox" class="sg-recycle-chk" data-key="${key}" onchange="sgRecycleChkChange(this)"${sgRecycleSelected.has(key) ? ' checked' : ''}></td>
       <td>${kindCn}</td>
       <td>${_sgEsc(item.label)}</td>
       <td class="sg-cell-ellipsis" title="${_sgEsc(sub)}">${_sgEsc(sub) || '—'}</td>
@@ -1982,6 +2080,84 @@ function sgRenderRecycle(){
       </td>
     </tr>`;
   }).join('');
+  sgRecycleRefreshSel();
+}
+
+function sgRecycleSelectedItems(){
+  return sgRecycleItems.filter(it=>sgRecycleSelected.has(it.kind + ':' + it.id));
+}
+
+function sgRecycleRefreshSel(){
+  const n = sgRecycleSelectedItems().length;
+  const info = document.getElementById('sgRecycleSelInfo');
+  if(info) info.textContent = '已选 ' + n + ' 条';
+  const btnRestore = document.getElementById('sgRecycleBatchRestore');
+  const btnPurge = document.getElementById('sgRecycleBatchPurge');
+  if(btnRestore) btnRestore.disabled = n === 0;
+  if(btnPurge) btnPurge.disabled = n === 0;
+  const all = document.querySelectorAll('.sg-recycle-chk');
+  const chkAll = document.getElementById('sgRecycleChkAll');
+  if(chkAll){
+    chkAll.checked = all.length > 0 && n === all.length;
+    chkAll.indeterminate = n > 0 && n < all.length;
+  }
+  sgRecycleRefreshPager();
+}
+
+function sgRecycleChkChange(el){
+  if(el.checked) sgRecycleSelected.add(el.dataset.key);
+  else sgRecycleSelected.delete(el.dataset.key);
+  sgRecycleRefreshSel();
+}
+
+function sgRecycleToggleAll(el){
+  document.querySelectorAll('.sg-recycle-chk').forEach(c=>{
+    c.checked = el.checked;
+    if(el.checked) sgRecycleSelected.add(c.dataset.key);
+    else sgRecycleSelected.delete(c.dataset.key);
+  });
+  sgRecycleRefreshSel();
+}
+
+// 批量恢复 / 批量彻底删除：按类型分组调用（后端一次只处理一种类型）
+async function sgRecycleBatchDo(action){
+  const items = sgRecycleSelectedItems();
+  if(!items.length){ toast('请先勾选要操作的数据', false); return; }
+  const isPurge = action === 'purge';
+  const tip = isPurge
+    ? `彻底删除后不可恢复！\n将永久清理选中的 ${items.length} 条数据（含本地附件），确认继续？`
+    : `确认恢复选中的 ${items.length} 条数据？`;
+  if(!await confirmDlg(tip)) return;
+
+  const groups = {invoice: [], reimburse: []};
+  items.forEach(it=>{ if(groups[it.kind]) groups[it.kind].push(it.id); });
+  const url = isPurge ? '/api/recycle-bin/purge' : '/api/recycle-bin/restore';
+  let done = 0, failed = 0;
+  const msgs = [];
+  for(const kind of ['invoice', 'reimburse']){
+    if(!groups[kind].length) continue;
+    const fd = new FormData();
+    fd.append('kind', kind);
+    fd.append('ids', groups[kind].join(','));
+    fd.append('operator', 'admin');
+    try{
+      const d = await sgRecyclePost(url, fd);
+      if(d.ok === false){
+        failed += groups[kind].length;
+        if(d.message) msgs.push(d.message);
+      }else{
+        const n = d.restored != null ? d.restored : (d.purged != null ? d.purged : groups[kind].length);
+        done += Number(n);
+        if(d.message) msgs.push(d.message);
+      }
+    }catch(e){
+      failed += groups[kind].length;
+    }
+  }
+  const fallback = (isPurge ? '已彻底删除 ' : '已恢复 ') + done + ' 条';
+  toast(msgs.join('；') || fallback, failed === 0);
+  sgRecycleSelected.clear();
+  sgRecycleLoad();
 }
 
 async function sgRecyclePost(url, fd){
