@@ -312,6 +312,7 @@ def run_matching(operator: str = None, progress=None) -> dict:
         # 第二轮：多对一组合凑数
         #   仅对第一轮未匹配的报销单；2~5 张发票合计 == 报销金额，且发票在期间内
         #   固定得分 0.90 -> SUSPICIOUS（软锁定，交人工确认）
+        #   ★ 所有可行组合全部落库，供人工直观选择（多解完整展示）
         # ================================================================
         for reb_row in reimburses:
             tick("第二轮：多对一组合")
@@ -319,52 +320,71 @@ def run_matching(operator: str = None, progress=None) -> dict:
                 continue
             reb = _reb_dto(reb_row)
             pool = [inv_dtos[i] for i in sorted(available)]
-            combo = _engine.find_many_to_one(pool, reb)
-            if not combo:
+            all_combos = _engine.find_many_to_one_all(pool, reb)
+            if not all_combos:
                 continue
+
             # 按对象身份匹配：InvoiceDTO 是值相等的 dataclass，用 `in` 会把
             # 字段值完全相同的另一张发票也误选进来（导致重复计入汇总）
-            ids = [i for i in sorted(available) if any(inv_dtos[i] is d for d in combo)]
-            if not ids:
-                continue
+            def _combo_ids(combo: List) -> List[int]:
+                return [i for i in sorted(available)
+                        if any(inv_dtos[i] is d for d in combo)]
 
-            # 规则安检 + 单点剔除：仅剔除违规发票，不做整单打回；
-            # 剩余发票仍满足报销金额时正常组合，否则交给第三轮人工匹配。
-            ok_ids: List[int] = []
-            warn_by_id: Dict[int, str] = {}
-            for inv_id in ids:
-                blocks, warns = _pair_rules(inv_dtos[inv_id], reb, rules)
-                if blocks:
-                    block_notes[inv_id] = blocks
+            any_persisted = False
+            all_touched_inv_ids: set = set()
+            total_combos = len(all_combos)
+
+            for combo_idx, combo in enumerate(all_combos, 1):
+                ids = _combo_ids(combo)
+                if not ids:
                     continue
-                ok_ids.append(inv_id)
-                warn_by_id[inv_id] = warns
-            dropped = len(ids) - len(ok_ids)
-            if dropped:
-                ok_total = sum((inv_dtos[i].total_amount or Decimal("0")) for i in ok_ids)
-                if not ok_ids or ok_total != to_decimal(reb.amount):
-                    continue        # 剔除后无法凑齐 -> 不生成组合，交第三轮/无候选
-                items = ok_ids
-            else:
-                items = ids
 
-            msg = (f"汇总匹配：{len(items)} 张发票合计等于报销单金额 {reb.amount}，"
-                   f"请人工确认归属")
-            if dropped:
-                msg += f"（已剔除 {dropped} 张触发规则阻断的发票）"
-            for inv_id in items:
-                ps = PairScore(score=0.90, match_type=T_MANY_TO_ONE,
-                               diff_fields=[f"汇总匹配: {len(items)} 张发票合计 = 报销单金额"],
-                               field_notes=[msg], capped=True, cap_reason="组合匹配需人工确认")
-                mid = _persist_pair(conn, inv_id, None, ps, "SUSPICIOUS", T_MANY_TO_ONE,
-                                    warning_msg=warn_by_id.get(inv_id, ""))
-                match_repo.insert_pair(conn, mid, inv_id, reb_row["id"])
-                available.discard(inv_id)
-                has_candidate.add(inv_id)
-                summary["many_to_one"] += 1
-            done.add(reb_row["id"])
-            summary["pending"] += 1
-            _write_note(conn, reb_row, [msg])
+                # 规则安检 + 单点剔除：仅剔除违规发票，不做整单打回；
+                # 剩余发票仍满足报销金额时正常组合，否则放弃本组合（不放弃整单）。
+                ok_ids: List[int] = []
+                warn_by_id: Dict[int, str] = {}
+                for inv_id in ids:
+                    blocks, warns = _pair_rules(inv_dtos[inv_id], reb, rules)
+                    if blocks:
+                        block_notes[inv_id] = blocks
+                        continue
+                    ok_ids.append(inv_id)
+                    warn_by_id[inv_id] = warns
+                dropped = len(ids) - len(ok_ids)
+                if dropped:
+                    ok_total = sum((inv_dtos[i].total_amount or Decimal("0"))
+                                   for i in ok_ids)
+                    if not ok_ids or ok_total != to_decimal(reb.amount):
+                        continue           # 剔除后无法凑齐 -> 放弃本组合，试下一组
+                    items = ok_ids
+                else:
+                    items = ids
+
+                msg = (f"汇总匹配（候选 {combo_idx}/{total_combos}）："
+                       f"{len(items)} 张发票合计等于报销单金额 {reb.amount}，"
+                       f"请人工确认归属")
+                if dropped:
+                    msg += f"（已剔除 {dropped} 张触发规则阻断的发票）"
+                for inv_id in items:
+                    ps = PairScore(score=0.90, match_type=T_MANY_TO_ONE,
+                                   diff_fields=[f"汇总匹配: {len(items)} 张发票合计 = 报销单金额"],
+                                   field_notes=[msg], capped=True, cap_reason="组合匹配需人工确认")
+                    mid = _persist_pair(conn, inv_id, None, ps, "SUSPICIOUS", T_MANY_TO_ONE,
+                                        warning_msg=warn_by_id.get(inv_id, ""))
+                    match_repo.insert_pair(conn, mid, inv_id, reb_row["id"])
+                    has_candidate.add(inv_id)
+                    summary["many_to_one"] += 1
+                    all_touched_inv_ids.add(inv_id)
+                any_persisted = True
+
+            if any_persisted:
+                for inv_id in all_touched_inv_ids:
+                    available.discard(inv_id)
+                done.add(reb_row["id"])
+                summary["pending"] += 1
+                summary_msg = (f"共 {total_combos} 种可行组合，已全部生成候选记录，"
+                               f"请人工确认最合理的一组归属")
+                _write_note(conn, reb_row, [summary_msg])
 
         # ================================================================
         # 第三轮：模糊特征兜底

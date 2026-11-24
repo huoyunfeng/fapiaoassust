@@ -372,12 +372,17 @@ CREATE TABLE IF NOT EXISTS quota_usage (
 
 
 def connect() -> sqlite3.Connection:
-    """打开数据库连接（每次独立连接，外键开启，行工厂 Row）。"""
+    """打开数据库连接（每次独立连接，外键开启，行工厂 Row）。
+
+    - timeout=30：SQLite 内部 busy_timeout，被其他连接锁库时最多等 30 秒；
+    - PRAGMA busy_timeout = 30000：显式兜底（某些 Python/sqlite3 版本不会把 timeout 透传为 pragma）；
+    - 同步级别默认 FULL（断电安全）；受限环境可经 FAPIAO_SYNC 降级（见 config.py 注释）。
+    """
     settings.db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(settings.db_path, timeout=30)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
-    # 同步级别默认 FULL（断电安全）；受限环境可经 FAPIAO_SYNC 降级（见 config.py 注释）
+    conn.execute("PRAGMA busy_timeout = 30000")
     if settings.db_synchronous in ("FULL", "NORMAL", "OFF"):
         conn.execute(f"PRAGMA synchronous = {settings.db_synchronous}")
     with _open_conns_lock:

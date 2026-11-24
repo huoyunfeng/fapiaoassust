@@ -112,6 +112,47 @@ def create_app() -> FastAPI:
         db.dispose()
         return {"ok": True, "status": "shutting_down"}
 
+    # ------------------------------------------------------------------
+    # 全局异常处理器：单机软件特有的死穴 —— 杀毒锁库 / 磁盘满 / 额度超限
+    # ------------------------------------------------------------------
+    from fastapi.responses import JSONResponse
+    import errno as _errno
+    import sqlite3
+
+    @app.exception_handler(sqlite3.OperationalError)
+    async def _handle_db_locked(request, exc):
+        # busy_timeout 30s 内还拿不到锁 -> 杀毒软件/同步盘在独占 DB 文件
+        msg = str(exc)
+        if "database is locked" in msg.lower() or "table is locked" in msg.lower():
+            return JSONResponse(
+                {"ok": False, "code": "DB_LOCKED",
+                 "message": "数据库文件暂时被其他程序占用（如杀毒软件/同步盘），请稍后重试",
+                 "detail": msg},
+                status_code=503)
+        return JSONResponse(
+            {"ok": False, "code": "DB_ERROR", "message": "数据库操作异常", "detail": msg},
+            status_code=500)
+
+    @app.exception_handler(OSError)
+    async def _handle_oserror(request, exc):
+        # ENOSPC (28) / ERROR_DISK_FULL (2)：上传附件或备份时磁盘满了
+        if getattr(exc, "errno", None) == _errno.ENOSPC or getattr(exc, "winerror", None) == 2:
+            return JSONResponse(
+                {"ok": False, "code": "DISK_FULL",
+                 "message": "磁盘空间不足，请清理后重试（附件上传 / 备份可能中断）",
+                 "detail": str(exc)},
+                status_code=507)
+        raise exc
+
+    from app.service.license_service import QuotaExceeded
+
+    @app.exception_handler(QuotaExceeded)
+    async def _handle_quota_exceeded(request, exc):
+        return JSONResponse(
+            {"ok": False, "code": "QUOTA_EXCEEDED",
+             "message": str(exc)},
+            status_code=400)
+
     app.include_router(pages)
     app.include_router(auth)
     app.include_router(api)

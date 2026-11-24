@@ -245,7 +245,10 @@ def _digits_suspicious(dto: InvoiceDTO) -> bool:
 
 
 def _run_ocr_once(content: bytes, max_side: int, rotate: int = 0):
-    """跑一遍 OCR 并抽取字段，返回 (dto, 行数, elapse)。"""
+    """跑一遍 OCR 并抽取字段，返回 (dto, 行数, elapse)。
+
+    引擎非线程安全且 4 核机器并发 OCR 只会互相抢 CPU：串行化，让其它请求（删除等）仍能响应。
+    """
     # 引擎非线程安全且 4 核机器并发 OCR 只会互相抢 CPU：串行化，让其它请求（删除等）仍能响应
     try:
         with _OCR_LOCK:
@@ -271,11 +274,39 @@ def _run_ocr_once(content: bytes, max_side: int, rotate: int = 0):
     return dto, len(lines), elapse
 
 
+# OCR 单图最大识别时长（秒）——防止高像素黑图让引擎卡死。
+_OCR_TIMEOUT_SEC = 12
+
+
+def _run_ocr_with_timeout(content: bytes, max_side: int, rotate: int = 0):
+    """带超时熔断的 OCR 调用：引擎内部无超时保护，用独立线程跑 + 外层 Future 兜底。
+
+    超时即取消线程并抛出 ParseSkip，保证 50MB 黑图或异常输入不会让服务卡死。
+    """
+    import concurrent.futures as cf
+    executor = cf.ThreadPoolExecutor(max_workers=1, thread_name_prefix="ocr")
+    try:
+        future = executor.submit(_run_ocr_once, content, max_side, rotate)
+        return future.result(timeout=_OCR_TIMEOUT_SEC)
+    except cf.TimeoutError:
+        # 让 Future 里的线程有机会结束；进程退出时自动回收，不影响后续识别
+        try:
+            future.cancel()
+        except Exception:
+            pass
+        msg = (f"OCR 识别超时（>{_OCR_TIMEOUT_SEC}s，max_side={max_side}），"
+               f"图片可能过于复杂或像素过高，请尝试压缩后重新上传")
+        logger.warning(msg)
+        raise ParseSkip(msg)
+    finally:
+        executor.shutdown(wait=False)   # 不等待子线程收尾，主线程快速返回
+
+
 def parse_image(content: bytes) -> InvoiceDTO:
     """OCR 解析图片发票，返回未标准化 DTO（两遍策略，见模块 docstring）。"""
     import time as _t
     t0 = _t.time()
-    dto, n_lines, elapse = _run_ocr_once(content, MAX_SIDE_LEN)
+    dto, n_lines, elapse = _run_ocr_with_timeout(content, MAX_SIDE_LEN)
     used_angle = 0
     if not dto.invoice_no and not dto.total_amount:
         # 手机拍摄的纸质票据常被横置/倒置：按 180°→90°→270° 重试，取字段最完整的一轮。
@@ -283,7 +314,7 @@ def parse_image(content: bytes) -> InvoiceDTO:
         best = (_field_score(dto), dto, n_lines, elapse, 0)
         for angle in (180, 90, 270):
             try:
-                dto_r, n_r, e_r = _run_ocr_once(content, MAX_SIDE_LEN, angle)
+                dto_r, n_r, e_r = _run_ocr_with_timeout(content, MAX_SIDE_LEN, angle)
             except ParseSkip:
                 continue
             score = _field_score(dto_r)
@@ -306,9 +337,9 @@ def parse_image(content: bytes) -> InvoiceDTO:
         logger.info("OCR 首轮长数字字段位数可疑（发票号=%s, 质量=%s），改用 %s 高清复检",
                     dto.invoice_no, q1, HIRES_SIDE_LEN)
         try:
-            dto2, n_lines2, elapse2 = _run_ocr_once(content, HIRES_SIDE_LEN, used_angle)
+            dto2, n_lines2, elapse2 = _run_ocr_with_timeout(content, HIRES_SIDE_LEN, used_angle)
         except ParseSkip:
-            logger.warning("OCR 高清复检未识别到文字，保留首轮结果")
+            logger.warning("OCR 高清复检未识别到文字或超时，保留首轮结果")
         except Exception as e:
             logger.warning("OCR 高清复检异常（%s），保留首轮结果", e)
         else:

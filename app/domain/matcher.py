@@ -563,12 +563,22 @@ class MatchEngine:
                          max_invoices: int = None) -> Optional[List[InvoiceDTO]]:
         """汇总匹配（多对一）：多张发票价税合计 == 报销单金额（±0.01）。
 
+        返回首个找到的可行组合（兼容旧调用）。
+        """
+        all_combos = self.find_many_to_one_all(invoices, reb, max_invoices)
+        return all_combos[0] if all_combos else None
+
+    def find_many_to_one_all(self, invoices: Sequence[InvoiceDTO], reb: ReimburseDTO,
+                             max_invoices: int = None,
+                             max_combos: int = 12) -> List[List[InvoiceDTO]]:
+        """汇总匹配（多对一）——返回所有可行组合（至多 max_combos 组）。
+
         发票必须落在报销期间内；组合张数 2~max_invoices；
         池按金额降序截断，避免组合爆炸。
         """
         target = reb.amount
         if target is None or target <= 0:
-            return None
+            return []
         tol = settings.amount_tolerance
         max_n = max_invoices or settings.many_to_one_max_invoices
 
@@ -588,9 +598,12 @@ class MatchEngine:
         pool.sort(key=lambda x: x.total_amount or 0, reverse=True)
         pool = pool[: settings.many_to_one_pool_size]
 
+        results: List[List[InvoiceDTO]] = []
         for n in range(2, max_n + 1):
             for combo in itertools.combinations(pool, n):
                 total = sum((c.total_amount for c in combo), Decimal("0"))
                 if abs(total - target) <= tol:
-                    return list(combo)
-        return None
+                    results.append(list(combo))
+                    if len(results) >= max_combos:
+                        return results
+        return results
