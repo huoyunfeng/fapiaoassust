@@ -18,8 +18,11 @@ from cryptography.hazmat.primitives import serialization
 
 from app.config import settings
 from app.infra import machine as machine_mod
+from app.infra.logger import get_logger
 from app.repository import db
 from app.repository.repos import kv_repo
+
+logger = get_logger(__name__)
 
 LICENSE_KV_KEY = "license_code"
 PENDING_ORDER_KV = "pay_pending_order"
@@ -637,8 +640,12 @@ def consume_invoice_quota(count: int = 1) -> None:
                 f"免费版每月额度 {limit} 张，本月已用 {used} 张。"
                 "请升级个人版/企业版后继续导入")
         kv_repo.set(conn, f"quota:{month}", str(used + count))
-    guard.setdefault("quota", {})[guard_key] = used + count
-    machine_mod.save_guard(guard)
+    # 隐藏登记簿只是防刷冗余：写失败不能把已成功的导入变成 500（额度以数据库为主）
+    try:
+        guard.setdefault("quota", {})[guard_key] = used + count
+        machine_mod.save_guard(guard)
+    except Exception as e:
+        logger.warning("写入额度登记簿失败（不影响本次导入）: %s", e)
 
 
 def refund_invoice_quota(count: int = 1) -> None:
@@ -651,11 +658,14 @@ def refund_invoice_quota(count: int = 1) -> None:
     with db.tx() as conn:
         db_used = int(kv_repo.get(conn, f"quota:{month}", "0") or 0)
         kv_repo.set(conn, f"quota:{month}", str(max(0, db_used - count)))
-    guard = machine_mod.load_guard()
-    key = machine_mod.month_key(machine_mod.machine_code(), month)
-    guard.setdefault("quota", {})[key] = max(
-        0, int((guard.get("quota") or {}).get(key, 0) or 0) - count)
-    machine_mod.save_guard(guard)
+    try:
+        guard = machine_mod.load_guard()
+        key = machine_mod.month_key(machine_mod.machine_code(), month)
+        guard.setdefault("quota", {})[key] = max(
+            0, int((guard.get("quota") or {}).get(key, 0) or 0) - count)
+        machine_mod.save_guard(guard)
+    except Exception as e:
+        logger.warning("回退额度登记簿失败（数据库已回退）: %s", e)
 
 
 def initial_password() -> str:

@@ -575,7 +575,7 @@ def import_excel(file_name: str, content: bytes, batch_id: str = None,
     match_summary = None
     try:
         from app.service import match_service
-        match_summary = match_service.run_matching(operator)
+        match_summary = match_service.run_matching(operator, wait_seconds=10)
     except Exception as e:
         logger.warning("报销单导入后自动匹配失败: %s", e)
     message = f"{'覆盖导入' if overwrite_batch_id else '导入'}成功：{imported} 行"
@@ -769,7 +769,7 @@ def restore_reimburses(ids: List[int], operator: str = None) -> dict:
         # 恢复后重新执行匹配：删除时已释放其占用发票并清理匹配记录，需重跑匹配还原关联
         from app.service import match_service   # 惰性导入，避免服务层循环依赖
         try:
-            ms = match_service.run_matching(operator)
+            ms = match_service.run_matching(operator, wait_seconds=10)
             result["match"] = ms
             result["message"] = (
                 f"已恢复 {len(restored)} 条报销单，并重新匹配"

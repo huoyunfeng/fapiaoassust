@@ -11,10 +11,11 @@
 import io
 import logging
 import re
+import threading
 import zipfile
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
-from typing import Callable, List, Optional
+from typing import Any, Callable, List, Optional
 
 from app.domain.dto import InvoiceDTO, ParseResult, ParseTask
 from app.domain.normalize import NormalizeEngine
@@ -22,6 +23,36 @@ from app.domain.normalize import NormalizeEngine
 logger = logging.getLogger(__name__)
 
 REQUIRED_FIELDS = ["invoice_no", "invoice_date", "total_amount"]
+
+# 单环节解析超时（秒）：第三方库（pdfplumber/zipfile/XML）没有内部超时，
+# 畸形文件可能长时间不返回。OCR 环节自身有 45s 整体预算，这里给足余量。
+_PARSER_TIMEOUTS = {"xml": 10, "ofd": 20, "pdf_text": 25, "ocr": 55}
+_PARSER_TIMEOUT_DEFAULT = 30
+
+
+def _call_with_timeout(fn: Callable[..., Any], timeout: float, *args) -> Any:
+    """daemon 线程执行 + 到点放弃，避免畸形文件卡死导入线程。
+
+    被放弃的线程可能继续在后台跑完（Python 无法强杀线程），因此该兜底只用于
+    纯解析（不持有数据库事务/全局锁）；调用方已在数据库持久化之前执行解析。
+    """
+    box: dict = {}
+    done = threading.Event()
+
+    def _target() -> None:
+        try:
+            box["result"] = fn(*args)
+        except BaseException as e:      # noqa: BLE001 - 原样带回调用方
+            box["error"] = e
+        finally:
+            done.set()
+
+    threading.Thread(target=_target, name="parse-call", daemon=True).start()
+    if not done.wait(timeout):
+        raise TimeoutError(f"解析超时（>{timeout:g}s）")
+    if "error" in box:
+        raise box["error"]
+    return box.get("result")
 
 
 def _is_missing(value) -> bool:
@@ -113,8 +144,25 @@ def _extract_from_element(elem, dto: InvoiceDTO, seen: set) -> None:
                 break
 
 
+# XML 实体膨胀（billion laughs / XXE）防护：正常发票 XML 不会声明 DOCTYPE/ENTITY。
+_RE_XML_DECL = re.compile(rb"<!\s*(DOCTYPE|ENTITY)", re.IGNORECASE)
+
+
+def _ensure_safe_xml(content: bytes) -> None:
+    """拦截带 DOCTYPE/ENTITY 声明的 XML，避免实体膨胀耗尽内存。"""
+    if _RE_XML_DECL.search(content):
+        raise ParseSkip("XML 包含 DOCTYPE/ENTITY 声明，已拒绝解析（防止实体膨胀攻击）")
+
+
+def _safe_fromstring(raw: bytes):
+    """带实体膨胀防护的 XML 解析入口。"""
+    _ensure_safe_xml(raw)
+    return ET.fromstring(raw)
+
+
 def _parse_xml_bytes(content: bytes) -> InvoiceDTO:
     """宽容解析 XML 字节流，返回未标准化 DTO（尽可能多填字段）。"""
+    _ensure_safe_xml(content)
     dto = InvoiceDTO()
     seen: set = set()
     try:
@@ -166,6 +214,25 @@ class OfdInvoiceParser(BaseParser):
     name = "ofd"
     confidence = 0.95
 
+    # OFD 是 zip 容器：先做规模校验，防止解压炸弹（20MB 包解压出几十 GB）
+    _MAX_MEMBERS = 2000
+    _MAX_UNCOMPRESSED = 200 * 1024 ** 2
+    _MAX_MEMBER_BYTES = 50 * 1024 ** 2
+
+    @classmethod
+    def _guard_zip(cls, zf: zipfile.ZipFile) -> None:
+        infos = zf.infolist()
+        if len(infos) > cls._MAX_MEMBERS:
+            raise ParseSkip(f"OFD 内部文件过多（>{cls._MAX_MEMBERS}），已拒绝解析")
+        total = 0
+        for info in infos:
+            size = max(0, int(info.file_size))
+            total += size
+            if size > cls._MAX_MEMBER_BYTES:
+                raise ParseSkip("OFD 内部单个文件过大，已拒绝解析")
+            if total > cls._MAX_UNCOMPRESSED:
+                raise ParseSkip("OFD 解压后体积超限，已拒绝解析")
+
     # CustomTag 标签 -> DTO 字段（仅映射确定的字段，避免 Amount 等行项目标签误伤合计）
     _TAG_FIELD = {
         "InvoiceNo": "invoice_no",
@@ -185,6 +252,7 @@ class OfdInvoiceParser(BaseParser):
         best: Optional[InvoiceDTO] = None
         best_filled = -1
         with zipfile.ZipFile(io.BytesIO(task.content)) as zf:
+            self._guard_zip(zf)
             for info in zf.infolist():
                 if not info.filename.lower().endswith(".xml"):
                     continue
@@ -225,7 +293,7 @@ class OfdInvoiceParser(BaseParser):
         for name in sorted(zf.namelist()):
             if "/Pages/" in name and name.lower().endswith("content.xml"):
                 try:
-                    root = ET.fromstring(zf.read(name))
+                    root = _safe_fromstring(zf.read(name))
                 except ET.ParseError:
                     continue
                 for elem in root.iter():
@@ -252,7 +320,7 @@ class OfdInvoiceParser(BaseParser):
                 if not tag_file.startswith(doc_dir + "/Tags/") or not tag_file.lower().endswith(".xml"):
                     continue
                 try:
-                    root = ET.fromstring(zf.read(tag_file))
+                    root = _safe_fromstring(zf.read(tag_file))
                 except ET.ParseError:
                     continue
                 self._fill_from_tag_tree(root, pages, zf, doc_dir, text_cache, dto)
@@ -262,7 +330,7 @@ class OfdInvoiceParser(BaseParser):
     def _page_map(zf: zipfile.ZipFile, doc_dir: str) -> dict:
         """Document.xml -> {页面 ID: BaseLoc}"""
         try:
-            root = ET.fromstring(zf.read(f"{doc_dir}/Document.xml"))
+            root = _safe_fromstring(zf.read(f"{doc_dir}/Document.xml"))
         except (KeyError, ET.ParseError):
             return {}
         return {e.attrib["ID"]: e.attrib["BaseLoc"]
@@ -274,7 +342,7 @@ class OfdInvoiceParser(BaseParser):
     def _text_objects(zf: zipfile.ZipFile, path: str) -> dict:
         """页面 Content.xml -> {对象 ID: 文本}"""
         try:
-            root = ET.fromstring(zf.read(path))
+            root = _safe_fromstring(zf.read(path))
         except (KeyError, ET.ParseError):
             return {}
         objs: dict = {}
@@ -952,7 +1020,8 @@ class ParserEngine:
 
         for parser in chain:
             try:
-                dto = parser.parse(task)
+                timeout = _PARSER_TIMEOUTS.get(parser.name, _PARSER_TIMEOUT_DEFAULT)
+                dto = _call_with_timeout(parser.parse, timeout, task)
                 # normalize 之前 capture 完整串（保留 *xxx* 前缀供 normalize 选 short summary），
                 # 同时生成 clean version 存 raw_json（tooltip 不应有星号）
                 item_summary_raw = dto.item_summary or ""
@@ -974,6 +1043,10 @@ class ParserEngine:
                 last_error = f"{parser.name}: {e}"
                 logger.warning(last_error)
                 degrade_chain.append({"engine": parser.name, "status": "degraded", "reason": str(e)})
+            except TimeoutError as e:
+                last_error = f"{parser.name}: {e}"
+                logger.warning(last_error)
+                degrade_chain.append({"engine": parser.name, "status": "timeout", "reason": str(e)})
             except Exception as e:  # 任何异常均降级，不阻塞其他文件
                 last_error = f"{parser.name}: 异常: {e}"
                 logger.warning(last_error, exc_info=True)

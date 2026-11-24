@@ -27,6 +27,29 @@ _open_conns: "set[sqlite3.Connection]" = set()
 _open_conns_lock = threading.Lock()
 _after_commit_callbacks: ContextVar = ContextVar("after_commit_callbacks", default=None)
 
+# 数据恢复窗口：禁止新建连接。否则恢复流程把旧库改名后，并发请求的 connect()
+# 会重新创建一个空库文件，导致新库改名失败、回滚也同样被竞态破坏。
+_connections_suspended = threading.Event()
+
+
+class DatabaseSuspendedError(sqlite3.ProgrammingError):
+    """数据恢复期间拒绝新建连接（由全局异常处理器转 503）。"""
+
+
+def suspend_connections() -> None:
+    """进入恢复窗口：此后 connect() 一律失败，直到 resume_connections()。"""
+    _connections_suspended.set()
+
+
+def resume_connections() -> None:
+    _connections_suspended.clear()
+
+
+def active_connection_count() -> int:
+    """当前残留连接数（恢复前用于等待在途请求自然结束）。"""
+    with _open_conns_lock:
+        return len(_open_conns)
+
 # 规则表 DDL（独立常量：旧库迁移重建时复用，避免两处定义漂移）
 RULE_DDL = """CREATE TABLE IF NOT EXISTS rule (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -378,6 +401,8 @@ def connect() -> sqlite3.Connection:
     - PRAGMA busy_timeout = 30000：显式兜底（某些 Python/sqlite3 版本不会把 timeout 透传为 pragma）；
     - 同步级别默认 FULL（断电安全）；受限环境可经 FAPIAO_SYNC 降级（见 config.py 注释）。
     """
+    if _connections_suspended.is_set():
+        raise DatabaseSuspendedError("系统正在恢复数据，数据库连接已暂停")
     settings.db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(settings.db_path, timeout=30)
     conn.row_factory = sqlite3.Row

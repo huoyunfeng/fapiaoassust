@@ -78,6 +78,23 @@ class AuthMiddleware(BaseHTTPMiddleware):
         # 写入请求级操作人：审计/状态日志以其为准，前端传值仅作兜底
         set_current_operator((user or {}).get("username") or "")
 
+        # 0. 数据恢复期间排空其他请求：恢复会强制断开所有数据库连接并替换文件，
+        #    此时继续处理业务请求只会抛 "closed database"/锁错误。
+        if backup_service.is_restoring() and not (
+                path in ("/health", "/api/_shutdown", "/api/backup/status")
+                or path.startswith(("/api/tasks/", "/api/auth/"))):
+            message = "系统正在恢复数据，请稍候（页面会在恢复完成后自动刷新）"
+            if _is_api(path):
+                return JSONResponse({"ok": False, "code": "RESTORING",
+                                     "message": message}, status_code=503)
+            return HTMLResponse(
+                f"""<!doctype html><meta charset="utf-8"><title>恢复中</title>
+                <div style="font-family:system-ui;padding:60px;text-align:center;color:#303133">
+                <h2 style="font-size:18px">系统正在恢复数据</h2>
+                <p style="color:#909399;margin-top:10px">{message}</p>
+                </div>""",
+                status_code=503)
+
         # 1. 首次启动：没有账号时只允许初始化
         if not auth_service.has_users():
             if path in ("/setup", "/api/auth/setup", "/health"):

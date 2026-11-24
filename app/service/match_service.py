@@ -5,6 +5,7 @@
 """
 import difflib
 import json
+import threading
 from decimal import Decimal
 from typing import Dict, List, Optional
 
@@ -19,10 +20,22 @@ from app.repository import db
 from app.repository.repos import (category_repo, company_repo, invoice_repo,
                                   match_repo, reimburse_repo, rule_repo)
 from app.service.status_flow import change_invoice_status
+from app.service.task_lock import HEAVY_TASK_LOCK
 
 logger = get_logger(__name__)
 _engine = MatchEngine()
 _rule_engine = RuleEngine()
+
+# 匹配全局串行锁：同步重算、导入后自动匹配、后台任务共用，避免多入口
+# 同时全量重算（重复计算 + 长时间争抢 SQLite 写锁）。
+_MATCH_LOCK = threading.Lock()
+
+
+class MatchBusy(RuntimeError):
+    """已有匹配任务在执行。"""
+
+    def __init__(self, message: str = "已有匹配任务正在进行，请稍候再试") -> None:
+        super().__init__(message)
 
 # 规则阻断的统一前缀（前端弹窗原样展示）
 RULE_BLOCK_PREFIX = "× 匹配失败："
@@ -175,6 +188,12 @@ def _defer_category_recheck(reimburse_id: Optional[int], inherit: bool = True) -
     category_service.defer_recheck([reimburse_id], inherit=inherit)
 
 
+# 并列候选说明最多列出的发票数：候选集可能上千张，逐条拼接会让 message
+# 膨胀到数十 KB，并随匹配次数写入每条 match_result（高并发/大数据量下
+# 单个库可增长到上百 MB），故只展示前若干条 + 总数。
+_AMBIGUITY_SHOW_LIMIT = 10
+
+
 def _ambiguity_note(tied_ids: List[int], inv_rows: Dict[int, dict], reb_row: dict) -> str:
     """并列候选说明 + 销售方/摘要弱相似度提示（仅作展示参考，不影响判定）。
 
@@ -186,7 +205,7 @@ def _ambiguity_note(tied_ids: List[int], inv_rows: Dict[int, dict], reb_row: dic
         reb_row.get("submitter") or "",
     ])
     parts = []
-    for iid in sorted(tied_ids):
+    for iid in sorted(tied_ids)[:_AMBIGUITY_SHOW_LIMIT]:
         r = inv_rows.get(iid) or {}
         inv_text = (r.get("seller_name") or "") + (r.get("item_summary") or "")
         ratio = (difflib.SequenceMatcher(None, reb_text, inv_text).ratio()
@@ -194,20 +213,38 @@ def _ambiguity_note(tied_ids: List[int], inv_rows: Dict[int, dict], reb_row: dic
         label = r.get("invoice_no") or f"#{iid}"
         seller = r.get("seller_name") or "销售方未知"
         parts.append(f"{label}（{seller}，文本相似度 {ratio:.0%}）")
+    more = (f" 等共 {len(tied_ids)} 张" if len(tied_ids) > _AMBIGUITY_SHOW_LIMIT else "")
     return (f"存在 {len(tied_ids)} 张金额/日期相同的发票，无法自动区分，"
-            f"请人工在匹配中心指定（候选：{'、'.join(parts)}）")
+            f"请人工在匹配中心指定（候选：{'、'.join(parts)}{more}）")
 
 
 # ---------------------------------------------------------------- 执行匹配
-def run_matching(operator: str = None, progress=None) -> dict:
-    """执行一轮匹配（全量重评估）。
+def run_matching(operator: str = None, progress=None,
+                 wait_seconds: float = -1.0) -> dict:
+    """执行一轮匹配（全量重评估，全局串行）。
 
+    wait_seconds: -1 一直等待锁；0 拿不到立即抛 MatchBusy；>0 最多等待秒数。
     先清理上一轮非生效评估记录（生效匹配保留），再对
     NORMAL 且无生效匹配的发票 与 未占用的报销单 重新评分。
 
     progress: 可选回调 progress(processed, total, phase)，用于后台任务的真实进度反馈；
               总工作量 = 3 轮报销单遍历 + 1 轮发票收尾（均按条计数）。
     """
+    if wait_seconds < 0:
+        acquired = _MATCH_LOCK.acquire()
+    else:
+        acquired = _MATCH_LOCK.acquire(timeout=wait_seconds)
+    if not acquired:
+        raise MatchBusy()
+    try:
+        # 与导出/备份的长任务锁保持一致：避免导出读到重算中间态
+        with HEAVY_TASK_LOCK:
+            return _run_matching_impl(operator, progress)
+    finally:
+        _MATCH_LOCK.release()
+
+
+def _run_matching_impl(operator: str = None, progress=None) -> dict:
     operator = operator or settings.default_operator
     summary = {"cleared": 0, "auto_matched": 0, "pending": 0, "conflict": 0,
                "unmatched": 0, "many_to_one": 0, "evaluated_reimburses": 0,

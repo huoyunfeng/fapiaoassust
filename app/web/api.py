@@ -1,7 +1,8 @@
 """UI 层 - JSON API 路由。只做参数接收与结果返回，不含业务规则（§2 职责铁律）。"""
-import io
 import json
+import uuid
 import zipfile
+from pathlib import Path
 from typing import List, Optional
 
 from fastapi import APIRouter, File, Form, Request, UploadFile
@@ -10,6 +11,7 @@ from fastapi.responses import (FileResponse, JSONResponse, Response,
                                StreamingResponse)
 from starlette.background import BackgroundTask
 
+from app.config import settings
 from app.service import (audit_service, auth_service, backup_service,
                          category_service, handover_service, invoice_service,
                          license_service, match_service, recycle_service,
@@ -25,12 +27,55 @@ logger = get_logger(__name__)
 
 api = APIRouter(prefix="/api", tags=["api"])
 
-# 交接包上传上限（2GB）：超过此大小内存无法安全读入，直接拒绝
+# 交接包/备份包上传上限（2GB）：流式落盘，不再整包读入内存
 MAX_ZIP_BYTES = 2 * 1024 ** 3
 # 发票上传限制：防止员工通过超大文件/大批量文件耗尽内存或磁盘
 MAX_INVOICE_FILE_BYTES = 20 * 1024 ** 2
 MAX_INVOICE_FILES = 100
 MAX_INVOICE_BATCH_BYTES = 200 * 1024 ** 2
+# 报销单 Excel 上限（openpyxl 解析需要整表进内存，不能放开）
+MAX_EXCEL_BYTES = 50 * 1024 ** 2
+_UPLOAD_CHUNK = 1024 * 1024
+
+
+async def _stream_upload_to_temp(file: UploadFile, max_bytes: int,
+                                 suffix: str) -> tuple[Optional[Path], str]:
+    """把上传内容分块写入 data/temp_uploads，返回 (路径, 错误消息)。
+
+    大文件（备份包/交接包）不再整包读入内存；超过上限立即中断并清理。
+    """
+    tmp_dir = settings.data_dir / "temp_uploads"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    path = tmp_dir / f"{uuid.uuid4().hex}{suffix}"
+    written = 0
+    try:
+        with open(path, "wb") as out:
+            while True:
+                chunk = await file.read(_UPLOAD_CHUNK)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if written > max_bytes:
+                    out.close()
+                    path.unlink(missing_ok=True)
+                    return None, f"文件超过 {max_bytes // (1024 ** 2)}MB 上限"
+                out.write(chunk)
+    except OSError as e:
+        path.unlink(missing_ok=True)
+        logger.warning("上传文件写入临时目录失败: %s", e)
+        return None, "文件写入失败：磁盘空间不足或目录无权限"
+    if written == 0:
+        path.unlink(missing_ok=True)
+        return None, "未收到文件，请重新选择"
+    return path, ""
+
+
+def _cleanup_temp(path: Optional[Path]) -> None:
+    try:
+        if path is not None:
+            path.unlink(missing_ok=True)
+    except OSError:
+        logger.warning("清理临时上传文件失败: %s", path)
 
 
 def _j(data):
@@ -113,7 +158,8 @@ async def upload_invoices(request: Request, files: List[UploadFile] = File(...),
         payload.append((name, f.content_type or "", content))
 
     if payload:
-        # 免费版月度额度（防刷）：先原子预留整批额度，导入完成后按未入库数退回
+        # 免费版月度额度（防刷）：先原子预留整批额度，导入完成后按未入库数退回。
+        # 用 try/finally 兜底：导入过程抛异常（磁盘满/数据库锁）也要退还额度。
         try:
             license_service.consume_invoice_quota(len(payload))
         except license_service.QuotaExceeded as e:
@@ -122,18 +168,23 @@ async def upload_invoices(request: Request, files: List[UploadFile] = File(...),
                 "ok": False, "code": "LIMIT_EXCEEDED", "msg": "额度用尽",
                 "limit": int((license_service.quota_status() or {}).get("limit") or 0),
                 "message": str(e)})
-        # no_match=1: 前端逐文件上传以显示进度，导入完成后由前端统一触发一次匹配
-        # 解析（尤其 OCR）耗时数秒，放线程池执行：事件循环保持畅通，删除等请求不被卡住
-        imported_result = await run_in_threadpool(
-            invoice_service.import_files, payload, None, bool(no_match))
-        imported = [r for r in imported_result
-                    if r.get("ok") and not r.get("skipped") and r.get("invoice_id")]
-        license_service.refund_invoice_quota(len(payload) - len(imported))
-        if imported:
-            user = getattr(request.state, "user", None)
-            if not auth_service.is_staff(user):
-                invoice_service.assign_owner([r["invoice_id"] for r in imported], user["id"])
-        pre_results.extend(imported_result)
+        imported_count = 0
+        try:
+            # no_match=1: 前端逐文件上传以显示进度，导入完成后由前端统一触发一次匹配
+            # 解析（尤其 OCR）耗时数秒，放线程池执行：事件循环保持畅通，删除等请求不被卡住
+            imported_result = await run_in_threadpool(
+                invoice_service.import_files, payload, None, bool(no_match))
+            imported = [r for r in imported_result
+                        if r.get("ok") and not r.get("skipped") and r.get("invoice_id")]
+            imported_count = len(imported)
+            if imported:
+                user = getattr(request.state, "user", None)
+                if not auth_service.is_staff(user):
+                    invoice_service.assign_owner([r["invoice_id"] for r in imported], user["id"])
+            pre_results.extend(imported_result)
+        finally:
+            # 未实际入库（重复跳过/解析失败/异常中断）的预留额度一律退回
+            license_service.refund_invoice_quota(len(payload) - imported_count)
     return _j(pre_results)
 
 
@@ -163,7 +214,12 @@ async def manual_invoice(
         "tax_amount": tax_amount, "total_amount": total_amount,
         "tax_rate": tax_rate, "item_summary": item_summary,
     }
-    result = invoice_service.manual_create(fields)
+    try:
+        result = invoice_service.manual_create(fields)
+    except Exception:
+        # 入库过程异常也必须退还已预留额度
+        license_service.refund_invoice_quota(1)
+        raise
     if result.get("ok") and result.get("invoice_id"):
         user = getattr(request.state, "user", None)
         if not auth_service.is_staff(user):
@@ -293,9 +349,12 @@ async def import_reimburses(request: Request, file: UploadFile = File(...),
     on_duplicate: 查重处置（空=先返回重复确认；skip=只导入不重复行；force=全部导入并打标）
     overwrite_batch_id: 同名文件确认后指定覆盖的有效旧批次
     """
-    content = await file.read()
+    content = await file.read(MAX_EXCEL_BYTES + 1)
     if not content:
         return {"ok": False, "message": "未收到文件，请重新选择 Excel"}
+    if len(content) > MAX_EXCEL_BYTES:
+        return {"ok": False,
+                "message": f"Excel 文件超过 {MAX_EXCEL_BYTES // (1024 ** 2)}MB 上限，未导入"}
     try:
         fc = json.loads(fields_config) if fields_config else None
         if fc == {}:
@@ -536,7 +595,13 @@ async def list_batch_ids(batch_id: str):
 # ---------------------------------------------------------------- 匹配
 @api.post("/match/run")
 async def run_match(operator: str = Form("admin")):
-    return _j(await run_in_threadpool(match_service.run_matching, operator))
+    try:
+        # 最多等 5 秒：后台重算正在进行时不要无限占住请求线程
+        return _j(await run_in_threadpool(match_service.run_matching, operator, None, 5))
+    except match_service.MatchBusy as e:
+        return JSONResponse(status_code=409,
+                            content={"ok": False, "code": "MATCH_BUSY",
+                                     "message": str(e)})
 
 
 @api.post("/match/tasks")
@@ -1156,18 +1221,21 @@ async def backup_status():
 @api.post("/backup/restore")
 async def restore_backup(file: UploadFile = File(...)):
     """恢复数据：上传 zip 覆盖数据库与附件（旧数据带时间戳保底，失败自动回滚）。"""
-    content = await file.read()
-    if not content:
-        return _j({"ok": False, "message": "未收到备份文件，请重新选择"})
     if not (file.filename or "").lower().endswith(".zip"):
         return _j({"ok": False, "message": "仅支持 .zip 格式的备份文件"})
+    # 流式落盘：备份包可能含 GB 级附件，整包读入内存会把进程打爆
+    tmp_path, error = await _stream_upload_to_temp(file, MAX_ZIP_BYTES, ".zip")
+    if error:
+        return _j({"ok": False, "message": error})
     try:
-        result = await run_in_threadpool(backup_service.restore_backup, content)
+        result = await run_in_threadpool(backup_service.restore_backup_file, tmp_path)
     except backup_service.BackingUpError as e:
         return JSONResponse(
             status_code=409,
             content={"ok": False, "message": str(e)},
         )
+    finally:
+        _cleanup_temp(tmp_path)
     return _j(result)
 
 
@@ -1260,14 +1328,17 @@ async def handover_import(file: UploadFile = File(...)):
     filename = (file.filename or "").lower()
     if not filename.endswith(".zip"):
         return _j({"ok": False, "message": "请上传 .zip 格式的数据交接包"})
-    content = await file.read(MAX_ZIP_BYTES + 1)
-    if len(content) > MAX_ZIP_BYTES:
-        return _j({"ok": False, "message": "交接包过大（超过 2GB 上限）"})
+    # 流式落盘，避免 2GB 包整块进内存
+    tmp_path, error = await _stream_upload_to_temp(file, MAX_ZIP_BYTES, ".zip")
+    if error:
+        return _j({"ok": False, "message": error})
     try:
-        result = await run_in_threadpool(handover_service.import_handover, content)
+        result = await run_in_threadpool(handover_service.import_handover_file, tmp_path)
     except Exception as e:
         logger.exception("handover_import 失败")
         return _j({"ok": False, "message": f"导入失败：{e}"})
+    finally:
+        _cleanup_temp(tmp_path)
     return _j(result)
 
 
@@ -1295,31 +1366,44 @@ async def tasks_backup():
 
 @api.post("/tasks/restore")
 async def tasks_restore(file: UploadFile = File(...)):
-    """异步恢复：文件接收后把 bytes 交给后台线程；先做 MD5 比对再执行恢复。"""
+    """异步恢复：文件流式落盘后把路径交给后台线程；先做 MD5 比对再执行恢复。"""
     filename = (file.filename or "").lower()
     if not filename.endswith(".zip"):
         return _j({"ok": False, "message": "请上传 .zip 格式的备份文件"})
-    content = await file.read(MAX_ZIP_BYTES + 1)
-    if len(content) > MAX_ZIP_BYTES:
-        return _j({"ok": False, "message": "备份包过大（超过 2GB 上限）"})
-    # MD5 预校验：前端选文件后拿到"声明 md5"，但我们也可以先做一次完整性快查
+    tmp_path, error = await _stream_upload_to_temp(file, MAX_ZIP_BYTES, ".zip")
+    if error:
+        return _j({"ok": False, "message": error})
+    # MD5 预校验：manifest.md5 是"业务载荷摘要"（排除 manifest 自身），
+    # 不能用整包字节 MD5 比对，否则所有备份都会被误判为篡改。
     declared_md5 = ""
     try:
-        with zipfile.ZipFile(io.BytesIO(content)) as zf:
-            backup_service.validate_zip_members(zf, metadata_names={"manifest.json"})
+        with zipfile.ZipFile(tmp_path) as zf:
+            backup_service.validate_zip_members(
+                zf, metadata_names={"manifest.json"},
+                max_member_bytes=backup_service.MAX_ZIP_MEMBER_BYTES)
             manifest = zf.read("manifest.json").decode("utf-8")
             declared_md5 = (json.loads(manifest).get("md5") or "").lower()
+            actual_md5 = backup_service.compute_payload_md5(zf).lower()
     except backup_service.UnsafeZip as e:
+        _cleanup_temp(tmp_path)
         return _j({"ok": False, "message": str(e)})
-    except (KeyError, zipfile.BadZipFile, json.JSONDecodeError):
-        declared_md5 = ""
-    actual_md5 = backup_service.compute_md5_bytes(content).lower()
+    except (KeyError, zipfile.BadZipFile, json.JSONDecodeError, OSError, RuntimeError):
+        _cleanup_temp(tmp_path)
+        return _j({"ok": False, "message": "备份文件无效：不是合法的备份包（或已加密）"})
     if declared_md5 and declared_md5 != actual_md5:
+        _cleanup_temp(tmp_path)
         return _j({"ok": False, "md5_mismatch": True,
                    "message": "⚠️ 备份包 MD5 校验失败，文件可能被篡改或损坏，禁止恢复！"})
-    # 交给后台线程
-    task_id = task_service.create_task("restore", backup_service.restore_backup, content)
+    # 交给后台线程；任务结束后清理临时文件
+    task_id = task_service.create_task("restore", _restore_from_temp, tmp_path)
     return _j({"ok": True, "task_id": task_id})
+
+
+def _restore_from_temp(tmp_path, on_progress=None) -> dict:
+    try:
+        return backup_service.restore_backup_file(tmp_path, on_progress=on_progress)
+    finally:
+        _cleanup_temp(Path(tmp_path))
 
 
 @api.post("/tasks/migrate")

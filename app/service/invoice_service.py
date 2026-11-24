@@ -167,12 +167,15 @@ def import_files(files: List[tuple[str, str, bytes]], operator: str = None,
                             "message": _friendly_parse_error(_file_store.detect_type(file_name), str(e))})
     # 有新发票导入成功后自动执行一轮匹配，报销单页状态随之刷新
     if not skip_match and any(r.get("ok") and not r.get("skipped") for r in results):
+        from app.service import match_service
         try:
-            from app.service import match_service
             t0 = time.perf_counter()
-            ms = match_service.run_matching(operator)
+            # 已有匹配任务在跑时不排队等待：本轮导入的发票由下一轮重算覆盖
+            ms = match_service.run_matching(operator, wait_seconds=0)
             logger.info("发票导入后自动匹配: %s (%.0fms)",
                         ms, (time.perf_counter() - t0) * 1000)
+        except match_service.MatchBusy:
+            logger.info("已有匹配任务正在进行，跳过本次导入后自动匹配")
         except Exception as e:
             logger.warning("发票导入后自动匹配失败: %s", e)
     return results
@@ -216,6 +219,14 @@ def _import_one(file_name: str, content: bytes, operator: str) -> dict:
     save_ms = (time.perf_counter() - t_save) * 1000
     task = ParseTask(file_name=file_name, file_type=file_type, content=content)
 
+    # 解析（OCR / PDF / OFD 可能耗时数秒到数十秒）必须在事务外完成：
+    # 事务内解析会让 BEGIN IMMEDIATE 的写锁被长时间占用，其他写入只能等
+    # busy_timeout 后报 database is locked。
+    t_parse = time.perf_counter()
+    result = _parser_engine.parse(task)
+    parse_ms = (time.perf_counter() - t_parse) * 1000
+    logger.info("导入分段 %s: 存盘=%.0fms 解析=%.0fms", file_name, save_ms, parse_ms)
+
     with db.tx() as conn:
         # 不变量 I1 二次确认（并发上传同一文件时兜底）：清理刚写入的副本再跳过
         existed = invoice_repo.get_by_hash(conn, file_hash)
@@ -243,12 +254,7 @@ def _import_one(file_name: str, content: bytes, operator: str) -> dict:
             "status": InvoiceStatus.PARSING.value,
         })
 
-        # 解析（引擎为纯函数，在事务内调用无副作用）
-        t_parse = time.perf_counter()
-        result = _parser_engine.parse(task)
-        parse_ms = (time.perf_counter() - t_parse) * 1000
         t_write = time.perf_counter()
-        logger.info("导入分段 %s: 存盘=%.0fms 解析=%.0fms", file_name, save_ms, parse_ms)
 
         if result.success:
             # 重复发票（同号码）不跳过：照常导入，由 _validate_and_dedup 标记为 DUPLICATE 状态
@@ -746,7 +752,7 @@ def restore_invoices(invoice_ids: List[int], operator: str = None) -> dict:
         # 需要重跑一轮匹配把「已匹配发票 ↔ 报销单」的关联关系还原。
         from app.service import match_service   # 惰性导入，避免服务层循环依赖
         try:
-            ms = match_service.run_matching(operator)
+            ms = match_service.run_matching(operator, wait_seconds=10)
             result["match"] = ms
             result["message"] = (
                 f"已恢复 {len(restored)} 张发票，并重新匹配"
@@ -861,10 +867,20 @@ def _safe_upload_path(src: str) -> Optional[Path]:
             return p
         name = raw.name
         if name:
-            for f in root.rglob(name):
-                rf = f.resolve()
-                if rf.is_file() and (rf == root or root in rf.parents):
-                    return rf
+            # 附件实际布局只有两级：uploads/<文件名>（交接包）与
+            # uploads/YYYYMM/<uuid>_文件名（本机导入）。按目录逐层查找，
+            # 避免 rglob 全盘扫描导致大附件量下每次预览都卡顿。
+            candidates = [root / name]
+            try:
+                candidates.extend(
+                    child / name for child in root.iterdir() if child.is_dir())
+            except OSError:
+                pass
+            for f in candidates:
+                if f.is_file():
+                    rf = f.resolve()
+                    if rf == root or root in rf.parents:
+                        return rf
         return None
     except OSError:
         return None

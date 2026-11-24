@@ -19,6 +19,13 @@ async def lifespan(app: FastAPI):
     setup_logging()
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     init_schema()
+    # 清理上次异常退出残留的上传临时文件（备份/交接包流式落盘的中间产物）
+    try:
+        from app.service.backup_service import cleanup_temp_uploads
+        cleanup_temp_uploads()
+    except Exception as e:
+        from app.infra.logger import get_logger
+        get_logger(__name__).warning("清理上传临时文件失败: %s", e)
     # 应用上次迁移后的附件目录（必须在任何文件读写前完成）
     from app.service.storage_service import apply_saved_upload_dir
     try:
@@ -132,6 +139,15 @@ def create_app() -> FastAPI:
         return JSONResponse(
             {"ok": False, "code": "DB_ERROR", "message": "数据库操作异常", "detail": msg},
             status_code=500)
+
+    @app.exception_handler(sqlite3.ProgrammingError)
+    async def _handle_db_closed(request, exc):
+        # 恢复数据时会 dispose() 强制断开所有连接：请求线程拿到的连接可能已关闭
+        return JSONResponse(
+            {"ok": False, "code": "DB_CLOSED",
+             "message": "数据库连接已重置（系统可能正在恢复数据），请刷新页面后重试",
+             "detail": str(exc)},
+            status_code=503)
 
     @app.exception_handler(OSError)
     async def _handle_oserror(request, exc):

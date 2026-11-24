@@ -64,6 +64,14 @@ def _clean(row: dict, allowed: set) -> dict:
 
 def import_package(content: bytes) -> dict:
     with zipfile.ZipFile(BytesIO(content)) as zf:
+        # 旧版交换包无页面入口，但接口仍保留：同样拦压缩包炸弹与超大成员
+        from app.service import backup_service
+        try:
+            backup_service.validate_zip_members(
+                zf, metadata_names={"exchange.json"},
+                max_member_bytes=100 * 1024 ** 2)
+        except backup_service.UnsafeZip as e:
+            raise ValueError(str(e)) from e
         if "exchange.json" not in zf.namelist():
             raise ValueError("交接包缺少 exchange.json")
         payload = json.loads(zf.read("exchange.json").decode("utf-8"))

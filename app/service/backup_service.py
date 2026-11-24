@@ -32,6 +32,7 @@ logger = get_logger(__name__)
 
 _UPLOADS_ARC_PREFIX = "uploads/"
 _BACKUP_LOCK = threading.Lock()
+_BACKUP_RESTORING = threading.Event()      # 恢复进行中：中间件据此排空其他请求
 _backup_holder: Optional[str] = None       # 当前备份持有者标识（调试用）
 _BACKUP_STARTED_AT: Optional[datetime] = None
 
@@ -56,6 +57,30 @@ _RENAME_DELAY = 0.4
 def is_backing_up() -> bool:
     """当前是否正在生成备份 / 恢复数据。写路径统一调用此函数拦截。"""
     return _BACKUP_LOCK.locked()
+
+
+def is_restoring() -> bool:
+    """当前是否处于数据恢复阶段（此时数据库连接会被强制断开）。"""
+    return _BACKUP_RESTORING.is_set()
+
+
+def cleanup_temp_uploads(max_age_hours: int = 24) -> int:
+    """清理上传临时目录中上次异常退出残留的文件（启动时调用）。"""
+    tmp_dir = settings.data_dir / "temp_uploads"
+    if not tmp_dir.exists():
+        return 0
+    cutoff = time.time() - max_age_hours * 3600
+    removed = 0
+    for item in tmp_dir.iterdir():
+        try:
+            if item.is_file() and item.stat().st_mtime < cutoff:
+                item.unlink()
+                removed += 1
+        except OSError:
+            continue
+    if removed:
+        logger.info("已清理上传临时文件 %s 个", removed)
+    return removed
 
 
 def assert_not_backing_up() -> None:
@@ -419,11 +444,18 @@ def _detach_invoice_originals() -> tuple:
 
 def _rename_with_retry(src: Path, dst: Path, attempts: int = _RENAME_ATTEMPTS,
                        delay: float = _RENAME_DELAY) -> None:
-    """改名重试：Windows 下文件/目录可能被瞬时占用（杀毒、索引器等）。"""
+    """改名重试：Windows 下文件/目录可能被瞬时占用（杀毒、索引器等）。
+
+    文件使用 os.replace 原子覆盖：Windows 的 Path.rename 在目标已存在时
+    直接报 WinError 183，恢复流程中一旦有并发请求重建了目标文件就会中断。
+    目录无法覆盖，若目标位置被并发请求重建为空目录则先清掉再移动。
+    """
     last: OSError | None = None
     for _ in range(attempts):
         try:
-            src.rename(dst)
+            if dst.exists() and src.is_dir():
+                shutil.rmtree(dst, ignore_errors=True)
+            os.replace(src, dst)
             return
         except OSError as e:
             last = e
@@ -597,6 +629,8 @@ def _rewrite_source_paths(old_root: Path, new_root: Path) -> int:
 MAX_ZIP_MEMBERS = 100_000
 MAX_ZIP_UNCOMPRESSED_BYTES = 20 * 1024 ** 3
 MAX_ZIP_METADATA_BYTES = 64 * 1024 ** 2
+# 单个成员解压上限：避免压缩包炸弹用超大单文件打爆内存/磁盘
+MAX_ZIP_MEMBER_BYTES = 4 * 1024 ** 3
 
 
 class UnsafeZip(ValueError):
@@ -828,11 +862,17 @@ def compute_md5_bytes(content: bytes) -> str:
     return hashlib.md5(content).hexdigest()
 
 
+def compute_payload_md5(zf: zipfile.ZipFile) -> str:
+    """对已打开的备份 zip 计算业务载荷 MD5（与 manifest.md5 同一口径）。"""
+    return _payload_md5(zf)
+
+
 def _payload_md5(zf: zipfile.ZipFile) -> str:
     """业务载荷稳定摘要：按条目名排序，对「文件名 + 内容」计算 MD5，排除 manifest.json。
 
     备份包在收尾时会追加（覆盖）manifest.json，整包字节 MD5 无法自包含；
     改为对业务载荷做摘要，生成端与恢复端可独立复算。
+    采用分块读取：大附件（GB 级）不会整块读入内存。
     """
     h = hashlib.md5()
     for info in sorted(zf.infolist(), key=lambda i: i.filename):
@@ -840,7 +880,12 @@ def _payload_md5(zf: zipfile.ZipFile) -> str:
             continue
         h.update(info.filename.encode("utf-8"))
         h.update(b"\0")
-        h.update(zf.read(info))
+        with zf.open(info) as fp:
+            while True:
+                chunk = fp.read(1024 * 1024)
+                if not chunk:
+                    break
+                h.update(chunk)
         h.update(b"\0")
     return h.hexdigest()
 
@@ -918,21 +963,33 @@ def _read_manifest(zf: zipfile.ZipFile) -> dict:
 
 
 def restore_backup(content: bytes, on_progress: Optional[Callable[[int, str], None]] = None) -> dict:
-    """从 zip 备份覆盖恢复全部数据。
+    """从 zip 备份覆盖恢复全部数据（字节接口，保留给测试/内部调用）。
 
-    返回 {"ok": bool, "message": str, "invoices": int, "reimburses": int,
-          "attachments": int}。
-    - dispose() 强制断连 + 中止后台清理线程。
-    - 旧库/旧附件带时间戳改名保底，失败自动回滚。
-    - 任何损坏（zip-slip / db 打不开 / 移动失败 / MD5 不匹配）都只返回失败，不碰现有数据。
-
-    on_progress 可选：fn(progress_pct, message)。
+    生产上传路径应使用 restore_backup_file：大备份包先流式落盘，
+    避免整包读入内存导致 OOM。
     """
+    return _restore_with_guard(io.BytesIO(content), on_progress)
+
+
+def restore_backup_file(path, on_progress: Optional[Callable[[int, str], None]] = None) -> dict:
+    """从已落盘的 zip 文件恢复（生产路径：上传时流式写入临时文件）。"""
+    return _restore_with_guard(str(path), on_progress)
+
+
+def _restore_with_guard(zip_source, on_progress=None) -> dict:
     with _backup_guard("restore_backup"):
-        return _do_restore(content, on_progress=on_progress)
+        _BACKUP_RESTORING.set()
+        # 恢复期间禁止新建数据库连接：否则旧库改名后，在途请求会把空库文件
+        # 重新创建出来，使原子替换与回滚同时失败（WinError 183）。
+        db_repo.suspend_connections()
+        try:
+            return _do_restore(zip_source, on_progress=on_progress)
+        finally:
+            db_repo.resume_connections()
+            _BACKUP_RESTORING.clear()
 
 
-def _do_restore(content: bytes, on_progress: Optional[Callable[[int, str], None]] = None) -> dict:
+def _do_restore(zip_source, on_progress: Optional[Callable[[int, str], None]] = None) -> dict:
     def _cb(pct: int, msg: str):
         if on_progress:
             try:
@@ -941,20 +998,21 @@ def _do_restore(content: bytes, on_progress: Optional[Callable[[int, str], None]
                 pass
 
     _cb(2, "正在校验备份包 MD5…")
-    if not content or not zipfile.is_zipfile(io.BytesIO(content)):
+    if not zip_source or not zipfile.is_zipfile(zip_source):
         return {"ok": False, "message": "备份文件无效：不是合法的 .zip 文件"}
 
     # 0. MD5 完整性校验（防篡改 / 传输损坏）
     try:
-        with zipfile.ZipFile(io.BytesIO(content)) as zf_probe:
-            validate_zip_members(zf_probe, metadata_names={"manifest.json"})
+        with zipfile.ZipFile(zip_source) as zf_probe:
+            validate_zip_members(zf_probe, metadata_names={"manifest.json"},
+                                 max_member_bytes=MAX_ZIP_MEMBER_BYTES)
             manifest_probe = _read_manifest(zf_probe)
             actual_md5 = _payload_md5(zf_probe)
         declared_md5 = (manifest_probe.get("md5") or "").lower()
     except UnsafeZip as e:
         return {"ok": False, "message": str(e)}
-    except zipfile.BadZipFile:
-        return {"ok": False, "message": "备份文件损坏：无法打开"}
+    except (zipfile.BadZipFile, RuntimeError):
+        return {"ok": False, "message": "备份文件损坏或已加密：无法打开"}
     if declared_md5 and declared_md5 != actual_md5:
         logger.warning("恢复拦截：MD5 不匹配 manifest=%s actual=%s", declared_md5, actual_md5)
         return {"ok": False,
@@ -970,7 +1028,7 @@ def _do_restore(content: bytes, on_progress: Optional[Callable[[int, str], None]
 
     try:
         _cb(12, "正在读取备份清单…")
-        with zipfile.ZipFile(io.BytesIO(content)) as zf:
+        with zipfile.ZipFile(zip_source) as zf:
             # ⓪ 版本强校验：包版本高于当前软件 → 拒绝恢复并提示升级
             manifest = _read_manifest(zf)
             pack_ver = manifest.get("app_version", "0.0.0")
@@ -985,7 +1043,11 @@ def _do_restore(content: bytes, on_progress: Optional[Callable[[int, str], None]
             db_member = sorted(db_members)[0]
 
             # ① 强制释放所有数据库连接（Windows 文件占用防护）
+            # 先等已进入的在途请求自然结束（最长 3s），再强制断连兜底
             _cb(20, "正在释放数据库连接…")
+            _drain_deadline = time.time() + 3
+            while db_repo.active_connection_count() > 0 and time.time() < _drain_deadline:
+                time.sleep(0.05)
             db_repo.dispose()
             time.sleep(0.5)  # 让 WAL 收敛
 
@@ -1074,6 +1136,8 @@ def _do_restore(content: bytes, on_progress: Optional[Callable[[int, str], None]
         # ⑤ 成功：重建 schema（幂等）
         _cb(94, "正在重建数据库 schema…")
         try:
+            # 文件已就位，先恢复连接能力；此时仍处于 RESTORING，外部请求继续被中间件拦截
+            db_repo.resume_connections()
             db_repo.init_schema()
         except Exception as e:
             logger.warning("恢复后 init_schema 异常（不影响已恢复数据）: %s", e)

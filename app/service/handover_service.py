@@ -157,12 +157,22 @@ def _attachment_target(blob: bytes, base: str) -> tuple:
 
 
 def import_handover(content: bytes) -> dict:
+    """导入交接包（字节接口，保留给测试/内部调用）。"""
+    return _import_handover_source(io.BytesIO(content))
+
+
+def import_handover_file(path) -> dict:
+    """从已落盘的 zip 文件导入（生产路径：上传时流式写入临时文件）。"""
+    return _import_handover_source(str(path))
+
+
+def _import_handover_source(zip_source) -> dict:
     """导入交接包。返回 {ok, message, invoices_added/skipped, reimburses_added/skipped,
     attachments_added}。"""
-    if not content or not zipfile.is_zipfile(io.BytesIO(content)):
+    if not zip_source or not zipfile.is_zipfile(zip_source):
         return {"ok": False, "message": "交接包无效：不是合法的 .zip 文件"}
 
-    with zipfile.ZipFile(io.BytesIO(content)) as zf:
+    with zipfile.ZipFile(zip_source) as zf:
         try:
             backup_service.validate_zip_members(
                 zf, metadata_names={"handover.json", "manifest.json"},

@@ -9,6 +9,7 @@ import hashlib
 import hmac
 import json
 import secrets
+import threading
 import time
 from typing import Optional
 
@@ -34,6 +35,25 @@ _SESSION_SECRET_CACHE = ""
 _LOGIN_MAX_FAILS = 5
 _LOGIN_LOCK_SECONDS = 60
 _LOGIN_FAILS = {}   # username -> [连续失败次数, 锁定到期时间戳]
+_LOGIN_FAILS_MAX = 5000   # 上限：防止构造随机用户名撑大内存
+# 并发保护：多线程同时登录失败时，遍历/插入同一字典会抛
+# "dictionary changed size during iteration"，必须串行化。
+_LOGIN_FAILS_LOCK = threading.RLock()
+
+
+def _prune_login_fails_locked(now: float) -> None:
+    """清理过期/超量记录（调用方必须已持有 _LOGIN_FAILS_LOCK）。"""
+    expired = [k for k, v in _LOGIN_FAILS.items() if v[1] and v[1] <= now]
+    for key in expired:
+        _LOGIN_FAILS.pop(key, None)
+    while len(_LOGIN_FAILS) > _LOGIN_FAILS_MAX:
+        _LOGIN_FAILS.pop(next(iter(_LOGIN_FAILS)))
+
+
+def _prune_login_fails(now: float) -> None:
+    """定期清理过期/超量记录（登录失败节流字典的内存兜底）。"""
+    with _LOGIN_FAILS_LOCK:
+        _prune_login_fails_locked(now)
 
 
 class AuthError(Exception):
@@ -185,20 +205,25 @@ def create_user(username: str, password: str, role: str = "employee",
 def authenticate(username: str, password: str) -> dict:
     name = (username or "").strip()
     now = time.time()
-    state = _LOGIN_FAILS.get(name)
-    if state and state[1] > now:
-        raise AuthError(f"登录失败次数过多，请 {int(state[1] - now) + 1} 秒后重试")
+    with _LOGIN_FAILS_LOCK:
+        _prune_login_fails_locked(now)
+        state = _LOGIN_FAILS.get(name)
+        if state and state[1] > now:
+            raise AuthError(f"登录失败次数过多，请 {int(state[1] - now) + 1} 秒后重试")
     row = get_by_username(name)
     if not row or not verify_password(password or "", row.get("password_hash", "")):
-        if state is None or state[1] <= now:
-            _LOGIN_FAILS[name] = [0, 0]
-        fails = _LOGIN_FAILS[name][0] + 1
-        if fails >= _LOGIN_MAX_FAILS:
-            _LOGIN_FAILS[name] = [0, now + _LOGIN_LOCK_SECONDS]
-            raise AuthError("登录失败次数过多，账号已临时锁定 60 秒")
-        _LOGIN_FAILS[name] = [fails, 0]
+        with _LOGIN_FAILS_LOCK:
+            state = _LOGIN_FAILS.get(name)
+            if state and state[1] > now:
+                raise AuthError(f"登录失败次数过多，请 {int(state[1] - now) + 1} 秒后重试")
+            fails = (state[0] if state else 0) + 1
+            if fails >= _LOGIN_MAX_FAILS:
+                _LOGIN_FAILS[name] = [0, now + _LOGIN_LOCK_SECONDS]
+                raise AuthError("登录失败次数过多，账号已临时锁定 60 秒")
+            _LOGIN_FAILS[name] = [fails, 0]
         raise AuthError("用户名或密码错误")
-    _LOGIN_FAILS.pop(name, None)
+    with _LOGIN_FAILS_LOCK:
+        _LOGIN_FAILS.pop(name, None)
     if not row.get("is_active"):
         raise AuthError("该账号已被停用，请联系管理员")
     with db.tx() as conn:

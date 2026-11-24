@@ -25,10 +25,12 @@
   （发票号码应为 8/20 位纯数字、税号应为 15/18/20 位），自动用 2000 高清档重识别，
   取字段质量更高的结果。正常发票不付额外开销，问题照片多花约 3s。
 """
+import collections
 import io
 import re
 import tempfile
 import threading
+import time
 from pathlib import Path
 
 from app.domain.dto import InvoiceDTO
@@ -41,7 +43,7 @@ _engine = None          # RapidOCR 实例（惰性加载，register_ocr_backend 
 _backend_registered = False
 _CONFIG_PATHS: dict[int, Path] = {}   # max_side -> 我们生成的优化配置文件
 _ENGINES: dict[int, object] = {}      # max_side -> RapidOCR 实例
-_OCR_LOCK = threading.Lock()          # 识别全程串行（引擎非线程安全 + 4 核并发只会互相抢 CPU）
+_ENGINE_BUILD_LOCK = threading.Lock()  # 仅保护引擎构建/缓存（短持有）
 
 # 图像长边上限：超过则等比缩放后再识别。
 # 960 是实测平衡点——det 像素量大幅下降，而 A4 发票正文在缩放后仍有 ~18px，
@@ -169,20 +171,36 @@ def _load_engine(warmup: bool = True, max_side: int = MAX_SIDE_LEN):
     eng = _ENGINES.get(max_side)
     if eng is not None:
         return eng
-    try:
-        from rapidocr_onnxruntime import RapidOCR
-    except ImportError as e:
-        raise ParseSkip(
-            f"OCR 引擎 RapidOCR 未安装（pip install rapidocr-onnxruntime）: {e}"
-        ) from e
-    cfg = _build_config(max_side)
-    eng = RapidOCR(config_path=str(cfg))
-    _ENGINES[max_side] = eng
-    if max_side == MAX_SIDE_LEN:
-        _engine = eng
-        if warmup:
-            _warmup(eng)
+    with _ENGINE_BUILD_LOCK:
+        eng = _ENGINES.get(max_side)     # 双检：并发首次加载只构建一次
+        if eng is not None:
+            return eng
+        try:
+            from rapidocr_onnxruntime import RapidOCR
+        except ImportError as e:
+            raise ParseSkip(
+                f"OCR 引擎 RapidOCR 未安装（pip install rapidocr-onnxruntime）: {e}"
+            ) from e
+        cfg = _build_config(max_side)
+        eng = RapidOCR(config_path=str(cfg))
+        _ENGINES[max_side] = eng
+        if max_side == MAX_SIDE_LEN:
+            _engine = eng
+            if warmup:
+                _warmup(eng)
     return eng
+
+
+def _reset_engines() -> None:
+    """丢弃引擎缓存（工作线程被看门狗重启时调用）。
+
+    旧线程可能仍持有旧引擎实例继续执行，新建实例可避免两个线程共用
+    同一个非线程安全对象。
+    """
+    global _engine
+    with _ENGINE_BUILD_LOCK:
+        _ENGINES.clear()
+        _engine = None
 
 
 def _image_to_array(content: bytes, rotate: int = 0):
@@ -247,14 +265,13 @@ def _digits_suspicious(dto: InvoiceDTO) -> bool:
 def _run_ocr_once(content: bytes, max_side: int, rotate: int = 0):
     """跑一遍 OCR 并抽取字段，返回 (dto, 行数, elapse)。
 
-    引擎非线程安全且 4 核机器并发 OCR 只会互相抢 CPU：串行化，让其它请求（删除等）仍能响应。
+    只由常驻工作线程调用（串行），不再使用进程级锁：一旦某次识别卡死，
+    看门狗会整体重启工作线程，锁会被永久占用的问题随之消失。
     """
-    # 引擎非线程安全且 4 核机器并发 OCR 只会互相抢 CPU：串行化，让其它请求（删除等）仍能响应
     try:
-        with _OCR_LOCK:
-            engine = _load_engine(warmup=False, max_side=max_side)
-            arr = _image_to_array(content, rotate)
-            result, elapse = engine(arr)
+        engine = _load_engine(warmup=False, max_side=max_side)
+        arr = _image_to_array(content, rotate)
+        result, elapse = engine(arr)
     except ParseSkip:
         raise
     except Exception as e:
@@ -276,45 +293,190 @@ def _run_ocr_once(content: bytes, max_side: int, rotate: int = 0):
 
 # OCR 单图最大识别时长（秒）——防止高像素黑图让引擎卡死。
 _OCR_TIMEOUT_SEC = 12
+# parse_image 整体预算（含旋转重试与高清复检），避免一张坏图耗尽数分钟。
+_OCR_TOTAL_BUDGET_SEC = 45
+# 单次识别硬上限：超过则判定工作线程已卡死，重启线程止损。
+_OCR_HARD_LIMIT_SEC = 90
 
 
-def _run_ocr_with_timeout(content: bytes, max_side: int, rotate: int = 0):
-    """带超时熔断的 OCR 调用：引擎内部无超时保护，用独立线程跑 + 外层 Future 兜底。
+class _OcrJob:
+    """一次 OCR 请求：工作线程写结果，调用方带超时等待。"""
+    __slots__ = ("content", "max_side", "rotate", "event", "result", "error",
+                 "started_at")
 
-    超时即取消线程并抛出 ParseSkip，保证 50MB 黑图或异常输入不会让服务卡死。
+    def __init__(self, content: bytes, max_side: int, rotate: int) -> None:
+        self.content = content
+        self.max_side = max_side
+        self.rotate = rotate
+        self.event = threading.Event()
+        self.result = None
+        self.error: BaseException | None = None
+        self.started_at: float | None = None
+
+    def set_result(self, value) -> None:
+        self.result = value
+        self.event.set()
+
+    def set_error(self, error: BaseException) -> None:
+        self.error = error
+        self.event.set()
+
+    @property
+    def running(self) -> bool:
+        return self.started_at is not None and not self.event.is_set()
+
+
+class _OcrWorker:
+    """常驻单线程 OCR 执行器。
+
+    取代"每次调用新建 ThreadPoolExecutor"的实现：
+    - 线程数恒定，不会因超时无限增长；
+    - 超时后任务仍在跑时，后续请求快速失败而不是逐个排队等 12 秒；
+    - 当前任务超过硬上限时，直接淘汰旧线程并启动新线程（旧线程无法强杀，
+      但已不再接收新任务，且引擎实例已重建，不会与非线程安全引擎并发）。
     """
-    import concurrent.futures as cf
-    executor = cf.ThreadPoolExecutor(max_workers=1, thread_name_prefix="ocr")
-    try:
-        future = executor.submit(_run_ocr_once, content, max_side, rotate)
-        return future.result(timeout=_OCR_TIMEOUT_SEC)
-    except cf.TimeoutError:
-        # 让 Future 里的线程有机会结束；进程退出时自动回收，不影响后续识别
-        try:
-            future.cancel()
-        except Exception:
-            pass
-        msg = (f"OCR 识别超时（>{_OCR_TIMEOUT_SEC}s，max_side={max_side}），"
+
+    def __init__(self) -> None:
+        self._cond = threading.Condition()
+        self._queue: "collections.deque[_OcrJob]" = collections.deque()
+        self._thread: threading.Thread | None = None
+        self._generation = 0
+        self._current: _OcrJob | None = None
+
+    def submit(self, job: _OcrJob) -> None:
+        with self._cond:
+            self._ensure_thread_locked()
+            current = self._current
+            if current is not None and current.running:
+                age = time.time() - (current.started_at or time.time())
+                if age > _OCR_HARD_LIMIT_SEC:
+                    self._restart_locked(
+                        f"OCR 单次识别超过 {_OCR_HARD_LIMIT_SEC}s，已重启识别线程")
+                elif age > _OCR_TIMEOUT_SEC:
+                    # 上一张已经超时仍在跑：快速失败，不把新任务排进长队
+                    raise ParseSkip(
+                        "OCR 引擎正忙（上一张图片识别超时），请稍后重试")
+            self._queue.append(job)
+            self._cond.notify()
+
+    def _ensure_thread_locked(self) -> None:
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self._generation += 1
+        self._thread = threading.Thread(
+            target=self._loop, args=(self._generation,),
+            name="ocr-worker", daemon=True)
+        self._thread.start()
+
+    def _loop(self, generation: int) -> None:
+        while True:
+            with self._cond:
+                while not self._queue:
+                    self._cond.wait()
+                job = self._queue.popleft()
+                if generation != self._generation:
+                    job.set_error(ParseSkip("OCR 识别线程已重启，请重新上传"))
+                    continue
+                self._current = job
+                job.started_at = time.time()
+            try:
+                job.set_result(_run_ocr_once(job.content, job.max_side, job.rotate))
+            except BaseException as e:      # noqa: BLE001 - 交回调用方处理
+                job.set_error(e)
+            finally:
+                with self._cond:
+                    if self._current is job:
+                        self._current = None
+
+    def _restart_locked(self, reason: str) -> None:
+        """淘汰当前工作线程（不 join），启动新一代线程并重建引擎缓存。"""
+        self._generation += 1
+        self._thread = None
+        self._current = None
+        pending, self._queue = list(self._queue), collections.deque()
+        for job in pending:
+            job.set_error(ParseSkip("OCR 识别线程已重启，请重新上传"))
+        _reset_engines()
+        logger.warning(reason)
+
+
+_WORKER: _OcrWorker | None = None
+_WORKER_LOCK = threading.Lock()
+
+
+def _get_worker() -> _OcrWorker:
+    global _WORKER
+    with _WORKER_LOCK:
+        if _WORKER is None:
+            _WORKER = _OcrWorker()
+        return _WORKER
+
+
+def _reset_ocr_worker() -> None:
+    """重置工作线程与排队任务（测试与异常恢复用）。"""
+    global _WORKER
+    with _WORKER_LOCK:
+        if _WORKER is not None:
+            with _WORKER._cond:           # noqa: SLF001 - 同类内部状态复位
+                _WORKER._generation += 1   # noqa: SLF001
+                _WORKER._thread = None     # noqa: SLF001
+                _WORKER._current = None    # noqa: SLF001
+                pending, _WORKER._queue = list(_WORKER._queue), collections.deque()  # noqa: SLF001
+                for job in pending:
+                    job.set_error(ParseSkip("OCR 识别线程已重置，请重新上传"))
+        _WORKER = None
+
+
+def _run_ocr_with_timeout(content: bytes, max_side: int, rotate: int = 0,
+                          timeout: float | None = None):
+    """带超时熔断的 OCR 调用：常驻工作线程执行，调用方到点即返回。"""
+    limit = _OCR_TIMEOUT_SEC if timeout is None else timeout
+    if limit <= 0:
+        raise ParseSkip("OCR 识别超时（整体预算已用尽），请压缩图片后重试")
+    job = _OcrJob(content, max_side, rotate)
+    _get_worker().submit(job)
+    if not job.event.wait(limit):
+        msg = (f"OCR 识别超时（>{limit:g}s，max_side={max_side}），"
                f"图片可能过于复杂或像素过高，请尝试压缩后重新上传")
         logger.warning(msg)
         raise ParseSkip(msg)
-    finally:
-        executor.shutdown(wait=False)   # 不等待子线程收尾，主线程快速返回
+    if job.error is not None:
+        if isinstance(job.error, ParseSkip):
+            raise job.error
+        raise ParseSkip(f"OCR 引擎调用失败 (max_side={max_side}): {job.error}")
+    return job.result
 
 
 def parse_image(content: bytes) -> InvoiceDTO:
-    """OCR 解析图片发票，返回未标准化 DTO（两遍策略，见模块 docstring）。"""
+    """OCR 解析图片发票，返回未标准化 DTO（两遍策略，见模块 docstring）。
+
+    整体受 _OCR_TOTAL_BUDGET_SEC 约束：旋转重试与高清复检共享同一预算，
+    避免一张异常图片依次触发多轮 12 秒超时。
+    """
     import time as _t
     t0 = _t.time()
-    dto, n_lines, elapse = _run_ocr_with_timeout(content, MAX_SIDE_LEN)
+    deadline = t0 + _OCR_TOTAL_BUDGET_SEC
+
+    def _call(max_side: int, rotate: int = 0):
+        remaining = deadline - _t.time()
+        if remaining <= 1:
+            raise ParseSkip(
+                f"OCR 识别超时（整体 {_OCR_TOTAL_BUDGET_SEC}s 预算已用尽），"
+                "请压缩图片后重新上传")
+        return _run_ocr_with_timeout(
+            content, max_side, rotate, timeout=min(_OCR_TIMEOUT_SEC, remaining))
+
+    dto, n_lines, elapse = _call(MAX_SIDE_LEN)
     used_angle = 0
     if not dto.invoice_no and not dto.total_amount:
         # 手机拍摄的纸质票据常被横置/倒置：按 180°→90°→270° 重试，取字段最完整的一轮。
         # 只在首轮完全失败时触发，正常电子发票不会多付 OCR 时间。
         best = (_field_score(dto), dto, n_lines, elapse, 0)
         for angle in (180, 90, 270):
+            if deadline - _t.time() <= 1:
+                break
             try:
-                dto_r, n_r, e_r = _run_ocr_with_timeout(content, MAX_SIDE_LEN, angle)
+                dto_r, n_r, e_r = _call(MAX_SIDE_LEN, angle)
             except ParseSkip:
                 continue
             score = _field_score(dto_r)
@@ -332,12 +494,12 @@ def parse_image(content: bytes) -> InvoiceDTO:
         )
 
     hires = False
-    if _digits_suspicious(dto):
+    if _digits_suspicious(dto) and deadline - _t.time() > 1:
         q1 = _digit_quality(dto)
         logger.info("OCR 首轮长数字字段位数可疑（发票号=%s, 质量=%s），改用 %s 高清复检",
                     dto.invoice_no, q1, HIRES_SIDE_LEN)
         try:
-            dto2, n_lines2, elapse2 = _run_ocr_with_timeout(content, HIRES_SIDE_LEN, used_angle)
+            dto2, n_lines2, elapse2 = _call(HIRES_SIDE_LEN, used_angle)
         except ParseSkip:
             logger.warning("OCR 高清复检未识别到文字或超时，保留首轮结果")
         except Exception as e:

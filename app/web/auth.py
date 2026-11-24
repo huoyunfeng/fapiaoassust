@@ -366,7 +366,11 @@ async def api_exchange_export():
 
 @auth.post("/api/exchange/import")
 async def api_exchange_import(file: UploadFile = File(...)):
-    content = await file.read()
+    # 旧版交换包接口（无页面入口）：限制体积，避免整包读入内存耗尽
+    max_bytes = 200 * 1024 ** 2
+    content = await file.read(max_bytes + 1)
+    if len(content) > max_bytes:
+        return _err("交换包过大（超过 200MB 上限），禁止导入")
     if not content:
         return _err("未收到交接包文件")
     try:
