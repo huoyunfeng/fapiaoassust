@@ -2029,7 +2029,9 @@ function sgRecyclePageSizeChange(sel){
   sgRecycleLoad();
 }
 
-function sgRecycleCustomSize(input){
+function sgRecycleCustomSize(trigger){
+  const wrap = trigger.closest('.pager-custom');
+  const input = wrap.querySelector('.pager-custom-input');
   let size = parseInt(input.value, 10);
   if(!size || size < 1){ toast('请输入大于 0 的条数', false); input.focus(); return; }
   if(size > 1000){ toast('每页最多 1000 条', false); input.focus(); return; }
