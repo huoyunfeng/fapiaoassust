@@ -9,8 +9,8 @@ from fastapi.templating import Jinja2Templates
 
 from app.config import APP_VERSION, RESOURCE_DIR
 from app.service import (audit_service, auth_service, category_service,
-                         invoice_service, license_service, match_service,
-                         reimburse_service, report_service)
+                         demo_service, invoice_service, license_service,
+                         match_service, reimburse_service, report_service)
 
 pages = APIRouter(tags=["pages"])
 # frozen 时模板在 PyInstaller 解压目录下的 app/web/templates
@@ -733,6 +733,28 @@ def report_page(request: Request, page_size: int = 20, filter: str = "", q: str 
     return templates.TemplateResponse(request, "report.html", {
         "request": request, "initial": payload,
     })
+
+
+# ---------------------------------------------------------------- 内置示例（Demo）：空库一键看到「发现 ¥4,860 问题」报告
+@pages.get("/demo/report", response_class=HTMLResponse)
+def demo_report_page(request: Request):
+    return templates.TemplateResponse(request, "demo_report.html", {
+        "request": request, "report": demo_service.demo_report(),
+    })
+
+
+@pages.get("/demo/seed")
+def demo_seed(request: Request):
+    """一键生成样例数据并跳转到示例报告（GET 方便做成「看示例」直达链接）。"""
+    demo_service.seed_demo()
+    return RedirectResponse("/demo/report", status_code=303)
+
+
+@pages.post("/demo/clear")
+def demo_clear(request: Request):
+    """清除全部样例数据，回到首页。"""
+    demo_service.clear_demo()
+    return RedirectResponse("/", status_code=303)
 
 
 # ---------------------------------------------------------------- 系统设置（左右分栏 + 分区路由）

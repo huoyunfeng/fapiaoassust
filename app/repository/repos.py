@@ -913,6 +913,23 @@ class MatchRepo:
         )
         return cur.rowcount
 
+    def delete_non_active_scoped(self, conn: sqlite3.Connection,
+                                 invoice_ids: set, reimburse_ids: set) -> int:
+        """按作用域清理评估痕迹（示例数据专用，避免影响正式数据）。"""
+        clauses, params = [], []
+        if invoice_ids:
+            clauses.append(f"invoice_id IN ({', '.join('?' for _ in invoice_ids)})")
+            params += list(invoice_ids)
+        if reimburse_ids:
+            clauses.append(f"reimburse_id IN ({', '.join('?' for _ in reimburse_ids)})")
+            params += list(reimburse_ids)
+        if not clauses:
+            return 0
+        cur = conn.execute(
+            "DELETE FROM match_result WHERE status NOT IN ('MATCHED','CONFIRMED','REJECTED')"
+            f" AND ({' OR '.join(clauses)})", params)
+        return cur.rowcount
+
     def delete_orphan_candidates(self, conn: sqlite3.Connection) -> int:
         """清理失效候选：发票或报销单已经存在生效匹配时，其余待人工候选已无意义。
 
@@ -930,6 +947,31 @@ class MatchRepo:
                                          AND reimburse_id IS NOT NULL)
                  )"""
         )
+        return cur.rowcount
+
+    def delete_orphan_candidates_scoped(self, conn: sqlite3.Connection,
+                                        invoice_ids: set, reimburse_ids: set) -> int:
+        """按作用域清理失效候选（示例数据专用）。"""
+        clauses, params = [], []
+        if invoice_ids:
+            clauses.append(f"invoice_id IN ({', '.join('?' for _ in invoice_ids)})")
+            params += list(invoice_ids)
+        if reimburse_ids:
+            clauses.append(f"reimburse_id IN ({', '.join('?' for _ in reimburse_ids)})")
+            params += list(reimburse_ids)
+        if not clauses:
+            return 0
+        cur = conn.execute(
+            """DELETE FROM match_result
+               WHERE status IN ('UNMATCHED','SUSPICIOUS','CONFLICT')
+                 AND (
+                   invoice_id IN (SELECT invoice_id FROM match_result
+                                  WHERE status IN ('MATCHED','CONFIRMED'))
+                   OR reimburse_id IN (SELECT reimburse_id FROM match_result
+                                       WHERE status IN ('MATCHED','CONFIRMED')
+                                         AND reimburse_id IS NOT NULL)
+                 )
+                 AND """ + f"({' OR '.join(clauses)})", params)
         return cur.rowcount
 
     def count_by_status(self, conn: sqlite3.Connection) -> Dict[str, int]:

@@ -220,12 +220,17 @@ def _ambiguity_note(tied_ids: List[int], inv_rows: Dict[int, dict], reb_row: dic
 
 # ---------------------------------------------------------------- 执行匹配
 def run_matching(operator: str = None, progress=None,
-                 wait_seconds: float = -1.0) -> dict:
-    """执行一轮匹配（全量重评估，全局串行）。
+                 wait_seconds: float = -1.0,
+                 scope_invoice_ids: Optional[set] = None,
+                 scope_reimburse_ids: Optional[set] = None) -> dict:
+    """执行一轮匹配（默认全量重评估，全局串行）。
 
     wait_seconds: -1 一直等待锁；0 拿不到立即抛 MatchBusy；>0 最多等待秒数。
     先清理上一轮非生效评估记录（生效匹配保留），再对
     NORMAL 且无生效匹配的发票 与 未占用的报销单 重新评分。
+
+    scope_invoice_ids / scope_reimburse_ids: 可选作用域。传入时只在该批
+    发票/报销单内部匹配与清理（示例数据用），不影响正式数据。
 
     progress: 可选回调 progress(processed, total, phase)，用于后台任务的真实进度反馈；
               总工作量 = 3 轮报销单遍历 + 1 轮发票收尾（均按条计数）。
@@ -239,12 +244,15 @@ def run_matching(operator: str = None, progress=None,
     try:
         # 与导出/备份的长任务锁保持一致：避免导出读到重算中间态
         with HEAVY_TASK_LOCK:
-            return _run_matching_impl(operator, progress)
+            return _run_matching_impl(operator, progress,
+                                      scope_invoice_ids, scope_reimburse_ids)
     finally:
         _MATCH_LOCK.release()
 
 
-def _run_matching_impl(operator: str = None, progress=None) -> dict:
+def _run_matching_impl(operator: str = None, progress=None,
+                       scope_invoice_ids: Optional[set] = None,
+                       scope_reimburse_ids: Optional[set] = None) -> dict:
     operator = operator or settings.default_operator
     summary = {"cleared": 0, "auto_matched": 0, "pending": 0, "conflict": 0,
                "unmatched": 0, "many_to_one": 0, "evaluated_reimburses": 0,
@@ -261,7 +269,10 @@ def _run_matching_impl(operator: str = None, progress=None) -> dict:
 
     matched_reimburse_ids = set()
     with db.tx() as conn:
-        summary["cleared"] = match_repo.delete_non_active(conn)
+        summary["cleared"] = (
+            match_repo.delete_non_active(conn) if scope_invoice_ids is None
+            else match_repo.delete_non_active_scoped(
+                conn, scope_invoice_ids, scope_reimburse_ids or set()))
         company_tax_nos = company_repo.tax_nos(conn)
         rules = _load_rules(conn)
         block_notes: Dict[int, str] = {}   # 发票 id -> 规则阻断文案（落 UNMATCHED 时使用）
@@ -269,11 +280,13 @@ def _run_matching_impl(operator: str = None, progress=None) -> dict:
         # 候选集：NORMAL 且无生效匹配的发票（一次查询取已占用 id，避免逐票 N+1 查询）
         occupied_invoices = match_repo.active_invoice_ids(conn)
         invoices = [r for r in invoice_repo.list(conn, status="NORMAL", limit=100000)
-                    if r["id"] not in occupied_invoices]
+                    if r["id"] not in occupied_invoices
+                    and (scope_invoice_ids is None or r["id"] in scope_invoice_ids)]
         # 未占用报销单
         occupied = match_repo.active_reimburse_ids(conn)
         reimburses = [r for r in reimburse_repo.list(conn, limit=100000)
-                      if r["id"] not in occupied]
+                      if r["id"] not in occupied
+                      and (scope_reimburse_ids is None or r["id"] in scope_reimburse_ids)]
 
         total = 3 * len(reimburses) + len(invoices)
         if progress:
@@ -494,6 +507,8 @@ def _run_matching_impl(operator: str = None, progress=None) -> dict:
         soft_rows = conn.execute(
             "SELECT id, invoice_id, reimburse_id FROM match_result "
             "WHERE status IN ('UNMATCHED','SUSPICIOUS') AND reimburse_id IS NOT NULL").fetchall()
+        if scope_invoice_ids is not None:
+            soft_rows = [r for r in soft_rows if r["invoice_id"] in scope_invoice_ids]
         by_inv: Dict[int, set] = {}
         row_ids_by_inv: Dict[int, List[int]] = {}
         for r in soft_rows:
@@ -522,7 +537,10 @@ def _run_matching_impl(operator: str = None, progress=None) -> dict:
             summary["unmatched"] += 1
 
         # ---- 收尾：清理本轮被占用后残留的候选，避免出现「点确认必然失败」的行 ----
-        summary["cleared"] += match_repo.delete_orphan_candidates(conn)
+        summary["cleared"] += (
+            match_repo.delete_orphan_candidates(conn) if scope_invoice_ids is None
+            else match_repo.delete_orphan_candidates_scoped(
+                conn, scope_invoice_ids, scope_reimburse_ids or set()))
 
     if matched_reimburse_ids:
         from app.service import category_service

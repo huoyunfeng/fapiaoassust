@@ -51,3 +51,10 @@ cloud/blacklist.json
 # IDE 本地配置与恢复备份，不提交
 .trae/
 data/reset-backup-*/
+
+# Trae HTML 分享包（本地缓存，不入库）
+.trae-html-share-packages/
+
+# 演示用个人二维码与打包产物（不公开入库，本地分发用）
+qr.png
+发票核对_90秒演示.zip

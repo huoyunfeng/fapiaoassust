@@ -24,7 +24,9 @@ DEFAULT_WORDS = ["烟", "酒", "礼品", "洗浴", "娱乐"]
 # ---------------------------------------------------------------- 设置读写
 def get_settings() -> dict:
     with db.read() as conn:
-        seq = kv_repo.get(conn, KV_SEQ_ON, "0") == "1"
+        # 连号/跳号预警默认开启：同销售方同日期的连号票应被提示（仅提示，不阻断匹配）；
+        # 用户在设置页主动关闭后，kv 落盘 "0"，此处读出 "0" 即尊重用户选择。
+        seq = kv_repo.get(conn, KV_SEQ_ON, "1") == "1"
         word = kv_repo.get(conn, KV_WORD_ON, "0") == "1"
         raw = kv_repo.get(conn, KV_WORDS, "") or ""
     try:

@@ -124,9 +124,31 @@
 @media (max-width:760px){
   .db-cards{grid-template-columns:repeat(2,1fr);}
 }
+/* 空数据「看示例」横幅 */
+.db-demo-banner{display:flex;align-items:center;justify-content:space-between;gap:16px;
+  background:linear-gradient(135deg,#eef2ff,#fdf4ff);border:1px solid #c7d2fe;border-radius:var(--radius-card);
+  padding:18px 22px;box-shadow:var(--shadow-card);}
+.db-demo-title{font-size:15px;font-weight:700;color:#3730a3;margin-bottom:3px;}
+.db-demo-sub{font-size:12px;color:#6b7280;line-height:1.6;}
+.db-demo-btn{display:inline-flex;align-items:center;gap:6px;padding:11px 24px;background:#4f46e5;color:#fff;
+  font-size:14px;font-weight:700;border-radius:10px;text-decoration:none;white-space:nowrap;
+  box-shadow:0 4px 12px rgba(79,70,229,.35);transition:transform .15s;}
+.db-demo-btn:hover{transform:translateY(-2px);color:#fff;}
+@media (max-width:760px){.db-demo-banner{flex-direction:column;align-items:flex-start;}}
 </style>
 
 <div class="db-wrap">
+
+  {% if (inv_counts.values()|sum == 0) and (reb_total == 0) %}
+  <!-- 空数据：引导用户一键看示例 -->
+  <div class="db-demo-banner">
+    <div class="db-demo-text">
+      <div class="db-demo-title">👋 还没有数据？先看个示例</div>
+      <div class="db-demo-sub">内置 20 张样例发票（含重复、连号、超标、缺日期）+ 1 份样例报销单（含金额差异、无票），一键生成「发现 ¥4,860 问题」报告，2 分钟看懂系统能帮你拦下什么。</div>
+    </div>
+    <a href="/demo/seed" class="db-demo-btn">▶ 看示例</a>
+  </div>
+  {% endif %}
 
   <!-- 顶部 4 指标卡（紧凑 + 图标 + 警示） -->
   <div class="db-cards">

@@ -114,6 +114,7 @@
     <div class="sidebar-title">目录导航</div>
     <nav class="anchor-nav" id="anchorNav">
       <a href="#welcome" class="active"><span class="dot"></span>快速上手</a>
+      <a href="#demo"><span class="dot"></span>看示例</a>
       <a href="#advanced"><span class="dot"></span>进阶玩法</a>
       <a href="#faq"><span class="dot"></span>常见问题</a>
       <a href="#safety"><span class="dot"></span>数据安全</a>
@@ -133,6 +134,23 @@
         <span>⚡ 智能匹配</span>
         <span>📊 差异报告</span>
         <span>🛡️ 数据安全</span>
+      </div>
+    </section>
+
+    <!-- 一键看示例 -->
+    <section class="help-section" id="demo" style="background:linear-gradient(135deg,#eef2ff,#faf5ff);border-color:#c7d2fe;">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;">
+        <div style="max-width:640px;">
+          <div style="font-size:17px;font-weight:700;color:#3730a3;margin-bottom:6px;">🎬 想先看看效果？一键加载示例数据</div>
+          <div style="font-size:13px;color:#6b7280;line-height:1.7;">
+            内置 <b>20 张样例发票</b>（含重复、连号、超标、缺日期）+ <b>1 份样例报销单</b>（含金额差异、无票），
+            无需准备任何文件，2 分钟即可生成一份「发现 ¥4,860 问题」的完整报告。演示数据带标记，可随时一键清除，绝不影响真实数据。
+          </div>
+        </div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;">
+          <a href="/demo/seed" style="display:inline-flex;align-items:center;gap:6px;padding:11px 22px;background:#4f46e5;color:#fff;font-size:14px;font-weight:700;border-radius:10px;text-decoration:none;box-shadow:0 4px 12px rgba(79,70,229,.35);">▶ 看示例</a>
+          <a href="/demo/report" style="display:inline-flex;align-items:center;gap:6px;padding:11px 22px;background:#fff;color:#4f46e5;font-size:14px;font-weight:700;border-radius:10px;text-decoration:none;border:1px solid #c7d2fe;">📊 示例报告</a>
+        </div>
       </div>
     </section>
 
@@ -456,7 +474,7 @@ async function copyWechat(btn){
 }
 
 // 锚点导航高亮（滚动联动）
-const sections = ['welcome','quickstart','advanced','faq','safety','changelog'];
+const sections = ['welcome','demo','quickstart','advanced','faq','safety','changelog'];
 const navLinks = document.querySelectorAll('#anchorNav a');
 
 function updateActiveAnchor(){

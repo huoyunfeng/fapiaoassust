@@ -1,0 +1,161 @@
+{% extends "base.html" %}
+{% block content %}
+<style>
+/* ===== 示例报告（局部命名空间 .demo-） ===== */
+.demo-wrap{max-width:1080px;margin:0 auto;display:flex;flex-direction:column;gap:20px;}
+
+/* ---- 空状态 ---- */
+.demo-empty{text-align:center;padding:80px 20px;background:var(--card);border:1px solid var(--border-light);
+  border-radius:var(--radius-card);box-shadow:var(--shadow-card);}
+.demo-empty h1{font-size:24px;margin:0 0 10px;color:var(--text);}
+.demo-empty p{color:var(--text-2);font-size:14px;margin:0 auto 28px;max-width:520px;line-height:1.7;}
+.demo-cta{display:inline-flex;align-items:center;gap:8px;padding:13px 34px;background:linear-gradient(135deg,#2563eb,#4f46e5);
+  color:#fff;font-size:16px;font-weight:700;border-radius:10px;text-decoration:none;box-shadow:0 6px 18px rgba(37,99,235,.35);
+  transition:transform .15s,box-shadow .15s;}
+.demo-cta:hover{transform:translateY(-2px);box-shadow:0 10px 24px rgba(37,99,235,.45);color:#fff;}
+
+/* ---- 顶部 Hero ---- */
+.demo-hero{background:linear-gradient(135deg,#1e293b 0%,#312e81 55%,#4f46e5 100%);color:#fff;
+  border-radius:16px;padding:36px 40px;box-shadow:0 12px 32px rgba(49,46,129,.25);position:relative;overflow:hidden;}
+.demo-hero::after{content:"";position:absolute;right:-60px;top:-60px;width:240px;height:240px;border-radius:50%;
+  background:radial-gradient(circle,rgba(255,255,255,.12),transparent 70%);}
+.demo-hero-label{font-size:12px;letter-spacing:2px;color:rgba(255,255,255,.7);text-transform:uppercase;margin-bottom:10px;}
+.demo-hero-amount{font-size:38px;font-weight:800;line-height:1.2;margin-bottom:10px;}
+.demo-hero-amount span{color:#fbbf24;font-variant-numeric:tabular-nums;}
+.demo-hero-sub{font-size:13px;color:rgba(255,255,255,.8);}
+.demo-hero-badge{display:inline-block;margin-top:12px;padding:3px 10px;background:rgba(251,191,36,.18);
+  border:1px solid rgba(251,191,36,.45);border-radius:999px;font-size:11px;color:#fde68a;}
+
+/* ---- 6 类问题卡片 ---- */
+.demo-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;}
+.demo-item{background:var(--card);border:1px solid var(--border-light);border-radius:12px;padding:18px 20px;
+  box-shadow:var(--shadow-card);border-left:4px solid var(--accent,#2563eb);transition:var(--transition);}
+.demo-item:hover{transform:translateY(-2px);box-shadow:var(--shadow-hover);}
+.demo-item-name{font-size:13px;color:var(--text-2);display:flex;align-items:center;gap:6px;}
+.demo-item-name::before{content:"";width:8px;height:8px;border-radius:50%;background:var(--accent,#2563eb);}
+.demo-item-amt{font-size:26px;font-weight:800;color:var(--text);margin:8px 0 4px;font-variant-numeric:tabular-nums;}
+.demo-item-meta{font-size:11px;color:var(--text-3);line-height:1.5;}
+
+/* ---- 明细区 ---- */
+.demo-detail{background:var(--card);border:1px solid var(--border-light);border-radius:12px;
+  padding:20px 22px;box-shadow:var(--shadow-card);}
+.demo-detail h3{font-size:15px;margin:0 0 12px;display:flex;align-items:center;gap:6px;}
+.demo-detail table{width:100%;border-collapse:collapse;font-size:13px;}
+.demo-detail th,.demo-detail td{padding:8px 10px;border-bottom:1px solid #f1f5f9;text-align:left;}
+.demo-detail th{background:#f8f9fa;color:var(--text-2);font-weight:600;font-size:12px;}
+.demo-detail td.num{font-variant-numeric:tabular-nums;text-align:right;font-weight:600;}
+.demo-detail .tag{display:inline-block;padding:2px 8px;border-radius:6px;font-size:11px;background:#fef3c7;color:#92400e;}
+
+/* ---- 操作栏 ---- */
+.demo-actions{display:flex;gap:10px;flex-wrap:wrap;align-items:center;}
+.demo-actions .note{margin-left:auto;font-size:12px;color:var(--text-3);}
+.demo-form{display:inline;}
+
+@media (max-width:760px){
+  .demo-grid{grid-template-columns:repeat(2,1fr);}
+  .demo-hero-amount{font-size:28px;}
+}
+</style>
+
+<div class="demo-wrap">
+
+  {% if report.invoice_count == 0 %}
+  {# ===== 空状态：还没生成示例 ===== #}
+  <div class="demo-empty">
+    <h1>还没有数据？先看个示例</h1>
+    <p>系统内置 <b>20 张样例发票</b>（含重复、连号、超标、缺日期）和 <b>1 份样例报销单</b>（含金额差异、无票报销）。
+       一键生成，即可看到一份「发现问题」的完整报告，2 分钟看懂系统能帮你拦下什么。</p>
+    <a href="/demo/seed" class="demo-cta">▶ 看示例</a>
+  </div>
+
+  {% else %}
+  {# ===== Hero：发现问题总额 ===== #}
+  <div class="demo-hero">
+    <div class="demo-hero-label">示例报告 · 智能风控扫描结果</div>
+    <div class="demo-hero-amount">发现 <span class="demo-fmt" data-amt="{{ report.actual_total }}">¥{{ report.actual_total }}</span> 问题</div>
+    <div class="demo-hero-sub">
+      {{ report.invoice_count }} 张样例发票 · {{ report.reimburse_count }} 行报销单 · 识别
+      <b>{{ report.categories | sum(attribute='count') }} 项</b> 风险，覆盖 6 类常见报销隐患
+    </div>
+    {% if report.matched %}
+    <div class="demo-hero-badge">✓ 演示数据已校验通过</div>
+    {% endif %}
+  </div>
+
+  {# ===== 6 类问题卡片 ===== #}
+  <div class="demo-grid">
+    {% for it in report.categories %}
+    <div class="demo-item" style="--accent:{{ it.color }}">
+      <div class="demo-item-name">{{ it.name }}</div>
+      <div class="demo-item-amt demo-fmt" data-amt="{{ it.amount }}">¥{{ it.amount }}</div>
+      <div class="demo-item-meta">{{ it.count }} 笔 · {{ it.desc }}</div>
+    </div>
+    {% endfor %}
+  </div>
+
+  {# ===== 超标明细 ===== #}
+  {% if report.over_items %}
+  <div class="demo-detail">
+    <h3>🔴 超标费用明细 <span class="tag">Demo 内置标准：住宿 ≤¥2,200 / 餐饮 ≤¥500 / 交通 ≤¥1,000</span></h3>
+    <table>
+      <thead><tr><th>发票号码</th><th>费用明细</th><th class="num">票面金额</th><th class="num">限额标准</th><th class="num">超标金额</th></tr></thead>
+      <tbody>
+      {% for d in report.over_items %}
+        <tr>
+          <td>{{ d.invoice_no }}</td>
+          <td>{{ d.summary }}</td>
+          <td class="num demo-fmt" data-amt="{{ d.total }}">¥{{ d.total }}</td>
+          <td class="num demo-fmt" data-amt="{{ d.limit }}">¥{{ d.limit }}</td>
+          <td class="num" style="color:#dc2626;">¥{{ d.excess }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+
+  {# ===== 金额差异明细 ===== #}
+  {% if report.diff_items %}
+  <div class="demo-detail">
+    <h3>🔵 金额差异明细 <span class="tag">报销金额与发票金额不一致</span></h3>
+    <table>
+      <thead><tr><th>匹配状态</th><th>发票号码</th><th class="num">差异金额</th></tr></thead>
+      <tbody>
+      {% for d in report.diff_items %}
+        <tr>
+          <td>{{ d.status | status_cn }}</td>
+          <td>{{ d.invoice_no }}</td>
+          <td class="num" style="color:#2563eb;">¥{{ d.amount_diff }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+
+  {# ===== 操作栏 ===== #}
+  <div class="demo-actions">
+    <a href="/report" class="btn btn-primary">查看完整差异报告 →</a>
+    <a href="/invoices" class="btn btn-outline">浏览样例发票</a>
+    <a href="/demo/seed" class="btn btn-outline">重新生成示例</a>
+    <form method="post" action="/demo/clear" class="demo-form"
+          onsubmit="return confirm('确定清除全部示例数据吗？此操作不影响您的真实数据。');">
+      <button type="submit" class="btn btn-outline" style="color:#dc2626;border-color:#fecaca;">清除示例数据</button>
+    </form>
+    <span class="note">示例数据带标记，可随时一键清除，不影响真实数据</span>
+  </div>
+  {% endif %}
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// 金额千分位格式化（data-amt 原始值 -> 展示 ¥x,xxx.xx）
+document.querySelectorAll('.demo-fmt').forEach(function(el){
+  var v = Number(el.getAttribute('data-amt'));
+  if(!isFinite(v)) return;
+  el.textContent = '¥' + v.toLocaleString('zh-CN', {minimumFractionDigits:2, maximumFractionDigits:2});
+});
+</script>
+{% endblock %}
