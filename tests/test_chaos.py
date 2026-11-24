@@ -846,7 +846,7 @@ def web(tmp_path, monkeypatch):
     else:
         server.should_exit = True
         raise RuntimeError("测试服务启动失败")
-    yield {"base": base, "inv_id": inv["invoice_id"], "emp2": emp2}
+    yield {"base": base, "inv_id": inv["invoice_id"], "emp2": emp2, "key": key}
     server.should_exit = True
     thread.join(timeout=5)
 
@@ -886,3 +886,28 @@ class TestAuthorization:
         status, text = c.request(f"/api/invoices/{web['inv_id']}")
         assert status == 200, text
         assert json.loads(text)["ok"] is True
+
+    def test_expired_license_blocks_writes_but_allows_reads(self, web):
+        from app.service import license_service
+        payload = {"machine_code": "1111-2222-3333-4444", "plan": "enterprise",
+                   "role": "master", "exp": int(time.time()) - 3600,
+                   "duration_days": 365, "sub_limit": 3, "order_id": "ORD-EXP"}
+        raw = json.dumps(payload, separators=(",", ":")).encode()
+        code = f"{_b64e(raw)}.{_b64e(web['key'].sign(raw))}"
+        license_service._save_code(code)
+        license_service._READONLY_CACHE.update({"at": 0.0, "value": False})
+
+        c = _Client(web["base"]).login("admin", "Admin@123456")
+        status, text = c.request("/api/match/tasks", "POST", b"", {})
+        assert status == 403, text
+        assert json.loads(text)["code"] == "READONLY"
+        status, text = c.request("/invoices")
+        assert status == 200
+
+    def test_backup_lock_returns_503_for_writes(self, web):
+        from app.service import backup_service
+        c = _Client(web["base"]).login("admin", "Admin@123456")
+        with backup_service._backup_guard("pytest"):
+            status, text = c.request("/api/match/tasks", "POST", b"", {})
+        assert status == 503, text
+        assert json.loads(text)["code"] == "BACKING_UP"

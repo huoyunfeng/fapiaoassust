@@ -762,11 +762,11 @@ def export_invoices(request: Request, status: str = "", q: str = "", ids: str = 
     id_list = [int(x) for x in ids.split(",") if x.strip().isdigit()] if ids else None
     user = getattr(request.state, "user", None)
     owner = None if auth_service.is_staff(user) else user["id"]
-    content = invoice_service.export_excel(
+    stream = invoice_service.export_excel_stream(
         status=status or None, keyword=q or None, ids=id_list, owner_user_id=owner)
     fname = f"invoices_{datetime.now():%Y%m%d_%H%M}.xlsx"
-    return Response(
-        content,
+    return StreamingResponse(
+        stream,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{fname}"'},
     )

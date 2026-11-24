@@ -11,7 +11,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.infra.request_context import set_current_operator
-from app.service import auth_service, license_service
+from app.service import auth_service, backup_service, license_service
 
 PUBLIC_PAGES = {"/login", "/setup", "/forgot-password", "/recover", "/health"}
 PUBLIC_API = {
@@ -148,6 +148,18 @@ class AuthMiddleware(BaseHTTPMiddleware):
                 {"ok": False, "code": "READONLY",
                  "message": "授权已到期，系统处于只读模式。请前往「升级 / 授权」续费激活后再操作"},
                 status_code=403)
+
+        # 4c. 备份/恢复期间锁定业务写入口，保证快照一致（备份任务本身不受影响）
+        if request.method not in ("GET", "HEAD", "OPTIONS") \
+                and path.startswith(("/api/invoices", "/api/reimburses",
+                                     "/api/match", "/api/matches", "/api/recycle",
+                                     "/api/categories", "/api/settings",
+                                     "/api/team", "/api/rules")) \
+                and backup_service.is_backing_up():
+            return JSONResponse(
+                {"ok": False, "code": "BACKING_UP",
+                 "message": "系统正在生成备份/恢复数据，请稍候再操作"},
+                status_code=503)
 
         # 5. 免费版受限功能：前端拦截 + 服务端兜底（防抓包绕过）
         #    只读模式（授权到期）下不拦截读取类请求，客户数据资产必须随时可取

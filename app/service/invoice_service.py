@@ -57,6 +57,9 @@ def _friendly_parse_error(file_type: str, error: str) -> str:
     具体技术原因仍完整记录在发票 raw_json 与状态日志中，供排查使用。
     """
     e = (error or "").lower()
+    if ("winerror 32" in e or "being used" in e or "另一个程序" in (error or "")
+            or "permission denied" in e or "access is denied" in e):
+        return "文件正被其他程序占用或目录无写入权限，请关闭占用程序后重试"
     if any(k in e for k in ("encrypt", "password", "decrypt")) or "密码" in (error or ""):
         return "文件已加密或受密码保护，无法读取；请解除密码后重新上传"
     if file_type in ("jpg", "jpeg", "png"):
@@ -1862,3 +1865,61 @@ def export_excel(status: str = None, keyword: str = None, ids: list = None,
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
+
+
+def export_excel_stream(status: str = None, keyword: str = None, ids: list = None,
+                        owner_user_id: int = None):
+    """流式导出发票清单：write_only 写临时文件后分块下发，5 万条不占大内存。
+
+    返回字节块迭代器；生成结束或客户端中断都会清理临时文件。
+    """
+    import os
+    import tempfile
+    from openpyxl import Workbook
+    from app.infra.excel import safe_cell
+    from app.service.task_lock import HEAVY_TASK_LOCK
+
+    def gen():
+        tmp_path = None
+        try:
+            with HEAVY_TASK_LOCK, db.read() as conn:
+                rows = invoice_repo.list(conn, status=status, keyword=keyword,
+                                         limit=100000, ids=ids,
+                                         owner_user_id=owner_user_id)
+            wb = Workbook(write_only=True)
+            ws = wb.create_sheet("发票清单")
+            ws.append(["ID", "状态", "发票号码", "开票日期",
+                       "购买方名称", "购买方税号", "销售方名称", "销售方税号",
+                       "金额", "税额", "价税合计", "税率", "报销内容",
+                       "导入时间"])
+            for i in rows:
+                ws.append([safe_cell(v) for v in [
+                    i["id"], i["status"], i["invoice_no"],
+                    i["invoice_date"], i["buyer_name"], i["buyer_tax_no"],
+                    i["seller_name"], i["seller_tax_no"],
+                    str(i["amount"]) if i["amount"] is not None else "",
+                    str(i["tax_amount"]) if i["tax_amount"] is not None else "",
+                    str(i["total_amount"]) if i["total_amount"] is not None else "",
+                    str(i["tax_rate"]) if i.get("tax_rate") is not None else "",
+                    i["item_summary"] or "",
+                    i.get("created_at") or "",
+                ]])
+            tmp = tempfile.NamedTemporaryFile(
+                delete=False, suffix=".xlsx", dir=str(settings.data_dir))
+            tmp_path = tmp.name
+            tmp.close()
+            wb.save(tmp_path)
+            with open(tmp_path, "rb") as f:
+                while True:
+                    chunk = f.read(64 * 1024)
+                    if not chunk:
+                        break
+                    yield chunk
+        finally:
+            if tmp_path:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+
+    return gen()

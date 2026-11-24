@@ -1401,6 +1401,7 @@ const RecalcTask = {
   timer: null,
   taskId: null,
   _pendingAck: null,
+  _starting: false,
 
   init(){
     window.addEventListener('pagehide', () => this.stopPolling());
@@ -1415,6 +1416,10 @@ const RecalcTask = {
 
   // 发起重算：后端立即返回 task_id，匹配在后台线程执行
   async start(btn){
+    // 防狂点：请求在途 / 冷却期内直接忽略，避免 1 秒内打出多次重算请求
+    if(this._starting) return;
+    this._starting = true;
+    if(btn){ btn.disabled = true; }
     try{
       const r = await fetch('/api/match/tasks', {method:'POST'});
       const j = await r.json();
@@ -1430,6 +1435,8 @@ const RecalcTask = {
       toast('重算任务已启动，可切换页面继续查看进度');
     }catch(e){
       toast('启动重算失败，请稍后重试', false);
+    }finally{
+      setTimeout(() => { this._starting = false; if(btn) btn.disabled = false; }, 1200);
     }
   },
 

@@ -525,6 +525,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
         logger.info("迁移: reimburse 表新增列 owner_user_id")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_invoice_owner ON invoice(owner_user_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_reimburse_owner ON reimburse(owner_user_id)")
+    # 审计日志 10 万级分页/联合筛选：按动作与对象类型补索引，避免全表扫描
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_log(action)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_target ON audit_log(target_type)")
 
     # 1a1d. 分类决策乐观锁：旧库补充 version 列（并发修改防护）
     for table in ("invoice_category", "reimburse_category"):
