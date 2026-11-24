@@ -554,8 +554,13 @@ body.show-meta .page-ref{display:inline-flex !important}
             <button class="replay-link" id="replayBtn">⟲ 重新播放</button>
           </div>
           <div class="qr-box">
-            <div class="qr"><img src="qr.png" alt="微信二维码"></div>
-            <div class="cap">扫码备注「发票核对」</div>
+            <div class="qr">
+              <img src="qr.png" alt="微信二维码" onerror="this.style.display='none';this.nextElementSibling.style.display='flex'">
+              <div style="display:none;width:100%;height:100%;align-items:center;justify-content:center;flex-direction:column;font-size:13px;color:var(--text-2);line-height:1.8;">
+                <span>客服微信号</span><b>fengyunhuo123</b>
+              </div>
+            </div>
+            <div class="cap">扫码或搜索微信号，备注「发票核对」</div>
           </div>
         </div>
       </section>

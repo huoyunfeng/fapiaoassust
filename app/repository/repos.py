@@ -1460,7 +1460,7 @@ class AuditRepo:
 
         use_page = page and page >= 1
         if use_page:
-            ps = max(1, min(500, page_size or 20))
+            ps = max(1, min(1000, page_size or 20))
             offset = (page - 1) * ps
             sql = f"SELECT * FROM audit_log{where} ORDER BY id DESC LIMIT ? OFFSET ?"
             rows = _rows_to_dicts(conn.execute(sql, params + [ps, offset]))

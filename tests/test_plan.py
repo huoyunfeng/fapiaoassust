@@ -2881,6 +2881,32 @@ class TestManualReasonAuditStruct:
         assert [c["label"] for c in cols[:2]] == ["序号", "报销单号"]
 
 
+class TestAuditPaging:
+    """审计日志分页：自定义条数上限应与设置页前端一致。"""
+
+    def test_custom_page_size_allows_up_to_1000(self, env):
+        with env["db"].tx() as conn:
+            conn.executemany(
+                "INSERT INTO audit_log(action, target_type, target_id) VALUES (?, ?, ?)",
+                [("backup", "system", str(i)) for i in range(501)])
+        from app.service import audit_service
+        result = audit_service.list_recent(page=1, page_size=1000)
+        assert result["page_size"] == 1000
+        assert len(result["items"]) == 501
+
+
+class TestDemoAssets:
+    """未配置个人二维码时，公开演示页应降级而不是返回 500。"""
+
+    def test_missing_qr_returns_404(self, tmp_path, monkeypatch):
+        from fastapi import HTTPException
+        from app.web import pages
+        monkeypatch.setattr(pages, "DEMO_ASSETS", tmp_path)
+        with pytest.raises(HTTPException) as exc:
+            pages.demo_qr()
+        assert exc.value.status_code == 404
+
+
 class TestStorageUsage:
     """设置页附件容量监控：统计 uploads/ 物理体积，超 5GB 给出警告。"""
 

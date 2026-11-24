@@ -3,7 +3,7 @@ import json
 from datetime import date, timedelta
 from typing import Optional
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
@@ -770,7 +770,10 @@ def demo_play():
 @pages.get("/demo/qr.png")
 def demo_qr():
     """演示页第 7 幕的微信二维码（与 /demo/play 同路径前缀，相对引用 qr.png 命中此处）。"""
-    return FileResponse(DEMO_ASSETS / "qr.png", media_type="image/png")
+    path = DEMO_ASSETS / "qr.png"
+    if not path.is_file():
+        raise HTTPException(status_code=404)
+    return FileResponse(path, media_type="image/png")
 
 
 # ---------------------------------------------------------------- 系统设置（左右分栏 + 分区路由）

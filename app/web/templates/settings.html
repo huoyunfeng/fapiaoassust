@@ -702,12 +702,12 @@
               <button type="button" onclick="sgAuditQuickDate(this,'7d')">近7天</button>
               <button type="button" onclick="sgAuditQuickDate(this,'month')">本月</button>
             </div>
-            <input type="date" id="sgAuditFrom" onchange="sgAuditLoad()">
+            <input type="date" id="sgAuditFrom" onchange="sgAuditSearch()">
             <span class="muted">至</span>
-            <input type="date" id="sgAuditTo" onchange="sgAuditLoad()">
+            <input type="date" id="sgAuditTo" onchange="sgAuditSearch()">
             <span class="sg-sep"></span>
             <label>操作：</label>
-            <select id="sgAuditAction" onchange="sgAuditLoad()" style="min-width:200px;">
+            <select id="sgAuditAction" onchange="sgAuditSearch()" style="min-width:200px;">
               <option value="">全部操作</option>
               <option value="backup">数据备份</option>
               <option value="restore">数据恢复</option>
@@ -721,8 +721,8 @@
               <option value="unmatch">解除匹配</option>
             </select>
             <span class="sg-sep"></span>
-            <input id="sgAuditKw" placeholder="操作人 / 对象 / 说明" style="width:220px;" onkeydown="if(event.key==='Enter')sgAuditLoad()">
-            <button class="btn btn-sm" onclick="sgAuditLoad()">查询</button>
+            <input id="sgAuditKw" placeholder="操作人 / 对象 / 说明" style="width:220px;" onkeydown="if(event.key==='Enter')sgAuditSearch()">
+            <button class="btn btn-sm" onclick="sgAuditSearch()">查询</button>
             <button class="btn btn-sm btn-outline" onclick="sgAuditReset()">重置</button>
           </div>
           <div id="sgAuditLoading" style="display:none;position:absolute;inset:0;background:rgba(255,255,255,.6);z-index:5;border-radius:8px;align-items:center;justify-content:center;">
@@ -1355,6 +1355,10 @@ function sgAuditReset(){
   document.getElementById('sgAuditTo').value = '';
   document.getElementById('sgAuditAction').value = '';
   document.getElementById('sgAuditKw').value = '';
+  sgAuditPage = 1;
+  sgAuditLoad();
+}
+function sgAuditSearch(){
   sgAuditPage = 1;
   sgAuditLoad();
 }
