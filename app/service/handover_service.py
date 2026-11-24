@@ -188,6 +188,18 @@ def import_handover(content: bytes) -> dict:
                                             "请使用「恢复数据」功能导入"}
         invoices = payload.get("invoices") or []
         reimburses = payload.get("reimburses") or []
+        # 防投毒：类型不符的包直接拒绝，避免逐行 .get() 抛异常导致 500
+        if (not isinstance(invoices, list) or not isinstance(reimburses, list)
+                or any(not isinstance(r, dict) for r in invoices)
+                or any(not isinstance(r, dict) for r in reimburses)):
+            return {"ok": False,
+                    "message": "交接包数据格式损坏：invoices / reimburses 必须是对象数组"}
+        # 字段值同样要防投毒：数组/对象无法绑定 SQLite 参数，必须提前拒绝
+        for r in invoices + reimburses:
+            for v in r.values():
+                if v is not None and not isinstance(v, (str, int, float, bool)):
+                    return {"ok": False,
+                            "message": "交接包数据格式损坏：字段值必须是字符串/数字/布尔/null"}
 
         # 附件解压到 uploads/：同名同内容复用，同名不同内容改名保留（绝不覆盖本机原件）。
         # name_map 记录包内文件名 -> 本机实际路径，导入时回写 source_path。

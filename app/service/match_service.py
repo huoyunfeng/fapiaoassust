@@ -820,6 +820,10 @@ def manual_match(invoice_id: int, reimburse_id: int, operator: str = None,
         reb = reimburse_repo.get(conn, reimburse_id)
         if inv is None or reb is None:
             return {"ok": False, "message": "发票或报销单不存在"}
+        if inv.get("deleted_at"):
+            return {"ok": False, "message": "该发票已移入回收站，不能参与匹配"}
+        if reb.get("deleted_at"):
+            return {"ok": False, "message": "该报销单已移入回收站，不能参与匹配"}
         if inv["status"] != "NORMAL":
             return {"ok": False, "message": f"仅 NORMAL 发票可匹配（当前: {inv['status']}）"}
         if match_repo.active_for_invoice(conn, invoice_id):
@@ -913,6 +917,8 @@ def manual_batch_bind(invoice_ids: List[int], reimburse_id: int,
         reb = reimburse_repo.get(conn, reimburse_id)
         if reb is None:
             return {"ok": False, "message": "报销单不存在"}
+        if reb.get("deleted_at"):
+            return {"ok": False, "message": "该报销单已移入回收站，不能参与匹配"}
         if match_repo.active_for_reimburse(conn, reimburse_id):
             return {"ok": False, "message": "该报销单已存在生效匹配，请先解绑"}
 
@@ -922,6 +928,8 @@ def manual_batch_bind(invoice_ids: List[int], reimburse_id: int,
             inv = invoice_repo.get(conn, iid)
             if inv is None:
                 return {"ok": False, "message": f"发票 #{iid} 不存在"}
+            if inv.get("deleted_at"):
+                return {"ok": False, "message": f"发票 #{iid} 已移入回收站，不能参与匹配"}
             if inv["status"] != "NORMAL":
                 return {"ok": False,
                         "message": f"发票 #{iid} 当前状态为 {inv['status']}，仅 NORMAL 可绑定"}

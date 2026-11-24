@@ -747,12 +747,9 @@ def _do_backup(on_progress: Optional[Callable[[int, str], None]] = None) -> dict
             _add_recent_logs(zf)
 
         _cb(92, "正在计算备份包 MD5…")
-        # 4. 计算 MD5（逐块读，支持大文件）
-        md5 = hashlib.md5()
-        with open(zip_path, "rb") as f:
-            for chunk in iter(lambda: f.read(1024 * 1024), b""):
-                md5.update(chunk)
-        md5_hex = md5.hexdigest()
+        # 4. 计算业务载荷 MD5（排除 manifest.json，避免收尾追加 manifest 后自校验失败）
+        with zipfile.ZipFile(zip_path) as zf_md5:
+            md5_hex = _payload_md5(zf_md5)
         _cb(95, "正在写入 manifest…")
 
         # 5. 把最终 md5 回填进 manifest.json（用 zipfile 重新写入同名条目覆盖）
@@ -829,6 +826,23 @@ def get_last_backup() -> Optional[dict]:
 def compute_md5_bytes(content: bytes) -> str:
     """对任意 bytes 计算 MD5（前端上传 zip 包后，先算一次比对 manifest 声明值）。"""
     return hashlib.md5(content).hexdigest()
+
+
+def _payload_md5(zf: zipfile.ZipFile) -> str:
+    """业务载荷稳定摘要：按条目名排序，对「文件名 + 内容」计算 MD5，排除 manifest.json。
+
+    备份包在收尾时会追加（覆盖）manifest.json，整包字节 MD5 无法自包含；
+    改为对业务载荷做摘要，生成端与恢复端可独立复算。
+    """
+    h = hashlib.md5()
+    for info in sorted(zf.infolist(), key=lambda i: i.filename):
+        if info.is_dir() or info.filename == "manifest.json":
+            continue
+        h.update(info.filename.encode("utf-8"))
+        h.update(b"\0")
+        h.update(zf.read(info))
+        h.update(b"\0")
+    return h.hexdigest()
 
 
 def _snapshot_db(target: Path) -> None:
@@ -935,12 +949,12 @@ def _do_restore(content: bytes, on_progress: Optional[Callable[[int, str], None]
         with zipfile.ZipFile(io.BytesIO(content)) as zf_probe:
             validate_zip_members(zf_probe, metadata_names={"manifest.json"})
             manifest_probe = _read_manifest(zf_probe)
+            actual_md5 = _payload_md5(zf_probe)
         declared_md5 = (manifest_probe.get("md5") or "").lower()
     except UnsafeZip as e:
         return {"ok": False, "message": str(e)}
     except zipfile.BadZipFile:
         return {"ok": False, "message": "备份文件损坏：无法打开"}
-    actual_md5 = hashlib.md5(content).hexdigest().lower()
     if declared_md5 and declared_md5 != actual_md5:
         logger.warning("恢复拦截：MD5 不匹配 manifest=%s actual=%s", declared_md5, actual_md5)
         return {"ok": False,
