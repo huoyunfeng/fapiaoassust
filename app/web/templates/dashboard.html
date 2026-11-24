@@ -139,16 +139,15 @@
 
 <div class="db-wrap">
 
-  {% if (inv_counts.values()|sum == 0) and (reb_total == 0) %}
-  <!-- 空数据：引导用户一键看示例 -->
+  {% set is_empty = (inv_counts.values()|sum == 0) and (reb_total == 0) %}
+  <!-- 始终展示：引导用户一键看自动演示（有无真实数据均可，不写正式库） -->
   <div class="db-demo-banner">
     <div class="db-demo-text">
-      <div class="db-demo-title">👋 还没有数据？先看个示例</div>
-      <div class="db-demo-sub">内置 20 张样例发票（含重复、连号、超标、缺日期）+ 1 份样例报销单（含金额差异、无票），一键生成「发现 ¥4,860 问题」报告，2 分钟看懂系统能帮你拦下什么。</div>
+      <div class="db-demo-title">{% if is_empty %}👋 还没有数据？先看个示例{% else %}🎬 想看系统还能拦下什么？90 秒看个示例{% endif %}</div>
+      <div class="db-demo-sub">内置 20 张样例发票（含重复、连号、超标、缺日期）+ 1 份样例报销单（含金额差异、无票），自动播放「发现 ¥4,860 问题」报告，看懂系统能帮你拦下什么。演示不写入你的真实数据。</div>
     </div>
-    <a href="/demo/seed" class="db-demo-btn">▶ 看示例</a>
+    <a href="/demo/play" target="_blank" class="db-demo-btn">▶ 看示例</a>
   </div>
-  {% endif %}
 
   <!-- 顶部 4 指标卡（紧凑 + 图标 + 警示） -->
   <div class="db-cards">

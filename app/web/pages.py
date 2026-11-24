@@ -4,7 +4,7 @@ from datetime import date, timedelta
 from typing import Optional
 
 from fastapi import APIRouter, Query, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 
 from app.config import APP_VERSION, RESOURCE_DIR
@@ -755,6 +755,22 @@ def demo_clear(request: Request):
     """清除全部样例数据，回到首页。"""
     demo_service.clear_demo()
     return RedirectResponse("/", status_code=303)
+
+
+# 内嵌演示资源（与 templates 同构，打包时随 app/web 一并进入 PyInstaller 包）
+DEMO_ASSETS = RESOURCE_DIR / "app" / "web" / "demo_assets"
+
+
+@pages.get("/demo/play", response_class=HTMLResponse)
+def demo_play():
+    """90 秒自动播放演示页：点「看示例」直接进入，无需登录、不写正式库。"""
+    return HTMLResponse((DEMO_ASSETS / "demo_showcase.html").read_text(encoding="utf-8"))
+
+
+@pages.get("/demo/qr.png")
+def demo_qr():
+    """演示页第 7 幕的微信二维码（与 /demo/play 同路径前缀，相对引用 qr.png 命中此处）。"""
+    return FileResponse(DEMO_ASSETS / "qr.png", media_type="image/png")
 
 
 # ---------------------------------------------------------------- 系统设置（左右分栏 + 分区路由）

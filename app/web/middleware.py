@@ -13,7 +13,9 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from app.infra.request_context import set_current_operator
 from app.service import auth_service, backup_service, license_service
 
-PUBLIC_PAGES = {"/login", "/setup", "/forgot-password", "/recover", "/health"}
+PUBLIC_PAGES = {"/login", "/setup", "/forgot-password", "/recover", "/health",
+                # 演示页免登录：客户可直接点开看效果，不触达任何业务数据
+                "/demo/play", "/demo/qr.png"}
 PUBLIC_API = {
     "/api/auth/login", "/api/auth/setup", "/api/auth/forgot", "/api/auth/recover",
     "/api/auth/logout",

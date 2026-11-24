@@ -1,0 +1,753 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>发票报销核对助手 · 90 秒演示</title>
+<style>
+/* ============ 演示外壳 ============ */
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  background:radial-gradient(1200px 700px at 50% 0%,#1e293b 0%,#0b1220 60%,#070b14 100%);
+  font-family:"Microsoft YaHei","PingFang SC",system-ui,sans-serif;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  min-height:100vh;padding:24px;gap:16px;color:#cbd5e1;overflow:hidden;
+}
+.stage{width:1280px;height:800px;transform-origin:center center;position:relative;flex:0 0 auto}
+.frame{
+  width:1280px;height:800px;border-radius:14px;overflow:hidden;position:relative;
+  background:#f5f7fa;box-shadow:0 30px 80px rgba(0,0,0,.55),0 0 0 1px rgba(255,255,255,.06);
+}
+/* 产品设计 Token（与软件一致） */
+:root{
+  --primary:#2563eb;--primary-dark:#1d4ed8;--primary-light:#eff6ff;--primary-border:#bfdbfe;
+  --success:#52c41a;--success-text:#389e0d;--success-bg:#f0f9eb;--success-border:#c2e7b0;
+  --warning:#faad14;--warning-text:#d48806;--warning-bg:#fdf6ec;
+  --danger:#ff4d4f;--danger-text:#cf1322;--danger-bg:#fef0f0;--danger-border:#fde2e2;
+  --card:#fff;--border:#e4e7ed;--border-light:#ebeef5;
+  --text:#303133;--text-2:#606266;--text-3:#909399;
+  --radius:8px;--shadow:0 2px 12px rgba(0,0,0,.05);
+}
+/* ============ 顶部导航 ============ */
+.nav{
+  height:56px;background:#fff;border-bottom:1px solid var(--border-light);
+  display:flex;align-items:center;padding:0 24px;gap:28px;position:relative;z-index:5;
+}
+.brand{display:flex;align-items:center;gap:9px;font-weight:700;color:var(--text);font-size:15px;white-space:nowrap}
+.brand .logo{
+  width:26px;height:26px;border-radius:7px;background:linear-gradient(135deg,#3b82f6,#2563eb);
+  display:flex;align-items:center;justify-content:center;color:#fff;font-size:13px;
+}
+.nav-links{display:flex;gap:24px;font-size:13.5px;color:var(--text-2)}
+.nav-links span{position:relative;padding:17px 0;transition:color .25s}
+.nav-links span.on{color:var(--primary);font-weight:600}
+.nav-links span.on::after{content:"";position:absolute;left:0;right:0;bottom:0;height:2px;background:var(--primary);border-radius:2px}
+.nav-right{margin-left:auto;display:flex;align-items:center;gap:14px;font-size:13px;color:var(--text-2)}
+.demo-entry{
+  padding:6px 14px;border-radius:999px;background:var(--primary-light);color:var(--primary);
+  border:1px solid var(--primary-border);font-weight:600;font-size:13px;
+}
+/* ============ 场景容器 ============ */
+.body-area{position:absolute;left:0;right:0;top:56px;bottom:0;overflow:hidden}
+.scene{
+  position:absolute;inset:0;padding:28px 32px;opacity:0;pointer-events:none;
+  transition:opacity .45s ease;display:flex;flex-direction:column;
+}
+.scene.active{opacity:1;pointer-events:auto}
+.page-title{font-size:19px;font-weight:700;color:var(--text);display:flex;align-items:center;gap:10px}
+.page-sub{font-size:13px;color:var(--text-3);margin-top:6px}
+/* 当前页面归属标识（用户随时知道这是软件哪个页面） */
+.page-tag{
+  position:absolute;bottom:16px;right:26px;z-index:6;display:flex;align-items:center;gap:7px;
+  background:#fff;border:1px solid var(--border);border-radius:999px;padding:6px 13px;
+  font-size:12px;color:var(--text-2);box-shadow:0 2px 8px rgba(0,0,0,.05);
+  transition:opacity .3s;
+}
+.page-tag b{color:var(--primary);font-weight:600}
+.page-tag .pin{font-size:12px}
+
+/* ============ 场景1：空状态 ============ */
+.empty-wrap{flex:1;display:flex;align-items:center;justify-content:center}
+.empty-card{
+  width:660px;background:#fff;border:1px solid var(--border-light);border-radius:14px;
+  box-shadow:var(--shadow);padding:44px 40px 36px;text-align:center;position:relative;
+}
+.empty-icon{
+  width:76px;height:76px;margin:0 auto 18px;border-radius:20px;
+  background:linear-gradient(135deg,#eff6ff,#dbeafe);display:flex;align-items:center;justify-content:center;
+  font-size:34px;
+}
+.empty-card h2{font-size:21px;color:var(--text);margin-bottom:10px}
+.empty-card p{font-size:14px;color:var(--text-3);line-height:1.8;margin-bottom:26px}
+.btn-demo{
+  display:inline-flex;align-items:center;gap:8px;padding:13px 34px;border-radius:999px;
+  background:linear-gradient(135deg,#3b82f6,#2563eb);color:#fff;font-size:15px;font-weight:600;
+  box-shadow:0 10px 24px rgba(37,99,235,.35);border:none;position:relative;cursor:pointer;
+  font-family:inherit;
+}
+.btn-demo.pulse{animation:pulse 1.6s infinite}
+@keyframes pulse{
+  0%{box-shadow:0 10px 24px rgba(37,99,235,.35),0 0 0 0 rgba(37,99,235,.45)}
+  70%{box-shadow:0 10px 24px rgba(37,99,235,.35),0 0 0 18px rgba(37,99,235,0)}
+  100%{box-shadow:0 10px 24px rgba(37,99,235,.35),0 0 0 0 rgba(37,99,235,0)}
+}
+.hint{font-size:12px;color:var(--text-3);margin-top:16px;line-height:1.8}
+.local-badge{
+  display:inline-flex;align-items:center;gap:6px;margin-top:14px;padding:5px 14px;border-radius:999px;
+  background:var(--success-bg);color:var(--success-text);border:1px solid var(--success-border);
+  font-size:12px;font-weight:600;
+}
+/* 模拟鼠标 */
+.cursor{
+  position:absolute;width:22px;height:22px;z-index:20;opacity:0;
+  transition:left 1s cubic-bezier(.34,1.2,.64,1),top 1s cubic-bezier(.34,1.2,.64,1),opacity .3s;
+  filter:drop-shadow(0 3px 5px rgba(0,0,0,.3));pointer-events:none;
+}
+.cursor.show{opacity:1}
+.ripple{
+  position:absolute;width:14px;height:14px;border-radius:50%;background:rgba(37,99,235,.45);
+  transform:translate(-50%,-50%) scale(0);opacity:0;z-index:19;pointer-events:none;
+}
+.ripple.go{animation:ripple .7s ease-out forwards}
+@keyframes ripple{0%{transform:translate(-50%,-50%) scale(0);opacity:.9}100%{transform:translate(-50%,-50%) scale(5);opacity:0}}
+
+/* ============ 场景2：加载 ============ */
+.loader{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:26px}
+.loader-title{font-size:17px;color:var(--text);font-weight:600}
+.loader-ring{position:relative;width:104px;height:104px}
+.loader-ring svg{transform:rotate(-90deg)}
+.loader-pct{
+  position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+  font-size:22px;font-weight:700;color:var(--primary);
+}
+.steps{display:flex;flex-direction:column;gap:11px;width:560px}
+.step{
+  display:flex;align-items:center;gap:11px;padding:10px 14px;border-radius:8px;background:#fff;
+  border:1px solid var(--border-light);font-size:13.5px;color:var(--text-2);
+  opacity:.4;transform:translateY(8px);transition:all .4s ease;
+}
+.step .dot{
+  width:18px;height:18px;border-radius:50%;border:2px solid #d5dbe5;flex:0 0 18px;
+  display:flex;align-items:center;justify-content:center;font-size:11px;color:#fff;
+}
+.step.run{opacity:1;transform:none;border-color:var(--primary-border);background:var(--primary-light)}
+.step.run .dot{border-color:var(--primary);border-top-color:transparent;animation:spin .8s linear infinite}
+.step.done{opacity:1;transform:none}
+.step.done .dot{background:var(--success);border-color:var(--success)}
+.step .badge{margin-left:auto;font-size:12px;color:var(--danger-text);background:var(--danger-bg);
+  border:1px solid var(--danger-border);padding:1px 8px;border-radius:999px;opacity:0;transition:opacity .3s}
+.step.done .badge{opacity:1}
+.step .src{margin-left:8px;font-size:11px;color:var(--text-3);background:#f5f7fa;border:1px solid var(--border-light);
+  padding:0 6px;border-radius:4px;opacity:.9}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* ============ 场景3：英雄卡 ============ */
+.hero{
+  margin:auto;width:100%;max-width:1000px;border-radius:18px;padding:38px 48px 34px;color:#fff;position:relative;overflow:hidden;
+  background:linear-gradient(120deg,#1e3a8a 0%,#1d4ed8 45%,#2563eb 100%);
+  box-shadow:0 24px 60px rgba(29,78,216,.35);
+}
+.hero::after{
+  content:"";position:absolute;right:-120px;top:-120px;width:380px;height:380px;border-radius:50%;
+  background:radial-gradient(circle,rgba(255,255,255,.22),rgba(255,255,255,0) 70%);
+}
+.hero-label{font-size:13px;letter-spacing:2px;opacity:.85;margin-bottom:14px}
+.hero-amount{font-size:60px;font-weight:800;letter-spacing:-1px;line-height:1.1;
+  font-variant-numeric:tabular-nums;text-shadow:0 4px 18px rgba(0,0,0,.2)}
+.hero-amount .cur{font-size:32px;font-weight:600;margin-right:6px;opacity:.9}
+.hero-sub{margin-top:16px;font-size:14.5px;opacity:.95}
+.hero-sub b{color:#fff;font-size:16px}
+.hero-badge{
+  display:inline-flex;align-items:center;gap:6px;margin-top:16px;padding:6px 14px;border-radius:999px;
+  background:rgba(255,255,255,.16);border:1px solid rgba(255,255,255,.28);font-size:12.5px;
+}
+.hero-kpis{display:flex;gap:12px;margin-top:22px;position:relative;z-index:2}
+.hero-kpi{
+  flex:1;background:rgba(255,255,255,.13);border:1px solid rgba(255,255,255,.2);border-radius:10px;
+  padding:12px 16px;
+}
+.hero-kpi b{display:block;font-size:20px;font-weight:800;font-variant-numeric:tabular-nums}
+.hero-kpi span{font-size:11.5px;opacity:.8}
+.hero-note{margin-top:14px;font-size:11.5px;opacity:.6}
+
+/* ============ 场景4：问题构成（两组） ============ */
+.group{margin-top:16px}
+.group-h{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+.group-h .gt{font-size:13.5px;font-weight:700;color:var(--text)}
+.group-h .gd{font-size:11.5px;color:var(--text-3)}
+.group-h .page-ref{
+  margin-left:auto;font-size:11px;color:var(--text-3);background:#fff;border:1px solid var(--border-light);
+  border-radius:999px;padding:2px 9px;
+}
+.cat-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px}
+.cat-grid.risk{grid-template-columns:repeat(2,1fr)}
+.cat{
+  background:#fff;border:1px solid var(--border-light);border-radius:10px;padding:14px 16px;position:relative;
+  box-shadow:var(--shadow);opacity:0;transform:translateY(16px) scale(.97);transition:all .5s cubic-bezier(.2,.8,.3,1);
+}
+.cat.risk-card{background:#fbfcfe;border-style:dashed}
+.scene.active .cat{opacity:1;transform:none}
+.scene.active .cat:nth-child(1){transition-delay:.15s}
+.scene.active .cat:nth-child(2){transition-delay:.45s}
+.scene.active .cat:nth-child(3){transition-delay:.75s}
+.scene.active .cat:nth-child(4){transition-delay:1.05s}
+.scene.active .cat-grid.risk .cat:nth-child(1){transition-delay:1.35s}
+.scene.active .cat-grid.risk .cat:nth-child(2){transition-delay:1.65s}
+.cat::before{content:"";position:absolute;left:0;top:12px;bottom:12px;width:3px;border-radius:0 3px 3px 0;background:var(--c)}
+.cat-name{font-size:13px;color:var(--text-2);font-weight:600;display:flex;align-items:center;gap:6px}
+.cat-name .src{margin-left:auto;font-size:10.5px;color:var(--text-3);background:#f5f7fa;
+  border:1px solid var(--border-light);border-radius:4px;padding:1px 6px;font-weight:400}
+.cat-amt{font-size:25px;font-weight:800;color:var(--text);margin-top:8px;font-variant-numeric:tabular-nums}
+.cat-amt small{font-size:13px;font-weight:600;margin-right:2px}
+.cat-amt.none{font-size:18px;color:var(--text-2);font-weight:700}
+.cat-meta{font-size:11.5px;color:var(--text-3);margin-top:5px;display:flex;align-items:center;gap:6px}
+.cat-tag{background:var(--c-bg);color:var(--c);padding:1px 7px;border-radius:4px;font-size:11px;font-weight:600}
+.total-bar{
+  margin-top:14px;background:#fff;border:1px solid var(--border);border-radius:10px;
+  padding:12px 20px;display:flex;align-items:center;justify-content:space-between;box-shadow:var(--shadow);
+}
+.total-bar .l{font-size:13px;color:var(--text-3)}
+.total-bar .r{font-size:23px;font-weight:800;color:var(--danger-text);font-variant-numeric:tabular-nums}
+.total-bar .r small{font-size:13px;font-weight:600}
+.total-bar .aside{font-size:11.5px;color:var(--text-3);margin-left:auto;margin-right:18px}
+
+/* ============ 场景5：明细 ============ */
+.export-btn{
+  margin-left:auto;display:inline-flex;align-items:center;gap:6px;padding:7px 14px;border-radius:7px;
+  border:1px solid var(--primary-border);background:var(--primary-light);color:var(--primary);
+  font-size:12.5px;font-weight:600;cursor:pointer;font-family:inherit;
+}
+.detail-wrap{margin-top:14px;display:grid;grid-template-columns:1.05fr 1fr;gap:14px;flex:1;min-height:0;align-items:start}
+.col{display:flex;flex-direction:column;gap:12px;min-width:0}
+.panel{background:#fff;border:1px solid var(--border-light);border-radius:10px;box-shadow:var(--shadow);overflow:hidden}
+.panel-h{padding:11px 16px;border-bottom:1px solid var(--border-light);display:flex;align-items:center;gap:8px;font-size:13px;font-weight:700;color:var(--text)}
+.panel-h .pill{margin-left:auto;font-size:11px;font-weight:600;color:var(--danger-text);background:var(--danger-bg);padding:2px 9px;border-radius:999px}
+.panel-h .pill.warn{color:var(--warning-text);background:var(--warning-bg)}
+.panel-h .src{font-size:10.5px;color:var(--text-3);background:#f5f7fa;border:1px solid var(--border-light);
+  border-radius:4px;padding:1px 6px;font-weight:400}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th{text-align:left;color:var(--text-3);font-weight:600;padding:8px 16px;background:#fafbfc;border-bottom:1px solid var(--border-light);font-size:11.5px;white-space:nowrap}
+td{padding:9px 16px;border-bottom:1px solid #f2f4f7;color:var(--text-2);white-space:nowrap}
+tr:last-child td{border-bottom:none}
+td.num{font-variant-numeric:tabular-nums;color:var(--text);font-weight:600}
+td.red{color:var(--danger-text);font-weight:700}
+.tag-sm{display:inline-block;font-size:10.5px;padding:1px 7px;border-radius:4px;background:var(--warning-bg);color:var(--warning-text);font-weight:600}
+.tag-red{background:var(--danger-bg);color:var(--danger-text)}
+.tag-pink{background:#fdf2f8;color:#be185d}
+.note{margin-top:10px;font-size:11px;color:var(--text-3);line-height:1.7}
+.note code{background:#f5f7fa;border-radius:3px;padding:0 4px}
+.fade-row{opacity:0;transform:translateX(-8px);transition:all .45s ease}
+.scene.active .fade-row{opacity:1;transform:none}
+.scene.active .fade-row:nth-child(2){transition-delay:.2s}
+.scene.active .fade-row:nth-child(3){transition-delay:.38s}
+.toast{
+  position:absolute;left:50%;bottom:30px;transform:translateX(-50%) translateY(12px);opacity:0;
+  background:rgba(48,49,51,.92);color:#fff;font-size:12.5px;padding:9px 18px;border-radius:8px;
+  transition:all .3s;z-index:30;pointer-events:none;
+}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+
+/* ============ 场景6：前后对比 ============ */
+.compare{flex:1;display:flex;align-items:center;justify-content:center;gap:18px;margin-top:8px}
+.cmp-card{
+  width:400px;background:#fff;border-radius:14px;border:1px solid var(--border-light);
+  box-shadow:var(--shadow);padding:26px 28px;opacity:0;transform:translateY(14px);transition:all .55s ease;
+}
+.scene.active .cmp-card{opacity:1;transform:none}
+.scene.active .cmp-card.before{transition-delay:.2s}
+.scene.active .cmp-card.after{transition-delay:.7s}
+.cmp-card .tag{display:inline-block;font-size:11.5px;font-weight:600;padding:3px 10px;border-radius:999px;margin-bottom:16px}
+.cmp-card.before .tag{background:#f1f5f9;color:#64748b}
+.cmp-card.after .tag{background:var(--primary-light);color:var(--primary)}
+.cmp-card.after{border-color:var(--primary-border);box-shadow:0 12px 30px rgba(37,99,235,.12)}
+.cmp-card ul{list-style:none;display:flex;flex-direction:column;gap:13px}
+.cmp-card li{font-size:14px;color:var(--text-2);display:flex;align-items:center;gap:10px}
+.cmp-card li .k{font-size:19px;font-weight:800;color:var(--text);min-width:76px;font-variant-numeric:tabular-nums}
+.cmp-card.before li .k{color:#94a3b8}
+.cmp-card.after li .k{color:var(--primary)}
+.cmp-arrow{font-size:26px;color:#94a3b8;opacity:0;transition:opacity .5s}
+.scene.active .cmp-arrow{opacity:1;transition-delay:.45s}
+
+/* ============ 场景7：CTA ============ */
+.cta{flex:1;display:flex;align-items:center;justify-content:center;gap:56px}
+.cta-left{max-width:560px}
+.cta-left h2{font-size:30px;color:var(--text);letter-spacing:-.5px;line-height:1.35}
+.cta-left h2 span{color:var(--primary)}
+.cta-left p{margin-top:14px;font-size:14px;color:var(--text-2);line-height:1.9}
+.cta-btn{
+  margin-top:24px;padding:14px 34px;border-radius:999px;border:none;cursor:pointer;font-family:inherit;
+  background:linear-gradient(135deg,#3b82f6,#2563eb);color:#fff;font-size:16px;font-weight:700;
+  box-shadow:0 12px 28px rgba(37,99,235,.35);
+}
+.cta-small{margin-top:14px;font-size:12px;color:var(--text-3);line-height:1.8}
+.qr-box{
+  width:220px;text-align:center;
+}
+.qr{
+  width:200px;height:200px;border:1px solid var(--border-light);border-radius:12px;background:#fff;
+  display:flex;align-items:center;justify-content:center;padding:10px;margin:0 auto;
+  box-shadow:var(--shadow);
+}
+.qr img{width:100%;height:100%;object-fit:contain;display:block;border-radius:6px}
+.qr-box .cap{font-size:12px;color:var(--text-3);margin-top:10px}
+.replay-link{
+  margin-top:18px;background:none;border:none;color:var(--text-3);font-size:12px;cursor:pointer;
+  text-decoration:underline;font-family:inherit;
+}
+
+/* ============ 播放控制 ============ */
+.controls{width:1280px;display:flex;align-items:center;gap:14px;padding:0 6px}
+.ctrl-btn{
+  width:38px;height:38px;border-radius:10px;border:1px solid rgba(255,255,255,.15);
+  background:rgba(255,255,255,.07);color:#e2e8f0;font-size:15px;cursor:pointer;
+  display:flex;align-items:center;justify-content:center;transition:all .2s;
+}
+.ctrl-btn:hover{background:rgba(255,255,255,.15)}
+.track{flex:1;height:6px;border-radius:999px;background:rgba(255,255,255,.12);overflow:hidden}
+.track-fill{height:100%;width:0;background:linear-gradient(90deg,#3b82f6,#60a5fa);border-radius:999px}
+.dots{display:flex;gap:6px}
+.dot-btn{
+  font-size:12px;color:#94a3b8;padding:4px 9px;border-radius:999px;cursor:pointer;
+  border:1px solid transparent;background:transparent;font-family:inherit;
+}
+.dot-btn.on{color:#fff;background:rgba(59,130,246,.25);border-color:rgba(96,165,250,.5)}
+.hintbar{font-size:12px;color:#64748b;white-space:nowrap}
+/* 标注层：默认隐藏，按 i 显示（给现场讲解用，客户自己看不干扰） */
+.page-tag,.src,.page-ref{display:none !important}
+body.show-meta .page-tag{display:flex !important}
+body.show-meta .src{display:inline-block !important}
+body.show-meta .page-ref{display:inline-flex !important}
+</style>
+</head>
+<body>
+
+<div class="stage" id="stage">
+  <div class="frame" id="frame">
+    <!-- 导航 -->
+    <div class="nav">
+      <div class="brand"><div class="logo">票</div>发票报销核对助手</div>
+      <div class="nav-links" id="navLinks">
+        <span>工作台</span><span>发票管理</span><span>报销单</span><span>匹配核对</span><span>报告中心</span><span>规则配置</span>
+      </div>
+      <div class="nav-right"><span class="demo-entry">🎬 示例</span><span>管理员</span></div>
+    </div>
+
+    <!-- 当前页面归属 -->
+    <div class="page-tag" id="pageTag"><span class="pin">📍</span>所在页面：<b id="pageName">工作台</b></div>
+
+    <div class="body-area">
+      <!-- 场景1 -->
+      <section class="scene" id="s1" data-nav="0" data-page="工作台 · 空状态">
+        <div class="page-title">工作台</div>
+        <div class="page-sub">今天还没有新的核对任务</div>
+        <div class="empty-wrap">
+          <div class="empty-card">
+            <div class="empty-icon">📄</div>
+            <h2>还没有核对数据</h2>
+            <p>导入发票和报销单，或先看一段示例。<br>90 秒，看看系统能帮你发现多少问题。</p>
+            <button class="btn-demo pulse" id="demoBtn">▶ 看示例</button>
+            <div class="hint">示例数据独立存放，不影响你的真实数据</div>
+            <div class="local-badge">🔒 本地部署 · 数据不上传 · 断网也能用</div>
+          </div>
+        </div>
+        <svg class="cursor" id="cursor" viewBox="0 0 24 24" fill="#1f2937" stroke="#fff" stroke-width="1.4">
+          <path d="M4 2l14 9-6.5 1.2L15 20l-2.6 1-3.4-7.8L4 17V2z"/>
+        </svg>
+        <div class="ripple" id="ripple"></div>
+      </section>
+
+      <!-- 场景2 -->
+      <section class="scene" id="s2" data-nav="1" data-page="发票管理 · 导入与解析">
+        <div class="loader">
+          <div class="loader-title">正在生成示例数据并执行智能核对…</div>
+          <div class="loader-ring">
+            <svg width="104" height="104">
+              <circle cx="52" cy="52" r="46" fill="none" stroke="#e6ebf5" stroke-width="8"/>
+              <circle id="ring" cx="52" cy="52" r="46" fill="none" stroke="#2563eb" stroke-width="8"
+                      stroke-linecap="round" stroke-dasharray="289" stroke-dashoffset="289"/>
+            </svg>
+            <div class="loader-pct" id="pct">0%</div>
+          </div>
+          <div class="steps" id="steps">
+            <div class="step" data-i="0"><div class="dot">✓</div>导入 20 张样例发票（PDF / OFD / XML 解析）<span class="src">发票管理</span></div>
+            <div class="step" data-i="1"><div class="dot">✓</div>发票查重<em class="badge">发现 1 张重复</em><span class="src">发票管理</span></div>
+            <div class="step" data-i="2"><div class="dot">✓</div>合规校验<em class="badge">发现 1 张缺开票日期</em><span class="src">发票管理</span></div>
+            <div class="step" data-i="3"><div class="dot">✓</div>连号风控扫描<em class="badge">发现 1 组连号</em><span class="src">规则中心</span></div>
+            <div class="step" data-i="4"><div class="dot">✓</div>费用标准比对<em class="badge">发现 1 张超标</em><span class="src">规则配置</span></div>
+            <div class="step" data-i="5"><div class="dot">✓</div>报销单匹配<em class="badge">3 行差异 · 1 行无票</em><span class="src">匹配核对</span></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 场景3 -->
+      <section class="scene" id="s3" data-nav="4" data-page="报告中心 · 核对报告">
+        <div class="hero">
+          <div class="hero-label">样例报告 · 智能核对结果</div>
+          <div class="hero-amount"><span class="cur">¥</span><span id="bigNum" data-amount="3180.00">0.00</span></div>
+          <div class="hero-sub"><b>4 类确定性问题</b>，涉及 3,180 元</div>
+          <div class="hero-badge">另有 2 类风险提示（连号 3 张、缺日期 1 张）· 不计金额</div>
+          <div class="hero-kpis">
+            <div class="hero-kpi"><b>4 类</b><span>确定性问题</span></div>
+            <div class="hero-kpi"><b>2 类</b><span>风险提示</span></div>
+            <div class="hero-kpi"><b>≈2.5 天</b><span>预计每月节省人工（按 200 张估）</span></div>
+          </div>
+          <div class="hero-note">演示数据为虚构样例，与真实业务无关</div>
+        </div>
+      </section>
+
+      <!-- 场景4 -->
+      <section class="scene" id="s4" data-nav="4" data-page="报告中心 · 问题构成">
+        <div class="page-title">问题构成<div class="page-sub" style="display:inline;margin:0 0 0 2px">按可追回口径分类，风险提示单独列出</div></div>
+
+        <div class="group">
+          <div class="group-h">
+            <span class="gt">确定性问题</span>
+            <span class="gd">涉及金额 ¥3,180.00</span>
+            <span class="page-ref">报告中心 › 问题构成</span>
+          </div>
+          <div class="cat-grid">
+            <div class="cat" style="--c:#f59e0b;--c-bg:#fdf6ec">
+              <div class="cat-name">重复发票<span class="src">报告中心</span></div>
+              <div class="cat-amt"><small>¥</small><span class="roll" data-amount="580.00">0.00</span></div>
+              <div class="cat-meta"><span class="cat-tag">1 笔</span>相同发票号重复报销，可追回</div>
+            </div>
+            <div class="cat" style="--c:#3b82f6;--c-bg:#eff6ff">
+              <div class="cat-name">金额差异<span class="src">报告中心</span></div>
+              <div class="cat-amt"><small>¥</small><span class="roll" data-amount="1200.00">0.00</span></div>
+              <div class="cat-meta"><span class="cat-tag">3 行</span>报销额与票面不一致，需说明</div>
+            </div>
+            <div class="cat" style="--c:#ec4899;--c-bg:#fdf2f8">
+              <div class="cat-name">无票报销<span class="src">报告中心</span></div>
+              <div class="cat-amt"><small>¥</small><span class="roll" data-amount="600.00">0.00</span></div>
+              <div class="cat-meta"><span class="cat-tag">1 行</span>无对应发票，需补票或纳税调整</div>
+            </div>
+            <div class="cat" style="--c:#ef4444;--c-bg:#fef0f0">
+              <div class="cat-name">超标费用<span class="src">报告中心</span></div>
+              <div class="cat-amt"><small>¥</small><span class="roll" data-amount="800.00">0.00</span></div>
+              <div class="cat-meta"><span class="cat-tag">1 张</span>超出公司标准部分，可扣回</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="group">
+          <div class="group-h">
+            <span class="gt">风险提示</span>
+            <span class="gd">不计金额，仅供核实</span>
+            <span class="page-ref">报告中心 › 问题构成</span>
+          </div>
+          <div class="cat-grid risk">
+            <div class="cat risk-card" style="--c:#8b5cf6;--c-bg:#f5f3ff">
+              <div class="cat-name">连号发票<span class="src">报告中心</span></div>
+              <div class="cat-amt none">3 张</div>
+              <div class="cat-meta">同商户连续开票，建议核实业务真实性</div>
+            </div>
+            <div class="cat risk-card" style="--c:#f97316;--c-bg:#fff7ed">
+              <div class="cat-name">缺开票日期<span class="src">报告中心</span></div>
+              <div class="cat-amt none">1 张</div>
+              <div class="cat-meta">票面信息不完整，可能影响报销 / 抵扣</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="total-bar">
+          <div class="l">确定性问题合计</div>
+          <div class="r">¥<span id="sumNum">0.00</span><small> 元</small></div>
+          <div class="aside">另有连号 3 张、缺日期 1 张（不计金额）</div>
+        </div>
+      </section>
+
+      <!-- 场景5 -->
+      <section class="scene" id="s5" data-nav="4" data-page="报告中心 · 问题明细">
+        <div class="page-title">问题明细
+          <button class="export-btn" id="exportBtn">⬇ 导出整改清单</button>
+        </div>
+        <div class="page-sub">每一笔都能定位到具体发票与报销行，可直接导出跟进</div>
+
+        <div class="detail-wrap">
+          <div class="col">
+            <div class="panel">
+              <div class="panel-h">超标费用<span class="src">报告中心</span><span class="pill">超额 ¥800.00</span></div>
+              <table>
+                <thead><tr><th>发票号</th><th>费用项</th><th>标准</th><th>票面</th><th>超额</th></tr></thead>
+                <tbody>
+                  <tr class="fade-row"><td>…0401</td><td><span class="tag-sm tag-red">住宿费</span></td><td class="num">¥2,200</td><td class="num">¥3,000</td><td class="red">¥800</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <div class="panel">
+              <div class="panel-h">风险提示明细<span class="src">报告中心</span><span class="pill warn">不计金额</span></div>
+              <table>
+                <thead><tr><th>类型</th><th>发票号</th><th>商户 / 项目</th><th>票面</th></tr></thead>
+                <tbody>
+                  <tr><td><span class="tag-sm">连号</span></td><td>…0301 / 0302 / 0303</td><td>某某加油站（朝阳店）</td><td class="num">¥400 ×3</td></tr>
+                  <tr><td><span class="tag-sm">缺日期</span></td><td>…0501</td><td>某某商贸公司 · 办公用品</td><td class="num">¥480</td></tr>
+                </tbody>
+              </table>
+              <div class="note">连号与缺日期属于合规风险，不折算金额，单独提醒核实。</div>
+            </div>
+          </div>
+
+          <div class="col">
+            <div class="panel">
+              <div class="panel-h">金额差异<span class="src">报告中心</span><span class="pill">差异合计 ¥1,200.00</span></div>
+              <table>
+                <thead><tr><th>发票号</th><th>发票金额</th><th>报销金额</th><th>差异</th></tr></thead>
+                <tbody>
+                  <tr class="fade-row"><td>…0101</td><td class="num">¥620</td><td class="num">¥1,020</td><td class="red">¥400</td></tr>
+                  <tr class="fade-row"><td>…0102</td><td class="num">¥1,050</td><td class="num">¥1,500</td><td class="red">¥450</td></tr>
+                  <tr class="fade-row"><td>…0103</td><td class="num">¥1,150</td><td class="num">¥800</td><td class="red">¥350</td></tr>
+                </tbody>
+              </table>
+              <div class="note">差异不一定都是多报：第三行报销额低于票面，同样需要说明原因。</div>
+            </div>
+            <div class="panel">
+              <div class="panel-h">无票报销<span class="src">报告中心</span><span class="pill" style="color:#be185d;background:#fdf2f8">¥600.00</span></div>
+              <table>
+                <thead><tr><th>报销单</th><th>报销人</th><th>费用类型</th><th>报销额</th></tr></thead>
+                <tbody>
+                  <tr><td>BX-2024-09-001</td><td>张三</td><td><span class="tag-sm tag-pink">办公费</span></td><td class="num">¥600</td></tr>
+                </tbody>
+              </table>
+              <div class="note">该行未填写发票号，系统也未匹配到等额发票。</div>
+            </div>
+          </div>
+        </div>
+        <div class="toast" id="toast">演示版：将导出为 Excel 整改清单（含发票号、问题类型、建议处理）</div>
+      </section>
+
+      <!-- 场景6：前后对比 -->
+      <section class="scene" id="s6" data-nav="4" data-page="报告中心 · 效率对比">
+        <div class="page-title">以前 vs 现在</div>
+        <div class="page-sub">同一份报销，人工核对与系统核对的实际差别（按 200 张/月、1 名财务估算）</div>
+        <div class="compare">
+          <div class="cmp-card before">
+            <span class="tag">以前 · 人工</span>
+            <ul>
+              <li><span class="k">3 天</span>一份月度报销核对</li>
+              <li><span class="k">1 人</span>边做边漏，没人复核</li>
+              <li><span class="k">Excel</span>逐行比对，靠眼睛</li>
+              <li><span class="k">无留痕</span>出了问题说不清</li>
+            </ul>
+          </div>
+          <div class="cmp-arrow">→</div>
+          <div class="cmp-card after">
+            <span class="tag">现在 · 系统</span>
+            <ul>
+              <li><span class="k">半天</span>解析 + 查重 + 匹配 + 复核</li>
+              <li><span class="k">1 人</span>只看系统标出的异常</li>
+              <li><span class="k">自动报告</span>按问题类型分类</li>
+              <li><span class="k">笔笔可查</span>每笔定位到票与行</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <!-- 场景7：CTA -->
+      <section class="scene" id="s7" data-nav="4" data-page="报告中心 · 试用与联系">
+        <div class="cta">
+          <div class="cta-left">
+            <h2>先跑一次<span>你自己的上月数据</span></h2>
+            <p>不用你自己装——我远程帮你装好，数据不上传云端。把报销单和发票发我，24 小时给你一份差异报告——<br>数据只用于本次核对，7 天内删除。</p>
+            <button class="cta-btn" id="ctaBtn">免费跑一次（限 5 家）</button>
+            <div class="cta-small">🔒 本地部署 · 数据不上传 · 断网也能用<br>同一套样例数据，在你自己的电脑上完成全部解析与核对。</div>
+            <button class="replay-link" id="replayBtn">⟲ 重新播放</button>
+          </div>
+          <div class="qr-box">
+            <div class="qr"><img src="qr.png" alt="微信二维码"></div>
+            <div class="cap">扫码备注「发票核对」</div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+</div>
+
+<!-- 控制栏 -->
+<div class="controls">
+  <button class="ctrl-btn" id="playBtn" title="播放 / 暂停（空格）">⏸</button>
+  <button class="ctrl-btn" id="prevBtn" title="上一幕">⏮</button>
+  <button class="ctrl-btn" id="nextBtn" title="下一幕">⏭</button>
+  <div class="track"><div class="track-fill" id="fill"></div></div>
+  <div class="dots" id="dots"></div>
+  <div class="hintbar">空格暂停 · ←/→ 切幕 · i 标注</div>
+</div>
+
+<script>
+(function(){
+  const SCENES = ['s1','s2','s3','s4','s5','s6','s7'];
+  // 约 90 秒：空状态 6s / 加载 11s / 主数字 11s / 问题构成 20s / 明细 22s / 对比 10s / CTA 10s
+  const DUR = [6000, 11000, 11000, 20000, 22000, 10000, 10000];
+  let idx = -1, playing = true, elapsed = 0, lastT = 0;
+
+  const stage = document.getElementById('stage');
+  const fill = document.getElementById('fill');
+  const dots = document.getElementById('dots');
+  const playBtn = document.getElementById('playBtn');
+  const navItems = [...document.querySelectorAll('#navLinks span')];
+  const pageName = document.getElementById('pageName');
+
+  // 自适应缩放
+  function fit(){
+    const s = Math.min((window.innerWidth - 48) / 1280, (window.innerHeight - 130) / 800, 1);
+    stage.style.transform = 'scale(' + s + ')';
+    stage.style.height = (800 * s) + 'px';
+  }
+  window.addEventListener('resize', fit); fit();
+
+  SCENES.forEach((_, i) => {
+    const b = document.createElement('button');
+    b.className = 'dot-btn';
+    b.textContent = '第' + (i + 1) + '幕';
+    b.onclick = () => { playing = true; playBtn.textContent = '⏸'; go(i); };
+    dots.appendChild(b);
+  });
+
+  function roll(el, target, dur){
+    const t0 = performance.now();
+    const fmt = v => v.toLocaleString('zh-CN', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+    function step(t){
+      const p = Math.min(1, (t - t0) / dur);
+      const e = 1 - Math.pow(1 - p, 3);
+      el.textContent = fmt(target * e);
+      if(p < 1) requestAnimationFrame(step);
+    }
+    requestAnimationFrame(step);
+  }
+
+  let ringTimer = null;
+  function runLoader(){
+    const ring = document.getElementById('ring');
+    const pct = document.getElementById('pct');
+    const steps = [...document.querySelectorAll('#steps .step')];
+    const total = 8.2;
+    const t0 = performance.now();
+    function step(t){
+      const p = Math.min(1, (t - t0) / (total * 1000));
+      ring.style.strokeDashoffset = 289 * (1 - p);
+      pct.textContent = Math.round(p * 100) + '%';
+      const active = Math.min(steps.length - 1, Math.floor(p * steps.length));
+      steps.forEach((s, i) => {
+        s.classList.toggle('done', i < active);
+        s.classList.toggle('run', i === active);
+        s.style.opacity = (i <= active) ? 1 : .4;
+      });
+      if(p < 1) ringTimer = requestAnimationFrame(step);
+      else steps.forEach(s => { s.classList.remove('run'); s.classList.add('done'); s.style.opacity = 1; });
+    }
+    steps.forEach(s => { s.classList.remove('done','run'); s.style.opacity = .4; });
+    ringTimer = requestAnimationFrame(step);
+  }
+
+  function enter(i){
+    document.querySelectorAll('.scene').forEach(s => s.classList.remove('active'));
+    const el = document.getElementById(SCENES[i]);
+    el.classList.add('active');
+    [...dots.children].forEach((b, j) => b.classList.toggle('on', j === i));
+
+    // 页面归属：高亮导航 + 顶部标签
+    const navIdx = parseInt(el.dataset.nav, 10);
+    navItems.forEach((n, j) => n.classList.toggle('on', j === navIdx));
+    pageName.textContent = el.dataset.page || '';
+
+    if(i === 0) playCursor();
+    if(i === 1) runLoader();
+    if(i === 2) roll(document.getElementById('bigNum'), 3180, 1400);
+    if(i === 3){
+      document.querySelectorAll('#s4 .roll').forEach((r, k) => {
+        setTimeout(() => roll(r, parseFloat(r.dataset.amount), 850), 150 + k * 300);
+      });
+      setTimeout(() => roll(document.getElementById('sumNum'), 3180, 1000), 1600);
+    }
+  }
+
+  function playCursor(){
+    const cursor = document.getElementById('cursor');
+    const btn = document.getElementById('demoBtn');
+    const ripple = document.getElementById('ripple');
+    cursor.classList.remove('show');
+    cursor.style.left = '1080px'; cursor.style.top = '690px';
+    setTimeout(() => cursor.classList.add('show'), 300);
+    setTimeout(() => {
+      const r = btn.getBoundingClientRect();
+      const f = document.getElementById('frame').getBoundingClientRect();
+      cursor.style.left = (r.left - f.left + r.width * .62) + 'px';
+      cursor.style.top = (r.top - f.top + r.height * .55) + 'px';
+    }, 700);
+    setTimeout(() => {
+      const r = btn.getBoundingClientRect();
+      const f = document.getElementById('frame').getBoundingClientRect();
+      ripple.style.left = (r.left - f.left + r.width * .62) + 'px';
+      ripple.style.top = (r.top - f.top + r.height * .55) + 'px';
+      ripple.classList.remove('go'); void ripple.offsetWidth; ripple.classList.add('go');
+    }, 2100);
+  }
+
+  function go(i){
+    idx = (i + SCENES.length) % SCENES.length;
+    elapsed = 0; lastT = 0;
+    fill.style.width = '0%';
+    enter(idx);
+  }
+  function next(){ go(idx + 1); }
+
+  function loop(t){
+    if(!lastT) lastT = t;
+    const dt = t - lastT; lastT = t;
+    if(playing){
+      elapsed += dt;
+      fill.style.width = Math.min(100, elapsed / DUR[idx] * 100) + '%';
+      if(elapsed >= DUR[idx]) next();
+    }
+    requestAnimationFrame(loop);
+  }
+  requestAnimationFrame(loop);
+
+  function toggle(){
+    playing = !playing;
+    playBtn.textContent = playing ? '⏸' : '▶';
+    lastT = 0;
+  }
+  playBtn.onclick = toggle;
+  document.getElementById('prevBtn').onclick = () => go(idx - 1);
+  document.getElementById('nextBtn').onclick = () => go(idx + 1);
+  document.getElementById('replayBtn').onclick = () => { playing = true; playBtn.textContent = '⏸'; go(0); };
+
+  // 导出按钮（演示提示）
+  const toast = document.getElementById('toast');
+  let toastTimer = null;
+  document.getElementById('exportBtn').onclick = () => {
+    toast.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => toast.classList.remove('show'), 2200);
+  };
+  document.getElementById('ctaBtn').onclick = () => {
+    toast.textContent = '演示版：请扫码或加微信，备注「发票核对」';
+    toast.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => toast.classList.remove('show'), 2600);
+  };
+
+  document.addEventListener('keydown', e => {
+    if(e.code === 'Space'){ e.preventDefault(); toggle(); }
+    if(e.code === 'ArrowRight'){ go(idx + 1); }
+    if(e.code === 'ArrowLeft'){ go(idx - 1); }
+    if(e.key === 'r' || e.key === 'R'){ playing = true; playBtn.textContent = '⏸'; go(0); }
+    if(e.key === 'i' || e.key === 'I'){ document.body.classList.toggle('show-meta'); }
+  });
+
+  // 支持 ?scene=N 直接定格到某一幕（用于导出截图）
+  const qs = new URLSearchParams(location.search);
+  if(qs.has('scene')){
+    playing = false; playBtn.textContent = '▶';
+    let n = parseInt(qs.get('scene'), 10);
+    if(isNaN(n)) n = 1;
+    n = Math.max(0, Math.min(SCENES.length - 1, n - 1));
+    go(n);
+  } else {
+    go(0);
+  }
+})();
+</script>
+</body>
+</html>

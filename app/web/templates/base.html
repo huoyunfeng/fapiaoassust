@@ -323,7 +323,7 @@ body.readonly-mode .nav-user button{opacity:.45;cursor:not-allowed;pointer-event
   {% endif %}
   <a href="/settings/rules" {% if request.url.path.startswith('/settings') %}class="active"{% endif %}>系统设置</a>
   <a href="/plans" {% if request.url.path.startswith('/plans') %}class="active"{% endif %}>升级 / 授权</a>
-  <a href="/demo/report" {% if request.url.path.startswith('/demo') %}class="active"{% endif %} title="一键加载示例数据，2 分钟看懂效果" style="margin-left:auto;">🎬 示例</a>
+  <a href="/demo/play" target="_blank" {% if request.url.path.startswith('/demo') %}class="active"{% endif %} title="90 秒自动演示，看懂系统能拦下什么" style="margin-left:auto;">🎬 示例</a>
   <a href="/help" {% if request.url.path.startswith('/help') %}class="active"{% endif %} title="帮助与支持">❓ 帮助</a>
   <span class="nav-plan {{ lic.plan }}" id="navPlan">{{ lic.plan_name }}{% if lic.exp_date %} · 至 {{ lic.exp_date }}{% endif %}</span>
   <div class="nav-user">
