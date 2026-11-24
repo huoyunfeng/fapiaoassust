@@ -51,9 +51,15 @@ def build_report(owner_user_id: int = None) -> dict:
                                             owner_user_id=owner_user_id)
         matched_invoice_ids = {m["invoice_id"] for m in matches if m["status"] in ("MATCHED", "CONFIRMED")}
 
-    # 附带 raw_json（解析错误/重复原因），供页面展示
-    for i in abnormal + duplicates:
+    # 附带 raw_json（解析错误/重复原因）与中文原因，供页面展示
+    # 异常 → 提取具体校验原因（如“缺失必填字段: 开票日期”）；重复 → 统一写“重复”
+    # （dup_reason 里的“与发票 #N…”是内部 ID，用户在列表里找不到对应发票，无意义）
+    for i in abnormal:
         i["raw"] = _raw_json(i)
+        i["reason"] = _issue_reason(i)
+    for i in duplicates:
+        i["raw"] = _raw_json(i)
+        i["reason"] = "重复"
 
     unmatched_reimburses = [r for r in all_reimburses if r["id"] not in occupied]
     # 未匹配发票 = NORMAL 且无有效匹配（MATCHED/CONFIRMED）的发票
@@ -127,6 +133,40 @@ def _strip_note(text: Optional[str]) -> str:
         return ""
     idx = text.find("【不匹配】")
     return text[:idx].rstrip() if idx >= 0 else text
+
+
+# raw_json 校验信息里的英文字段名 → 中文（按长度降序替换，避免短名误伤长名）
+_FIELD_CN = {
+    "invoice_date": "开票日期", "issue_date": "开票日期",
+    "invoice_no": "发票号码", "invoice_code": "发票代码",
+    "total_amount": "价税合计", "tax_amount": "税额", "amount": "金额",
+    "seller_name": "销售方", "buyer_name": "购买方", "check_code": "校验码",
+}
+
+
+def _cn_field(msg: str) -> str:
+    """把校验信息里的英文字段名替换成中文，给用户可读的原因。"""
+    if not msg:
+        return ""
+    out = msg
+    for en in sorted(_FIELD_CN, key=len, reverse=True):
+        out = out.replace(en, _FIELD_CN[en])
+    return out
+
+
+def _issue_reason(i: dict) -> str:
+    """提取异常/重复发票的人类可读原因：
+    异常 → raw_json.issues[].message（或 error）；重复 → raw_json.dup_reason。"""
+    raw = _raw_json(i)
+    issues = raw.get("issues") or []
+    msgs = [_cn_field(x.get("message", "")) for x in issues if x.get("message")]
+    if msgs:
+        return "；".join(msgs)
+    if raw.get("error"):
+        return _cn_field(raw["error"])
+    if raw.get("dup_reason"):
+        return raw["dup_reason"]
+    return ""
 
 
 def _reb_features(reb: Optional[dict]) -> dict:
@@ -459,10 +499,12 @@ def report_payload(filter: str = "", q: str = "", page_size: int = 20,
              "seller_name": r.get("seller_name") or ""}
             for r in i_rows],
         "abnormal": [
-            {"id": r["id"], "invoice_no": r.get("invoice_no") or "", "status": r["status"]}
+            {"id": r["id"], "invoice_no": r.get("invoice_no") or "", "status": r["status"],
+             "reason": r.get("reason") or ""}
             for r in a_rows],
         "duplicates": [
-            {"id": r["id"], "invoice_no": r.get("invoice_no") or "", "status": r["status"]}
+            {"id": r["id"], "invoice_no": r.get("invoice_no") or "", "status": r["status"],
+             "reason": r.get("reason") or ""}
             for r in x_rows],
         "pagers": {"dpage": d_pager, "rpage": r_pager, "ipage": i_pager,
                    "apage": a_pager, "xpage": x_pager},
@@ -523,13 +565,11 @@ def _summary_rows(report: dict) -> List[list]:
 def _issue_rows(report: dict) -> List[list]:
     rows = []
     for i in report["abnormal"]:
-        issues = _raw_json(i).get("issues", [])
-        msg = "; ".join(x.get("message", "") for x in issues) or _raw_json(i).get("error", "")
-        rows.append(["异常发票(ABNORMAL)", i.get("invoice_no") or "（无号）", msg, ""])
+        rows.append(["异常发票(ABNORMAL)", i.get("invoice_no") or "（无号）",
+                     i.get("reason") or _issue_reason(i), ""])
     for i in report["duplicates"]:
-        raw = _raw_json(i)
         rows.append(["重复发票(DUPLICATE)", i.get("invoice_no") or "（无号）",
-                     raw.get("dup_reason", ""), "重复于已存在的同内容发票"])
+                     i.get("reason") or _issue_reason(i), "重复于已存在的同内容发票"])
     for m in report["details"]:
         ms = m["match"]["status"]
         if ms in ("SUSPICIOUS", "CONFLICT") or (ms == "UNMATCHED" and m["match"]["reimburse_id"]):

@@ -66,6 +66,7 @@
 .rp-table tbody tr:hover td{background:var(--bg);}
 .rp-table .num-cell{text-align:right;font-variant-numeric:tabular-nums;}
 .rp-table .col-status,.rp-table .col-actions,.rp-table th.col-status,.rp-table th.col-actions{text-align:center;}
+.rp-table td.reason-cell{white-space:normal;word-break:break-word;color:#475569;font-size:13px;line-height:1.55;}
 /* 操作列：固定在最后一列（横向滚动时不移动），宽度较短 */
 .rp-table th.col-actions,.rp-table td.col-actions{position:sticky;right:0;z-index:2;
   background:#fff;box-shadow:-6px 0 8px -6px rgba(15,23,42,.14);}
@@ -352,12 +353,16 @@ tr.row-out{opacity:0;transform:translateX(24px);transition:opacity .3s,transform
 const INIT = {{ initial|tojson }};
 
 const STATUS_CN = {
-  MATCHED:'已匹配', CONFIRMED:'已确认', SUSPICIOUS:'待人工确认', CONFLICT:'字段冲突',
+  PARSING:'解析中', PARSED:'已解析', NORMAL:'未匹配',
+  ABNORMAL:'异常', DUPLICATE:'重复', MATCHED:'已匹配',
+  CONFIRMED:'已确认', SUSPICIOUS:'待人工确认', CONFLICT:'字段冲突',
   UNMATCHED:'无候选', REJECTED:'已拒绝', PENDING:'匹配中'
 };
 const STATUS_BADGE = {
-  MATCHED:'badge-purple', CONFIRMED:'badge-green', SUSPICIOUS:'badge-yellow',
-  CONFLICT:'badge-red', UNMATCHED:'badge-red', REJECTED:'badge-gray', PENDING:'badge-gray'
+  PARSING:'badge-gray', PARSED:'badge-blue', NORMAL:'badge-green',
+  ABNORMAL:'badge-red', DUPLICATE:'badge-orange', MATCHED:'badge-purple',
+  CONFIRMED:'badge-green', SUSPICIOUS:'badge-yellow', CONFLICT:'badge-red',
+  UNMATCHED:'badge-red', REJECTED:'badge-gray', PENDING:'badge-gray'
 };
 const TYPE_CN = {exact:'系统精确匹配', fuzzy:'系统模糊匹配', composite:'组合匹配',
                  many_to_one:'多对一凑票', manual:'人工指定'};
@@ -947,11 +952,12 @@ function renderIssues(){
 }
 function renderSimple(key, tableId, pagerId, param, emptyText){
   const rows = S.data[key] || [];
-  document.getElementById(tableId).innerHTML = rows.length ? `<table>
-    <thead><tr><th>发票号</th><th>状态</th></tr></thead>
+  document.getElementById(tableId).innerHTML = rows.length ? `<table class="rp-table">
+    <thead><tr><th style="width:230px">发票号</th><th style="width:88px">状态</th><th>原因</th></tr></thead>
     <tbody>${rows.map(r => `
       <tr><td><a class="link" href="/invoices/${r.id}"><b>${esc(r.invoice_no || '（无号）')}</b></a></td>
-        <td><span class="badge ${STATUS_BADGE[r.status] || 'badge-gray'}">${esc(STATUS_CN[r.status] || r.status)}</span></td></tr>`).join('')}
+        <td class="col-status"><span class="badge ${STATUS_BADGE[r.status] || 'badge-gray'}">${esc(STATUS_CN[r.status] || r.status)}</span></td>
+        <td class="reason-cell" title="${esc(r.reason || '')}">${esc(r.reason || '—')}</td></tr>`).join('')}
     </tbody></table>` : emptyHtml();
   document.getElementById(pagerId).innerHTML = pagerHtml(param, S.data.pagers && S.data.pagers[param]);
 }
