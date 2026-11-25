@@ -195,7 +195,7 @@
       <span class="muted" id="selInfo">已选 0 张</span>
       <div class="col-settings" id="exportMenu">
         <button class="btn btn-outline btn-sm{% if not ro and not lic.features.export %} locked-btn{% endif %}{% if ro %} allow-readonly{% endif %}" type="button"
-                {% if not ro and not lic.features.export %}data-locked-feature="export" data-locked-name="发票导出" title="个人版及以上可用"{% else %}onclick="toggleExportPanel(event)"{% endif %}>{% if not ro and not lic.features.export %}🔒 {% endif %}导出 Excel ▾</button>
+                {% if not ro and not lic.features.export %}data-locked-feature="export" data-locked-name="发票导出" title="基础版及以上可用"{% else %}onclick="toggleExportPanel(event)"{% endif %}>{% if not ro and not lic.features.export %}🔒 {% endif %}导出 Excel ▾</button>
         <div class="col-settings-panel" id="exportPanel">
           <div onclick="exportSelected()" style="padding:6px 10px;cursor:pointer;border-radius:4px;" onmouseover="this.style.background='#f4f6f9'" onmouseout="this.style.background=''">📋 导出选中数据</div>
           <div onclick="exportAll()" style="padding:6px 10px;cursor:pointer;border-radius:4px;" onmouseover="this.style.background='#f4f6f9'" onmouseout="this.style.background=''">📊 导出全部数据</div>
@@ -630,7 +630,7 @@ async function uploadFiles(e){
   if(quotaHit){
     // 保留已导入的数据，额度卡片留在界面上，不做整页刷新
     busyDone();
-    toast('已导入 ' + okCount + ' 张，其余因本月额度不足未导入', false);
+    toast('已导入 ' + okCount + ' 张，其余因免费体验额度不足未导入', false);
     return false;
   }
   // 免费版无匹配能力；员工无匹配权限，均不触发 /api/match/run（否则命中 402/403）

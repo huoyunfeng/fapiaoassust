@@ -58,8 +58,10 @@ _LOCK = threading.Lock()
 
 # 企业版共 3 台设备 = 主设备 1 台 + 子设备 2 台（此处只填「子设备」名额）
 # 注意：修改后需重新部署授权服务，仅影响新签发/续费的授权码
-PLAN_DEVICES = {"personal": 0, "enterprise": 2}
-PLAN_DAYS = {"personal": 365, "enterprise": 365}
+PLAN_DEVICES = {"basic": 0, "personal": 0, "enterprise": 2}
+PLAN_DAYS = {"basic": 365, "personal": 365, "enterprise": 365}
+# 永久买断码的到期哨兵（2100-01-01 UTC）：本体永久可用，维护期用 maint_exp 单独表达
+LIFETIME_EXP = 4102444800
 
 # ---------------------------------------------------------------- 支付配置（虎皮椒聚合支付）
 XUNHUPAY_APPID = "201906189707"
@@ -70,8 +72,27 @@ NOTIFY_URL = "http://182.92.198.99/api/payment/callback"
 XUNHUPAY_CREATE_URL = "https://api.xunhupay.com/payment/do.html"     # 下单
 XUNHUPAY_QUERY_URL = "https://api.xunhupay.com/payment/query.html"   # 主动查单
 
-# 套餐价格（单位：分）—— 后端写死，前端传什么都不会影响实际扣款
-PLAN_PRICES = {"personal": 9900, "enterprise": 49900}
+# 商品价格（单位：分）—— 后端写死，前端传什么都不会影响实际扣款
+# kind: lifetime=买断本体（永久可用）/ maintenance=维护期续费（只延长 maint_exp）
+#       / upgrade=买断升级（基础版补差价升企业版）
+SKU_META = {
+    "basic_lifetime": {"plan": "basic", "kind": "lifetime", "days": 365},
+    "ent_lifetime": {"plan": "enterprise", "kind": "lifetime", "days": 365},
+    "maintain_basic": {"plan": "basic", "kind": "maintenance", "days": 365},
+    "maintain_ent": {"plan": "enterprise", "kind": "maintenance", "days": 365},
+    "upgrade_basic_to_ent": {"plan": "enterprise", "kind": "upgrade", "days": 0},
+}
+SKU_PRICES = {
+    "basic_lifetime": 19900,
+    "ent_lifetime": 49900,
+    "maintain_basic": 5900,
+    "maintain_ent": 9900,
+    "upgrade_basic_to_ent": 30000,
+}
+# 旧版年费订单（orders.json 里已有的历史数据）继续兼容，不再新售
+LEGACY_PLAN_PRICES = {"personal": 9900, "enterprise": 49900}
+PLAN_PRICES = {**SKU_PRICES, **LEGACY_PLAN_PRICES}
+_LEGACY_TO_SKU = {"personal": "basic_lifetime", "enterprise": "ent_lifetime"}
 
 # 同一机器 + 同一套餐的 pending 二维码复用时长：前端倒计时 5 分钟，此处保持一致，
 # 重复点击下单直接返回旧二维码，既有真实码也避免刷单刷爆网关。
@@ -86,8 +107,15 @@ PAYMENT_ARCHIVE_AFTER = 7 * 86400
 # 向网关下单失败的占位单（creating）超过 1 小时直接标记 failed
 PAYMENT_CREATING_TIMEOUT = 3600
 # 支付标题（展示在收银台）
-PLAN_TITLES = {"personal": "发票助手 个人版（1年）",
-               "enterprise": "发票助手 企业版（1年）"}
+PLAN_TITLES = {
+    "basic_lifetime": "发票助手 基础版（永久买断）",
+    "ent_lifetime": "发票助手 企业版（永久买断）",
+    "maintain_basic": "发票助手 基础版维护续费（1年）",
+    "maintain_ent": "发票助手 企业版维护续费（1年）",
+    "upgrade_basic_to_ent": "发票助手 基础版升级企业版",
+    "personal": "发票助手 个人版（1年）",
+    "enterprise": "发票助手 企业版（1年）",
+}
 
 
 def _appsecret() -> str:
@@ -126,37 +154,139 @@ def _http_post_form(url: str, data: dict) -> dict:
         return json.loads(resp.read().decode("utf-8"))
 
 
-def _issue_license(order: dict, order_id: str) -> tuple:
-    """复用原有私钥签名逻辑，为已支付订单签发授权码，返回 (license_key, exp)。
+_PLAN_RANK = {"basic": 1, "enterprise": 2}
 
-    有效期统一由云端签发：同机器所有已支付订单中「最晚到期时间」作为叠加基准，
-    新授权在其上叠加购买时长（跨套餐也叠加），客户端只展示、不再本地二次叠加。
+
+def _paid_orders(machine: str) -> list:
+    if not machine:
+        return []
+    return [o for o in _load("orders.json", "orders").values()
+            if o.get("status") in ("paid", "used")
+            and (o.get("machine_code") or "").strip() == machine]
+
+
+def _record_trial_locked(machine: str) -> dict:
+    """只要客户端向云端发过一次请求，就把它标记为「免费额度已锁定」。
+
+    攻击者要无限白嫖免费额度，必须**永远断网**（首次消耗前就断、且之后永不联网）。
+    但断网时客户端硬编码只允许 3 张，想用完 50 张需要 17 次「删四源→重启→用 3 张」，
+    成本高到没人会做；一旦连过网，云端永久锁住该机器码的免费额度状态。
     """
-    plan = order.get("plan")
-    if plan not in PLAN_DAYS:
-        raise HTTPException(400, "订单套餐类型异常")
-    days = int(order.get("days") or PLAN_DAYS[plan])
-    # 支付成功即为激活起点，后续重复换码沿用该时间，避免反复续期
+    if not machine:
+        return {}
+    trials = _load("trials.json", "trials")
+    now = _now()
+    rec = trials.get(machine) or {}
+    was_locked = bool(rec.get("locked"))
+    rec["locked"] = True
+    rec["first_seen"] = int(rec.get("first_seen") or now)
+    rec["last_seen"] = now
+    trials[machine] = rec
+    _save("trials.json", "trials", trials)
+    return {"locked": True, "first_seen": rec["first_seen"],
+            "last_seen": rec["last_seen"], "was_locked": was_locked}
+
+
+def _buyout_state(machine: str) -> tuple:
+    """返回本机已购 (最高买断套餐, 最晚维护到期)。历史年费订单不计入买断状态。"""
+    best_plan, best_maint = None, 0
+    for o in _paid_orders(machine):
+        if not o.get("lifetime"):
+            continue
+        plan = o.get("plan") if o.get("plan") in _PLAN_RANK else "basic"
+        if best_plan is None or _PLAN_RANK[plan] > _PLAN_RANK[best_plan]:
+            best_plan = plan
+        best_maint = max(best_maint, int(o.get("maint_exp") or 0))
+    return best_plan, best_maint
+
+
+def _order_revoked(machine: str) -> bool:
+    """本机订单是否已全部退款：是则授权应失效（客户端同步后转只读）。
+
+    只把「所有已成交订单都退款、且没有任何有效订单」判为失效：
+    客户退掉重复下单/错误订单但仍持有有效买断时，不会误伤。
+    """
+    if not machine:
+        return False
+    orders = [o for o in _load("orders.json", "orders").values()
+              if (o.get("machine_code") or "").strip() == machine
+              and o.get("status") in ("paid", "used", "refunded")]
+    return bool(orders) and all(o.get("status") == "refunded" for o in orders)
+
+
+def _issue_license(order: dict, order_id: str) -> tuple:
+    """为已支付订单签发 v2 授权码，返回 (license_key, exp)。
+
+    叠加规则（防越权升级的关键）：
+    - lifetime：只与本机「同套餐/更低套餐」的买断维护期叠加，绝不吸收更高版本；
+    - maintenance：必须已持有**同套餐**买断，只延长 maint_exp，exp 永远保持永久哨兵；
+    - upgrade：必须已持有基础版买断，升级为企业版且保留原维护期（不额外赠送）；
+    - 历史年费订单（无 sku）：按一次性订阅签发，不与买断混算。
+    金额/有效期全部来自订单自身（订单由后端按字典生成），不信任任何客户端入参。
+    """
+    sku = (order.get("sku") or "").strip()
+    meta = SKU_META.get(sku)
+    legacy = meta is None
+    if legacy:
+        raw_plan = order.get("plan")
+        if raw_plan not in PLAN_DAYS:
+            raise HTTPException(400, "订单套餐类型异常")
+        plan = "basic" if raw_plan == "personal" else raw_plan
+        kind = "annual"
+        days = int(order.get("days") or PLAN_DAYS.get(raw_plan, 365))
+    else:
+        plan, kind = meta["plan"], meta["kind"]
+        days = int(order.get("days") or meta["days"] or 0)
+
+    machine = (order.get("machine_code") or "").strip()
     activated_at = int(order.get("activated_at") or 0) or _now()
     order["activated_at"] = activated_at
-    base = activated_at
-    machine = (order.get("machine_code") or "").strip()
-    if machine:
-        for other in _load("orders.json", "orders").values():
-            if (other.get("status") in ("paid", "used")
-                    and (other.get("machine_code") or "").strip() == machine
-                    and int(other.get("exp", 0) or 0) > base):
-                base = int(other["exp"])          # 叠加到本机最晚到期的授权上
+    best_plan, best_maint = _buyout_state(machine)
+
+    if kind == "maintenance":
+        if best_plan != plan:
+            label = "基础版" if plan == "basic" else "企业版"
+            raise HTTPException(403, f"本机未购买{label}，请先购买买断版再续维护费")
+        maint_exp = max(best_maint, activated_at) + days * 86400
+        lifetime, exp = True, LIFETIME_EXP
+    elif kind == "upgrade":
+        if best_plan != "basic":
+            raise HTTPException(403, "仅基础版买断用户可补差价升级企业版")
+        maint_exp = max(best_maint, activated_at)   # 升级保留原维护期，不额外赠送
+        lifetime, exp = True, LIFETIME_EXP
+    elif kind == "lifetime":
+        if best_plan and _PLAN_RANK[best_plan] > _PLAN_RANK[plan]:
+            raise HTTPException(403, "本机已购买更高版本，无需重复购买低版本")
+        base_maint = best_maint if (best_plan and _PLAN_RANK[best_plan] <= _PLAN_RANK[plan]) else 0
+        maint_exp = max(base_maint, activated_at) + days * 86400
+        lifetime, exp = True, LIFETIME_EXP
+    else:  # annual：历史年费订单，保持一次性订阅语义
+        if best_plan:
+            # 买断用户再买年费只会把授权“降级”成年费，必须走维护费续期，云端直接拦截
+            raise HTTPException(403, "本机已购买买断版，请使用维护费续期，无需年费订单")
+        base = activated_at
+        for o in _paid_orders(machine):
+            base = max(base, int(o.get("exp", 0) or 0))
+        lifetime = False
+        exp = base + days * 86400
+        maint_exp = exp
+
+    order.update({"plan": plan, "kind": kind, "days": days,
+                  "lifetime": lifetime, "maint_exp": maint_exp})
     payload = {
+        "v": 2,
         "machine_code": machine,
+        "core_fp": (order.get("core_fp") or "").strip(),
         "plan": plan, "role": "master",
-        "exp": base + days * 86400,
+        "lifetime": lifetime,
+        "exp": exp,
+        "maint_exp": maint_exp,
         "sub_limit": PLAN_DEVICES.get(plan, 0),
         "order_id": order_id,
         "duration_days": days,
         "issued_at": _now(),
     }
-    return sign_payload(payload), payload["exp"]
+    return sign_payload(payload), exp
 
 
 def _b64e(raw: bytes) -> str:
@@ -180,6 +310,22 @@ def verify_code(code: str) -> dict:
     raw = _b64d(data_part)
     _KEY.public_key().verify(_b64d(sig_part), raw)
     return json.loads(raw.decode("utf-8"))
+
+
+def rebind_code(code: str, machine: str, core_fp: str = "") -> str:
+    """换机后把原授权码的机器码替换为新机器码并重签，权益（买断/维护期）原样保留。
+
+    不重签的话，客户端只能靠 24 小时软匹配放行，过期后又会判定机器码不符。
+    """
+    try:
+        payload = json.loads(_b64d(code.split(".")[0]).decode("utf-8"))
+    except Exception:
+        return code
+    payload["machine_code"] = machine
+    if core_fp:
+        payload["core_fp"] = core_fp
+    payload["rebind_at"] = _now()
+    return sign_payload(payload)
 
 
 # ---------------------------------------------------------------- 数据文件
@@ -265,15 +411,19 @@ def _rate_guard(ip: str) -> None:
 class LicenseReq(BaseModel):
     order_id: str
     machine_code: str
+    core_fp: str = ""
 
 
 class BindReq(BaseModel):
     invite_code: str
     machine_code: str
+    core_fp: str = ""
 
 
 class StatusReq(BaseModel):
     machine_code: str
+    core_fp: str = ""
+    nonce: str = ""
 
 
 class UnlockReq(BaseModel):
@@ -455,12 +605,37 @@ def get_license(req: LicenseReq, request: Request):
             raise HTTPException(403, "该订单尚未支付，请完成支付后再激活")
         bound = (order.get("machine_code") or "").strip()
         if bound and bound != machine:
-            raise HTTPException(409, "该订单已绑定其他设备，请联系客服换机")
-        plan = order.get("plan")
-        if plan not in PLAN_DAYS:
+            # 换网卡/硬盘宽容：核心硬件（主板+CPU）未变且换机次数未用尽时自动放行，
+            # 超过 2 次必须由客服后台重置，避免授权被无限复制到同型号机器
+            same_core = bool(req.core_fp) and req.core_fp == (order.get("core_fp") or "")
+            rebind = int(order.get("rebind_count") or 0)
+            if not same_core or rebind >= 2:
+                raise HTTPException(
+                    409, "设备变更，请联系客服后台重置绑定次数"
+                    if same_core else "该订单已绑定其他设备，请联系客服换机")
+            order["rebind_count"] = rebind + 1
+            order["machine_code"] = machine
+            order["rebind_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        if req.core_fp and not order.get("core_fp"):
+            order["core_fp"] = req.core_fp
+        # 幂等：已签发过的订单重复激活时直接返回原码，避免每次换码都叠加维护期
+        if order.get("license_key") and int(order.get("exp") or 0) > 0:
+            if bound and bound != machine:
+                # 换机放行后必须用新机器码重签，否则客户端软匹配过期就会被判机器码不符
+                order["license_key"] = rebind_code(
+                    order["license_key"], machine,
+                    req.core_fp or order.get("core_fp") or "")
+            order["status"] = "used"
+            orders[order_id] = order
+            _save("orders.json", "orders", orders)
+            return {"ok": True, "license_code": order["license_key"],
+                    "plan": order.get("plan"), "exp": int(order.get("exp") or 0),
+                    "lifetime": bool(order.get("lifetime")),
+                    "maint_exp": int(order.get("maint_exp") or 0),
+                    "message": "授权已签发，直接返回原授权码"}
+
+        if order.get("plan") not in PLAN_DAYS and not order.get("sku"):
             raise HTTPException(400, "订单套餐类型异常")
-        days = int(order.get("days") or PLAN_DAYS[plan])
-        # 首次激活时记录起始时间，重复换码沿用原起始时间，避免每次续期（无限续费）
         activated_at = int(order.get("activated_at") or 0)
         if not activated_at:
             activated_at = _now()
@@ -468,20 +643,16 @@ def get_license(req: LicenseReq, request: Request):
         order.update({"status": "used", "machine_code": machine,
                       "used_at": order.get("used_at")
                       or time.strftime("%Y-%m-%d %H:%M:%S")})
+        # 发码必须在锁内完成：维护费按「本机当前最晚维护期」叠加，
+        # 若并发两笔续费各自读取旧状态，就会出现「付了两次只延长一次」的丢单。
+        license_key, exp = _issue_license(order, order_id)
+        order["license_key"], order["exp"] = license_key, exp
         orders[order_id] = order
         _save("orders.json", "orders", orders)
-
-    # 支付流订单的 exp 已含续费叠加，优先沿用；手工导入订单按激活起点计算
-    exp = int(order.get("exp") or 0) or activated_at + days * 86400
-    payload = {
-        "machine_code": machine, "plan": plan, "role": "master",
-        "exp": exp,
-        "sub_limit": PLAN_DEVICES.get(plan, 0),
-        "order_id": order_id,
-        "issued_at": _now(),
-    }
-    return {"ok": True, "license_code": sign_payload(payload),
-            "plan": plan, "exp": payload["exp"],
+    return {"ok": True, "license_code": license_key,
+            "plan": order.get("plan"), "exp": exp,
+            "lifetime": bool(order.get("lifetime")),
+            "maint_exp": int(order.get("maint_exp") or 0),
             "message": "授权签发成功"}
 
 
@@ -522,13 +693,22 @@ def sub_bind(req: BindReq):
         if len(bound_to_parent) >= limit:
             raise HTTPException(403, f"主设备可绑定子设备已达上限（{limit} 台）")
         devices[machine] = {"parent": parent, "plan": "enterprise",
-                            "exp": invite.get("exp"), "order_id": invite.get("order_id"),
+                            "exp": invite.get("exp"),
+                            "lifetime": bool(invite.get("lifetime")),
+                            "maint_exp": int(invite.get("maint_exp") or 0),
+                            "order_id": invite.get("order_id"),
                             "at": time.strftime("%Y-%m-%d %H:%M:%S")}
         _save("devices.json", "devices", devices)
 
+    lifetime = bool(invite.get("lifetime"))
     payload = {
+        "v": 2,
         "machine_code": machine, "plan": "enterprise", "role": "sub",
-        "exp": int(invite.get("exp")), "sub_limit": 0,
+        "core_fp": (req.core_fp or "").strip(),
+        "lifetime": lifetime,
+        "exp": LIFETIME_EXP if lifetime else int(invite.get("exp")),
+        "maint_exp": int(invite.get("maint_exp") or invite.get("exp") or 0),
+        "sub_limit": 0,
         "order_id": invite.get("order_id", ""), "parent": parent,
         "issued_at": _now(),
     }
@@ -538,12 +718,39 @@ def sub_bind(req: BindReq):
 
 @app.post("/api/status")
 def status(req: StatusReq):
-    """客户端定期/手动同步：返回是否被拉黑（拉黑后本地立即降级免费版）。"""
+    """客户端定期/手动同步：返回拉黑状态 + **签名**服务器时间。
+
+    时间必须签名：明文 HTTP 下返回值可被中间人篡改，若客户端直接采信
+    未签名时间，就可用伪造的未来时间跳过“本地时间回拨”检测。
+    客户端回传 nonce，签名覆盖 server_time 与 nonce，可防重放。
+    """
     machine = (req.machine_code or "").strip()
     hit = _is_blacklisted(machine)
+    if not hit and _order_revoked(machine):
+        # 订单已退款但客服还没手动拉黑：同步时直接判定授权失效，避免退款客户继续使用
+        hit = {"reason": "授权订单已退款，请联系客服重新购买"}
+    if not hit:
+        # 子设备随主设备授权状态联动：主设备被拉黑/退款后，子设备下次同步即降级，
+        # 避免「主设备已停用、子设备照样能用」的绕过口子。
+        parent = (_load("devices.json", "devices").get(machine) or {}).get("parent")
+        if parent:
+            hit = _is_blacklisted(parent)
+            if hit:
+                hit = {"reason": "主设备授权已失效，请联系管理员"}
+            elif _order_revoked(parent):
+                hit = {"reason": "主设备授权订单已退款，请联系管理员"}
+    server_time = _now()
+    nonce = (req.nonce or "").strip()
+    time_sig = ""
+    if nonce:
+        time_sig = _b64e(_KEY.sign(f"{server_time}|{nonce}".encode("utf-8")))
+    # 免费额度锁：客户端第一次向云端发请求时就锁住，本地清也没用
+    trial = _record_trial_locked(machine)
     return {"ok": True, "blacklisted": bool(hit),
             "reason": hit.get("reason", "") if hit else "",
-            "server_time": _now()}
+            "server_time": server_time, "nonce": nonce, "time_sig": time_sig,
+            "trial_locked": bool(trial.get("locked")),
+            "trial_first_seen": trial.get("first_seen", 0)}
 
 
 @app.post("/api/unlock_code")
@@ -595,8 +802,10 @@ def reset_order(req: ResetOrderReq, x_admin_token: str = Header(default="")):
 
 # ---------------------------------------------------------------- 在线支付（虎皮椒）
 class PayCreateReq(BaseModel):
-    plan_type: str
+    plan_type: str = ""
     machine_code: str
+    sku: str = ""
+    core_fp: str = ""
 
 
 class PayCheckReq(BaseModel):
@@ -605,17 +814,39 @@ class PayCheckReq(BaseModel):
 
 @app.post("/api/payment/create")
 def payment_create(req: PayCreateReq):
-    """支付下单：校验套餐 → 复用未过期待支付二维码 → 请求虎皮椒拿码 → 订单记 pending。"""
-    plan = (req.plan_type or "").strip().lower()
+    """支付下单：只认套餐代码，金额/时长/版本全部由后端字典决定。
+
+    防越权规则（价格字典之外的硬约束）：
+    - 维护费必须先持有同套餐买断，否则 59 元就能买到本体；
+    - 升级必须先持有基础版买断；
+    - 低版本买断不得覆盖本机更高版本。
+    """
+    sku = (req.sku or "").strip().lower()
     machine = (req.machine_code or "").strip()
-    if plan not in PLAN_PRICES:
-        raise HTTPException(400, "套餐类型不存在，可选：personal / enterprise")
     if not machine:
         raise HTTPException(400, "机器码不能为空")
     if _is_blacklisted(machine):
         raise HTTPException(403, "该设备已被列入黑名单")
 
-    price = PLAN_PRICES[plan]                       # 单位：分，后端写死
+    if sku in SKU_META:
+        meta = SKU_META[sku]
+        plan, kind, days = meta["plan"], meta["kind"], meta["days"]
+        price = SKU_PRICES[sku]
+    else:
+        legacy = (req.plan_type or "").strip().lower()
+        if legacy not in LEGACY_PLAN_PRICES:
+            raise HTTPException(400, "套餐类型不存在")
+        plan, kind = ("basic" if legacy == "personal" else legacy), "annual"
+        days, price, sku = PLAN_DAYS[plan], LEGACY_PLAN_PRICES[legacy], ""
+
+    best_plan, _best_maint = _buyout_state(machine)
+    if kind == "maintenance" and best_plan != plan:
+        raise HTTPException(403, "本机未购买该版本买断，无法单独购买维护费")
+    if kind == "upgrade" and best_plan != "basic":
+        raise HTTPException(403, "仅基础版买断用户可补差价升级企业版")
+    if kind == "lifetime" and best_plan and _PLAN_RANK[best_plan] > _PLAN_RANK[plan]:
+        raise HTTPException(403, "本机已购买更高版本，无需重复购买")
+
     total_fee = f"{price / 100:.2f}"                # 虎皮椒要求「元」字符串
     # 商户唯一订单号：FP + 时间戳 + 8 位随机数（防枚举猜测）
     trade_order_id = f"FP{_now()}{os.urandom(4).hex().upper()}"
@@ -623,19 +854,22 @@ def payment_create(req: PayCreateReq):
     # 1. 先查是否有可复用的 pending 订单：有则直接返回原二维码，既防刷单也不重复扣款
     with _LOCK:
         orders = _load("orders.json", "orders")
-        hit = _find_reusable_pending(orders, machine, plan)
+        hit = _find_reusable_pending(orders, machine, plan, sku)
         if hit:
             old_id, old = hit
             return {"ok": True, "reused": True, "trade_order_id": old_id,
                     "url_qrcode": old.get("url_qrcode", ""),
-                    "url": old.get("url", ""), "plan": plan,
+                    "url": old.get("url", ""), "plan": plan, "sku": sku,
                     "amount": old.get("amount", price) / 100,
                     "amount_fen": int(old.get("amount", price)),
                     "expire_in": max(0, PENDING_REUSE_SECONDS - _order_age(old))}
         # 2. 先落一条 creating 占位单，防止并发请求重复向网关下单
         orders[trade_order_id] = {
             "plan": plan,
-            "days": PLAN_DAYS.get(plan, 365),
+            "sku": sku,
+            "kind": kind,
+            "core_fp": (req.core_fp or "").strip(),
+            "days": days,
             "status": "creating",
             "machine_code": machine,
             "amount": price,                        # 分，便于回调金额比对
@@ -654,7 +888,7 @@ def payment_create(req: PayCreateReq):
         "version": "1.1",
         "trade_order_id": trade_order_id,
         "total_fee": total_fee,
-        "title": PLAN_TITLES.get(plan, f"发票助手 {plan}"),
+        "title": PLAN_TITLES.get(sku, PLAN_TITLES.get(plan, f"发票助手 {plan}")),
         "time": str(_now()),
         "notify_url": NOTIFY_URL,
         "callback_url": NOTIFY_URL,
@@ -811,12 +1045,13 @@ def _order_age(order: dict) -> int:
     return (_now() - ts) if ts else 10 ** 9
 
 
-def _find_reusable_pending(orders: dict, machine: str, plan: str):
-    """同机器 + 同套餐 + 仍在有效期内的 pending 订单 → 复用其二维码（防刷单）。"""
+def _find_reusable_pending(orders: dict, machine: str, plan: str, sku: str = ""):
+    """同机器 + 同商品 + 仍在有效期内的 pending 订单 → 复用其二维码（防刷单）。"""
     for oid, order in orders.items():
         if (order.get("status") == "pending"
                 and (order.get("machine_code") or "").strip() == machine
                 and order.get("plan") == plan
+                and (order.get("sku") or "") == (sku or "")
                 and order.get("url_qrcode")
                 and _order_age(order) < PENDING_REUSE_SECONDS):
             return oid, order
@@ -938,6 +1173,7 @@ def payment_check_active(req: PayCheckReq):
 class PayRecoverReq(BaseModel):
     order_suffix: str
     machine_code: str
+    core_fp: str = ""
 
 
 @app.post("/api/payment/recover")
@@ -980,20 +1216,34 @@ def payment_recover(req: PayRecoverReq, request: Request):
             raise HTTPException(403, "该订单已退款，无法激活")
         raise HTTPException(403, "该订单尚未支付，请完成支付后再找回")
 
-    bound = (order.get("machine_code") or "").strip()
-    if bound and bound != machine:
-        raise HTTPException(409, "该订单已绑定其他设备，请联系客服换机")
-    code = order.get("license_key") or ""
-    if not code:
-        # 历史手工订单没有预存授权码，现场签发一次并回写
-        code, exp = _issue_license(order, oid)
-        with _LOCK:
-            orders = _load("orders.json", "orders")
-            cur = orders.get(oid) or order
+    with _LOCK:
+        orders = _load("orders.json", "orders")
+        cur = orders.get(oid) or order
+        bound = (cur.get("machine_code") or "").strip()
+        if bound and bound != machine:
+            # 与换码接口一致的硬件宽容：核心硬件未变且换机次数未用尽时自动放行
+            same_core = bool(req.core_fp) and req.core_fp == (cur.get("core_fp") or "")
+            rebind = int(cur.get("rebind_count") or 0)
+            if not same_core or rebind >= 2:
+                raise HTTPException(409, "该订单已绑定其他设备，请联系客服换机")
+            cur["rebind_count"] = rebind + 1
+            cur["rebind_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+            cur["machine_code"] = machine
+        if req.core_fp and not cur.get("core_fp"):
+            cur["core_fp"] = req.core_fp
+        if cur.get("license_key") and bound and bound != machine:
+            # 换机找回同样重签，保证新机器码与授权码严格匹配
+            cur["license_key"] = rebind_code(
+                cur["license_key"], machine, req.core_fp or cur.get("core_fp") or "")
+        code = cur.get("license_key") or ""
+        if not code:
+            # 历史手工订单没有预存授权码，现场签发一次并回写（锁内避免并发重复签发）
+            code, exp = _issue_license(cur, oid)
             cur.update({"license_key": code, "exp": exp,
-                        "machine_code": bound or machine})
-            orders[oid] = cur
-            _save("orders.json", "orders", orders)
+                        "machine_code": cur.get("machine_code") or machine})
+        orders[oid] = cur
+        _save("orders.json", "orders", orders)
+        order = cur
     return {"ok": True, "trade_order_id": oid, "license_key": code,
             "plan": order.get("plan"), "message": "授权已找回"}
 

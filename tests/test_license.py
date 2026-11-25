@@ -111,31 +111,115 @@ class TestActivation:
         assert env["lic"].feature_allowed("matching") is False
 
 
-# ---------------------------------------------------------------- 免费版额度
+# ---------------------------------------------------------------- 免费体验额度
 class TestQuota:
-    def test_limit_and_guard_registry(self, env):
+    def test_trial_is_one_time_and_capped(self, env):
         lic = env["lic"]
-        for _ in range(20):
+        limit = lic.settings.trial_invoice_quota
+        for _ in range(limit):
             lic.consume_invoice_quota(1)
-        assert lic.quota_status()["used"] == 20
+        assert lic.quota_status()["used"] == limit
         with pytest.raises(lic.QuotaExceeded):
             lic.consume_invoice_quota(1)
 
-    def test_guard_survives_db_reset(self, env):
+    def test_trial_survives_db_reset(self, env):
         lic = env["lic"]
-        for _ in range(20):
+        limit = lic.settings.trial_invoice_quota
+        for _ in range(limit):
             lic.consume_invoice_quota(1)
+        # 清空数据库也无法把体验额度清零（额度只存隐藏登记簿）
         with env["db"].tx() as conn:
-            conn.execute("DELETE FROM kv WHERE k LIKE 'quota:%'")
-        # 数据库额度被清空，但隐藏登记簿仍计数
-        assert lic.quota_status()["used"] == 20
+            conn.execute("DELETE FROM kv")
+        assert lic.quota_status()["used"] == limit
 
     def test_paid_plan_unlimited(self, env):
         with env["db"].tx() as conn:
             lic = env["lic"]
-            lic.kv_repo.set(conn, lic.LICENSE_KV_KEY, _license(env, plan="personal"))
+            lic.kv_repo.set(conn, lic.LICENSE_KV_KEY, _license(env, plan="basic"))
         assert lic.quota_status()["unlimited"] is True
         assert lic.consume_invoice_quota(999) is None
+
+
+# ---------------------------------------------------------------- 买断生命周期 / 防降级
+LIFETIME_EXP = 4102444800
+
+
+class TestLifecycle:
+    def test_lifetime_never_expires(self, env):
+        code = _license(env, plan="enterprise", lifetime=True,
+                        exp=int(time.time()) - 10, maint_exp=int(time.time()) + 86400)
+        payload = env["lic"].verify_code(code)
+        assert payload["lifetime"] is True
+
+    def test_buyout_cannot_downgrade_to_basic(self, env):
+        lic = env["lic"]
+        lic.apply_license_code(_license(env, plan="enterprise", lifetime=True,
+                                        exp=LIFETIME_EXP))
+        with pytest.raises(lic.LicenseError):
+            lic.apply_license_code(_license(env, plan="basic", lifetime=True,
+                                            exp=LIFETIME_EXP))
+
+    def test_buyout_cannot_be_replaced_by_annual(self, env):
+        lic = env["lic"]
+        lic.apply_license_code(_license(env, plan="basic", lifetime=True,
+                                        exp=LIFETIME_EXP))
+        with pytest.raises(lic.LicenseError):
+            lic.apply_license_code(_license(env, plan="enterprise",
+                                            exp=int(time.time()) + 86400))
+
+    def test_renewal_never_shortens_maintenance(self, env):
+        lic = env["lic"]
+        later = int(time.time()) + 100 * 86400
+        lic.apply_license_code(_license(env, plan="basic", lifetime=True,
+                                        exp=LIFETIME_EXP, maint_exp=later))
+        with pytest.raises(lic.LicenseError):
+            lic.apply_license_code(_license(env, plan="basic", lifetime=True,
+                                            exp=LIFETIME_EXP,
+                                            maint_exp=int(time.time()) + 86400))
+        assert lic.maint_status()["maint_exp"] == later
+
+    def test_buyout_never_readonly_after_maintenance_expired(self, env):
+        lic = env["lic"]
+        lic.apply_license_code(_license(env, plan="enterprise", lifetime=True,
+                                        exp=LIFETIME_EXP,
+                                        maint_exp=int(time.time()) - 86400))
+        assert lic.readonly_mode() is False
+        assert lic.plan_key() == "enterprise"
+
+    def test_paid_but_revoked_is_readonly(self, env):
+        lic = env["lic"]
+        lic.apply_license_code(_license(env, plan="enterprise", lifetime=True,
+                                        exp=LIFETIME_EXP))
+        lic.clear_license()          # 模拟云端拉黑/退款后清除授权
+        assert lic.has_paid_history() is True
+        assert lic.readonly_mode() is True
+
+    def test_trial_refund_only_unused(self, env):
+        lic = env["lic"]
+        lic.consume_invoice_quota(5)
+        lic.refund_invoice_quota(2)
+        assert lic.quota_status()["used"] == 3
+        lic.refund_invoice_quota(99)
+        assert lic.quota_status()["used"] == 0
+
+
+class TestServerTimeSignature:
+    def test_accepts_signed_time(self, env):
+        nonce = "abc12345"
+        ts = int(time.time())
+        sig = _b64e(env["key"].sign(f"{ts}|{nonce}".encode()))
+        assert env["lic"]._verify_server_time(
+            {"server_time": ts, "time_sig": sig}, nonce) == ts
+
+    def test_rejects_unsigned_time(self, env):
+        assert env["lic"]._verify_server_time(
+            {"server_time": int(time.time())}, "abc") == 0
+
+    def test_rejects_wrong_nonce(self, env):
+        ts = int(time.time())
+        sig = _b64e(env["key"].sign(f"{ts}|nonce-a".encode()))
+        assert env["lic"]._verify_server_time(
+            {"server_time": ts, "time_sig": sig}, "nonce-b") == 0
 
 
 # ---------------------------------------------------------------- 账号 / 会话
@@ -317,7 +401,7 @@ def test_dev_mode_off_keeps_free_limits(env, monkeypatch):
     assert lic.status()["plan"] == "free"
     assert lic.feature_allowed("export") is False
     with pytest.raises(lic.QuotaExceeded):
-        lic.consume_invoice_quota(21)
+        lic.consume_invoice_quota(int(settings.trial_invoice_quota) + 1)
 
 
 def test_invoice_status_counts_owner_scope(env):
@@ -586,6 +670,41 @@ def test_cloud_sub_bind_rejects_live_other_parent(tmp_path, monkeypatch):
     assert "其他设备" in str(getattr(exc.value, "detail", exc.value))
 
 
+def test_cloud_status_revokes_refunded_orders(tmp_path, monkeypatch):
+    """订单已退款时同步直接判定授权失效，不必等客服手动拉黑。"""
+    srv = _cloud_srv(tmp_path, monkeypatch, {
+        "FP-REFUND": {"plan": "enterprise", "status": "refunded",
+                      "machine_code": "M-1", "lifetime": True, "amount": 49900},
+    })
+    r = srv.status(srv.StatusReq(machine_code="M-1", nonce="n1"))
+    assert r["ok"] and r["blacklisted"] is True
+    assert "退款" in r["reason"]
+
+
+def test_cloud_status_keeps_user_with_another_valid_order(tmp_path, monkeypatch):
+    """只退掉重复/错误订单但仍有有效订单的客户，不能被误封。"""
+    srv = _cloud_srv(tmp_path, monkeypatch, {
+        "FP-OK": {"plan": "basic", "status": "used", "machine_code": "M-1",
+                  "lifetime": True, "amount": 19900},
+        "FP-REFUND": {"plan": "enterprise", "status": "refunded",
+                      "machine_code": "M-1", "lifetime": True, "amount": 49900},
+    })
+    r = srv.status(srv.StatusReq(machine_code="M-1", nonce="n1"))
+    assert r["blacklisted"] is False
+
+
+def test_cloud_status_revokes_sub_when_parent_refunded(tmp_path, monkeypatch):
+    """主设备订单全部退款后，子设备同步同样失效。"""
+    srv = _cloud_srv(tmp_path, monkeypatch, {
+        "FP-P": {"plan": "enterprise", "status": "refunded",
+                 "machine_code": "P-1", "lifetime": True, "amount": 49900},
+    })
+    _seed_devices(tmp_path, srv, {"M-SUB": {
+        "parent": "P-1", "plan": "enterprise", "exp": srv._now() + 86400}})
+    r = srv.status(srv.StatusReq(machine_code="M-SUB", nonce="n1"))
+    assert r["blacklisted"] is True and "主设备" in r["reason"]
+
+
 def test_cloud_admin_api_disabled_without_token(tmp_path, monkeypatch):
     """未配置管理员令牌时管理接口一律拒绝，杜绝公开默认令牌被白嫖。"""
     monkeypatch.setenv("CLOUD_ADMIN_TOKEN", "")
@@ -702,6 +821,76 @@ def test_cloud_query_uses_out_trade_order(tmp_path, monkeypatch):
     assert info["status"] == "WP"
 
 
+# ---------------------------------------------------------------- 免费额度云端锁（防无限白嫖）
+def test_cloud_status_records_trial_locked(tmp_path, monkeypatch):
+    """客户端第一次向云端发请求就自动锁住该机器的免费额度状态。"""
+    srv = _cloud_srv(tmp_path, monkeypatch, {})
+    # 第一次请求 → 云端自动记录
+    r1 = srv.status(srv.StatusReq(machine_code="M-TRIAL-1", nonce="n1"))
+    assert r1["trial_locked"] is True
+    assert r1["trial_first_seen"] > 0
+    # 第二次请求 → 同一个机器码仍返回 locked=True（幂等）
+    r2 = srv.status(srv.StatusReq(machine_code="M-TRIAL-1", nonce="n2"))
+    assert r2["trial_locked"] is True
+    assert r2["trial_first_seen"] == r1["trial_first_seen"]  # first_seen 不变
+    # trials.json 真实落盘
+    trials_path = tmp_path / "cloud" / "trials.json"
+    assert trials_path.exists()
+    data = json.loads(trials_path.read_text(encoding="utf-8"))["trials"]
+    assert "M-TRIAL-1" in data and data["M-TRIAL-1"]["locked"] is True
+
+
+def test_client_consume_requires_first_cloud_lock(env, monkeypatch):
+    """客户端首次消耗额度前必须先同步云端；离线时只允许 OFFLINE_TRIAL_MAX 张。"""
+    lic = env["lic"]
+    from app.infra import machine as machine_mod
+
+    # 模拟离线：sync_license 抛 CloudError
+    def offline():
+        raise lic.CloudError("网络不可用")
+    monkeypatch.setattr(lic, "sync_license", offline)
+
+    max_offline = lic.OFFLINE_TRIAL_MAX  # 当前默认 10 张
+    # 前 max_offline 张都能正常消耗
+    for _ in range(max_offline):
+        lic.consume_invoice_quota(1)
+    assert lic.quota_status()["used"] == max_offline
+
+    # 第 max_offline+1 张应该触发离线硬上限
+    with pytest.raises(lic.QuotaExceeded) as exc:
+        lic.consume_invoice_quota(1)
+    assert "离线" in str(exc.value) or "联网" in str(exc.value)
+
+    # 当云端锁住后（guard 写 trial_locked），即使离线也能继续用（因为已锁过）
+    guard = machine_mod.load_guard()
+    guard["trial_locked"] = True
+    machine_mod.save_guard(guard)
+    lic.consume_invoice_quota(3)   # 此时已经锁过了，走正常 50 张上限
+    assert lic.quota_status()["used"] == max_offline + 3
+    # 继续正常判定上限（不是硬上限）
+    remaining_total = 50 - (max_offline + 3)
+    with pytest.raises(lic.QuotaExceeded):
+        lic.consume_invoice_quota(remaining_total + 1)  # 多 1 张应该超 50
+
+
+def test_client_sync_writes_trial_locked(env, monkeypatch):
+    """sync_license 收到云端 trial_locked=true 后必须写入本地 guard。"""
+    lic = env["lic"]
+    from app.infra import machine as machine_mod
+    # 模拟云端返回 trial_locked
+    monkeypatch.setattr(lic, "_post",
+                        lambda path, body: {
+                            "ok": True, "blacklisted": False,
+                            "server_time": int(time.time()), "nonce": body.get("nonce", ""),
+                            "time_sig": "x", "trial_locked": True})
+    # 绕过签名校验（测试里不验证）
+    monkeypatch.setattr(lic, "_verify_server_time", lambda resp, nonce: int(time.time()))
+
+    lic.sync_license()
+    guard = machine_mod.load_guard()
+    assert guard.get("trial_locked") is True
+
+
 # ---------------------------------------------------------------- 本地支付落地
 def test_payment_check_writes_license_before_success(env, monkeypatch):
     """查单成功必须先落库，再返回 paid（防丢码）。"""
@@ -728,3 +917,22 @@ def test_recover_license_saves_to_db(env, monkeypatch):
 def test_recover_license_rejects_short_suffix(env):
     with pytest.raises(env["lic"].CloudError):
         env["lic"].recover_license("ABC")
+
+
+# ---------------------------------------------------------------- 主/子设备身份
+class TestDeviceRole:
+    """子设备身份必须持久化：授权码被云端清除后仍要能整机锁定业务数据。"""
+
+    def test_sub_role_persists_after_license_cleared(self, env):
+        lic = env["lic"]
+        lic.apply_license_code(_license(env, plan="enterprise", role="sub"))
+        assert lic.device_role() == "sub"
+        lic.clear_license()
+        assert lic.device_role() == "sub"      # 拉黑清码后仍记得自己是子设备
+        lic.clear_paid_history()               # 管理员主动注销 → 回到主设备
+        assert lic.device_role() == "master"
+
+    def test_master_role_default(self, env):
+        lic = env["lic"]
+        lic.apply_license_code(_license(env, role="master"))
+        assert lic.device_role() == "master"

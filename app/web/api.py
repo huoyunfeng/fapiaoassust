@@ -158,7 +158,7 @@ async def upload_invoices(request: Request, files: List[UploadFile] = File(...),
         payload.append((name, f.content_type or "", content))
 
     if payload:
-        # 免费版月度额度（防刷）：先原子预留整批额度，导入完成后按未入库数退回。
+        # 免费版一次性体验额度（防刷）：先原子预留整批额度，导入完成后按未入库数退回。
         # 用 try/finally 兜底：导入过程抛异常（磁盘满/数据库锁）也要退还额度。
         try:
             license_service.consume_invoice_quota(len(payload))

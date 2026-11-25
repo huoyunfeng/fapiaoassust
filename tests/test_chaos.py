@@ -508,6 +508,8 @@ class TestConcurrency:
 
     def test_concurrent_quota_never_exceeds_limit(self, env):
         lic = env["lic"]
+        total = int(settings.trial_invoice_quota)
+        extra = 5
         errors = []
 
         def consume(_i):
@@ -516,11 +518,30 @@ class TestConcurrency:
             except lic.QuotaExceeded as e:
                 errors.append(str(e))
 
-        self._race(consume, 25)
+        self._race(consume, total + extra)
         st = lic.quota_status()
-        assert st["used"] == 20, f"额度被突破或算错: {st}"
+        assert st["used"] == total, f"额度被突破或算错: {st}"
         assert st["remaining"] == 0
-        assert len(errors) == 5, f"超出额度的请求未被拒绝: {len(errors)}"
+        assert len(errors) == extra, f"超出额度的请求未被拒绝: {len(errors)}"
+
+
+class TestTrialQuotaMachineBinding:
+    """体验额度密文必须绑定本机机器码：拷贝注册表/换机不能洗白已用额度。"""
+
+    def test_blob_is_bound_to_machine_code(self, env, monkeypatch):
+        blob = machine_mod._seal_trial(17)
+        # 密文里必须是本机机器码 + 已用张数
+        assert json.loads(machine_mod.unseal(blob)) == {
+            "m": machine_mod.machine_code(), "n": 17}
+        assert machine_mod._decode_trial(blob) == 17
+        # 换一台机器（机器码不同）：旧密文一律不采信
+        monkeypatch.setattr(machine_mod, "machine_code",
+                            lambda: "9999-8888-7777-6666")
+        assert machine_mod._decode_trial(blob) == 0
+
+    def test_legacy_plain_int_blob_still_readable(self):
+        # 升级前的老数据是纯数字密文，必须继续读得出来（否则老用户额度被重置）
+        assert machine_mod._decode_trial(machine_mod.seal("12")) == 12
 
 
 class TestScale:
@@ -713,7 +734,7 @@ os._exit(9)
 
         monkeypatch.setattr(socket, "socket", no_network)
         assert env["match"].manual_match(inv, reb)["ok"]
-        assert env["lic"].quota_status()["limit"] == 20
+        assert env["lic"].quota_status()["limit"] == int(settings.trial_invoice_quota)
 
 
 # =====================================================================

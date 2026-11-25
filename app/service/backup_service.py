@@ -1115,6 +1115,42 @@ def _do_restore(zip_source, on_progress: Optional[Callable[[int, str], None]] = 
                 _rollback_all(db_path, bak_db, upload_dir, bak_uploads)
                 return {"ok": False, "message": f"恢复失败，已自动回滚原数据：{e}"}
 
+            # ③-2 授权与防刷状态绝不随备份回滚：
+            #      备份包里的旧授权码/时间锚点一律丢弃（防止恢复旧备份“时光倒流”洗回过期授权），
+            #      但把**当前仍有效**的授权码/元数据/联网锚点原样搬到新库，
+            #      否则正常客户恢复一次数据就会掉进只读模式。
+            try:
+                keep_keys = ("license_code", "license_meta", "last_cloud_sync_at")
+                preserved = {}
+                try:
+                    old = sqlite3.connect(bak_db)
+                    try:
+                        for k, v in old.execute(
+                                f"SELECT k, v FROM kv WHERE k IN ({','.join('?' * len(keep_keys))})",
+                                keep_keys).fetchall():
+                            preserved[k] = v
+                    finally:
+                        old.close()
+                except Exception:
+                    logger.warning("读取当前授权状态失败，恢复后需重新激活", exc_info=True)
+
+                scrub = sqlite3.connect(new_db)
+                try:
+                    scrub.execute(
+                        "DELETE FROM kv WHERE k IN (?,?,?,?,?)",
+                        ("license_code", "license_meta", "last_cloud_sync_at",
+                         "pay_pending_order", "auth_session_secret"),
+                    )
+                    for k, v in preserved.items():
+                        scrub.execute("INSERT OR REPLACE INTO kv(k, v) VALUES(?,?)", (k, v))
+                    scrub.commit()
+                finally:
+                    scrub.close()
+            except Exception as e:
+                logger.exception("清理备份中的授权状态失败，回滚旧数据")
+                _rollback_all(db_path, bak_db, upload_dir, bak_uploads)
+                return {"ok": False, "message": f"恢复失败，已自动回滚原数据：{e}"}
+
             # ④ 原子替换：新库 + 新附件移入主目录
             _cb(82, "正在原子替换数据库…")
             try:

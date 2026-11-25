@@ -44,11 +44,16 @@ FREE_BLOCKED = (
     ("/api/audit", "audit"),
     ("/api/handover", "handover"),
 )
-# 只读模式下仍允许的写接口（续费激活、备份导出属于客户数据资产，绝不绑架）
+# 只读模式下仍允许的写接口（续费激活、退出等系统动作）
+# 查看/导出/下载备份都是 GET，天然放行；**恢复备份**（POST）必须禁止：
+# 只读期若允许整库覆盖，等于给了绕过授权的后门。
 READONLY_WRITE_WHITELIST = (
     "/api/auth/", "/api/license/", "/api/payment/", "/api/_shutdown",
-    "/api/backup",
 )
+# 只读期子设备整机锁定：业务数据一律不可访问，但必须保留重新绑定/续费入口，
+# 否则父设备续费后子设备永远无法重新激活（死锁）。
+SUB_LOCK_ALLOW_PAGES = {"/plans", "/help", "/change-password", "/health"}
+SUB_LOCK_ALLOW_API = ("/api/auth/", "/api/license/", "/api/payment/", "/api/_shutdown")
 # 会员能力的中文名（403 提示 / 升级引导用词一致）
 FREE_FEATURE_CN = {"matching": "智能匹配中心", "reimburse": "报销单管理",
                    "report": "差异报告", "export": "数据导出", "team": "团队与权限",
@@ -158,14 +163,34 @@ class AuthMiddleware(BaseHTTPMiddleware):
                     and not path.startswith("/settings"):
                 return _html_403("普通员工仅可访问仪表盘与我的发票")
 
-        # 4b. 授权到期只读模式：登录、查看、导出、备份全部放行，写操作统一拦截
+        # 4b. 授权失效只读模式：主设备管理员可登录、查看、导出、下载备份，写操作统一拦截；
+        #     员工强制退出登录；子设备整机锁定业务（仅保留重新绑定/续费入口）。
         readonly = license_service.readonly_mode()
         request.state.readonly = readonly
+        if readonly and user.get("role") == "employee":
+            message = "企业授权已失效，请联系管理员续费后再登录"
+            if _is_api(path):
+                resp = JSONResponse({"ok": False, "code": "LICENSE_REVOKED",
+                                     "message": message}, status_code=401)
+            else:
+                resp = RedirectResponse("/login?reason=license")
+            resp.delete_cookie(auth_service.COOKIE_NAME)
+            return resp
+        # 子设备（非主设备管理员）在授权失效后整机锁定业务功能；仅保留
+        # 登录/授权/支付/升级页，保证父设备续费后能重新绑定，不会死锁。
+        if readonly and license_service.device_role() == "sub" and not (
+                path.startswith(SUB_LOCK_ALLOW_API) or path in SUB_LOCK_ALLOW_PAGES):
+            message = "企业授权已失效，请联系管理员续费后再使用"
+            if _is_api(path):
+                return JSONResponse({"ok": False, "code": "LICENSE_REVOKED",
+                                     "message": message}, status_code=401)
+            return RedirectResponse("/plans?reason=license")
         if readonly and request.method not in ("GET", "HEAD", "OPTIONS") \
                 and not path.startswith(READONLY_WRITE_WHITELIST):
             return JSONResponse(
                 {"ok": False, "code": "READONLY",
-                 "message": "授权已到期，系统处于只读模式。请前往「升级 / 授权」续费激活后再操作"},
+                 "message": "授权已失效，系统处于只读模式。数据可查看/导出备份，"
+                            "请在「升级 / 授权」中重新激活后继续操作"},
                 status_code=403)
 
         # 4c. 备份/恢复期间锁定业务写入口，保证快照一致（备份任务本身不受影响）

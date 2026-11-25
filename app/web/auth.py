@@ -223,7 +223,9 @@ async def api_payment_create(request: Request):
         return _err("仅管理员可发起购买", 403)
     body = await request.json()
     try:
-        return JSONResponse(license_service.payment_create(body.get("plan_type", "")))
+        # 只接受套餐代码：sku 优先（买断/维护/升级），兼容旧前端的 plan_type
+        return JSONResponse(license_service.payment_create(
+            body.get("sku") or body.get("plan_type", "")))
     except license_service.CloudError as e:
         return _err(str(e), 502)
 
@@ -266,6 +268,7 @@ async def api_license_deactivate(request: Request):
     if not user or user.get("role") != "admin":
         return _err("仅管理员可注销授权", 403)
     license_service.clear_license()
+    license_service.clear_paid_history()
     return JSONResponse({"ok": True, "message": "授权已注销，已恢复免费版",
                          "data": license_service.status()})
 

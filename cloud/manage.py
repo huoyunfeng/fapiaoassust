@@ -1,10 +1,14 @@
 """云端订单 / 黑名单 / 解锁码管理 CLI（线下收单后录入订单号）。
 
+套餐参数支持 SKU（推荐）或历史套餐名：
+    basic_lifetime / ent_lifetime / maintain_basic / maintain_ent / upgrade_basic_to_ent
+    personal（历史年费，等同 basic 年费）/ enterprise（历史年费）
+
 示例：
-    python cloud/manage.py add-order ORD-20261105-001 enterprise 365
-    python cloud/manage.py add-order enterprise 365   # 省略订单号时自动生成随机订单号
+    python cloud/manage.py add-order ORD-20261105-001 ent_lifetime
+    python cloud/manage.py add-order basic_lifetime        # 省略订单号时自动生成
     python cloud/manage.py list
-    python cloud/manage.py force-issue 1111-2222-3333-4444 365   # 紧急补发（无视支付状态）
+    python cloud/manage.py force-issue 1111-2222-3333-4444 ent_lifetime   # 紧急补发（无视支付状态）
     python cloud/manage.py blacklist 1111-2222-3333-4444 违规退款
     python cloud/manage.py unblacklist 1111-2222-3333-4444
     python cloud/manage.py reset-order ORD-20261105-001
@@ -35,17 +39,34 @@ def _save(name: str, key: str, data: dict) -> None:
                              encoding="utf-8")
 
 
-def add_order(order_id: str, plan: str, days: int = 365) -> None:
-    if plan not in ("personal", "enterprise"):
-        raise SystemExit("plan 只能是 personal / enterprise")
+def _resolve_target(target: str, days: int = 0) -> dict:
+    """把 CLI 套餐参数归一化为订单字段：SKU 优先，兼容历史年费套餐名。"""
+    from license_server import SKU_META
+
+    target = (target or "").strip()
+    if target in SKU_META:
+        meta = SKU_META[target]
+        return {"sku": target, "plan": meta["plan"], "kind": meta["kind"],
+                "days": int(days or meta["days"] or 0)}
+    if target in ("basic", "personal", "enterprise"):
+        plan = "basic" if target == "personal" else target
+        # 历史年费：不写 sku，云端按 annual 语义签发
+        return {"plan": plan, "days": int(days or 365)}
+    raise SystemExit("套餐只能是 SKU（basic_lifetime / ent_lifetime / maintain_basic / "
+                     "maintain_ent / upgrade_basic_to_ent）或 personal / enterprise")
+
+
+def add_order(order_id: str, target: str, days: int = 0) -> None:
+    info = _resolve_target(target, days)
     orders = _load("orders.json", "orders")
     orders[order_id] = {
-        "plan": plan, "days": int(days), "status": "unused",
+        **info, "status": "unused",
         "machine_code": None, "used_at": None,
         "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
     _save("orders.json", "orders", orders)
-    print(f"已录入订单 {order_id}（{plan} / {days} 天）")
+    label = info.get("sku") or f"{info['plan']} 年费"
+    print(f"已录入订单 {order_id}（{label} / {info['days']} 天）")
 
 
 def list_orders() -> None:
@@ -122,46 +143,54 @@ def gen_keys() -> None:
                                       serialization.PublicFormat.SubjectPublicKeyInfo).decode())
 
 
-def force_issue(machine: str, days: int = 365, plan: str = "enterprise") -> None:
+def force_issue(machine: str, target: str = "ent_lifetime", days: int = 0,
+                core_fp: str = "") -> None:
     """客服救场：无视支付状态，直接为该机器码签发授权码并在终端打印。
 
+    复用 license_server._issue_license，保证补发码与正常购买码的继承/叠加规则完全一致。
     同时写一条 paid 订单（订单号 FORCE-...），客户之后可用后 6 位自助找回。
     """
     machine = (machine or "").strip()
     if not machine:
         raise SystemExit("机器码不能为空")
-    if plan not in ("personal", "enterprise"):
-        raise SystemExit("plan 只能是 personal / enterprise")
-    days = max(1, int(days))
-    # 复用云端签名实现（需要与 license_server 同目录、且私钥可用）
-    from license_server import PLAN_DEVICES, sign_payload
+    info = _resolve_target(target, days)
+    # 复用云端签名与叠加实现（需要与 license_server 同目录、且私钥可用）
+    from license_server import _issue_license
 
     now = int(time.time())
     order_id = f"FORCE-{time.strftime('%Y%m%d%H%M%S')}"
-    payload = {
-        "machine_code": machine, "plan": plan, "role": "master",
-        "exp": now + days * 86400,
-        "sub_limit": PLAN_DEVICES.get(plan, 0),
-        "order_id": order_id, "issued_at": now,
-    }
-    code = sign_payload(payload)
-
-    orders = _load("orders.json", "orders")
-    orders[order_id] = {
-        "plan": plan, "days": days, "status": "paid", "machine_code": machine,
-        "amount": 0, "trade_order_id": order_id, "license_key": code,
+    order = {
+        **info, "status": "paid", "machine_code": machine,
+        "core_fp": (core_fp or "").strip(), "amount": 0,
         "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "paid_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "activated_at": now, "exp": payload["exp"], "source": "force-issue",
+        "activated_at": now, "source": "force-issue",
     }
+    try:
+        code, exp = _issue_license(order, order_id)
+    except Exception as e:  # HTTPException 等：直接告知客服原因
+        raise SystemExit(f"签发失败：{getattr(e, 'detail', e)}")
+
+    orders = _load("orders.json", "orders")
+    orders[order_id] = {**order, "trade_order_id": order_id,
+                        "license_key": code, "exp": exp}
     _save("orders.json", "orders", orders)
 
-    print(f"已强制签发（{plan} / {days} 天）")
+    label = info.get("sku") or f"{info['plan']} 年费"
+    exp_text = "永久" if order.get("lifetime") else time.strftime(
+        "%Y-%m-%d", time.localtime(exp))
+    print(f"已强制签发（{label}）")
     print(f"订单号：{order_id}")
     print(f"机器码：{machine}")
-    print(f"到期：{time.strftime('%Y-%m-%d', time.localtime(payload['exp']))}")
+    print(f"授权到期：{exp_text}")
     print("授权码：")
     print(code)
+
+
+def _is_target(value: str) -> bool:
+    from license_server import SKU_META
+
+    return value in SKU_META or value in ("basic", "personal", "enterprise")
 
 
 def main() -> None:
@@ -171,25 +200,31 @@ def main() -> None:
     cmd = sys.argv[1]
     if cmd == "add-order":
         args = sys.argv[2:]
-        if args and args[0] in ("personal", "enterprise"):
+        if args and _is_target(args[0]):
             # 省略订单号：自动生成随机订单号（ORD-日期-随机后缀）
             order_id = f"ORD-{time.strftime('%Y%m%d')}-{secrets.token_hex(3).upper()}"
-            plan = args[0]
-            days = int(args[1]) if len(args) > 1 else 365
+            target = args[0]
+            days = int(args[1]) if len(args) > 1 else 0
         elif len(args) >= 2:
-            order_id, plan = args[0], args[1]
-            days = int(args[2]) if len(args) > 2 else 365
+            order_id, target = args[0], args[1]
+            days = int(args[2]) if len(args) > 2 else 0
         else:
             print(__doc__)
             return
-        add_order(order_id, plan, days)
+        add_order(order_id, target, days)
     elif cmd == "list":
         list_orders()
     elif cmd == "force-issue" and len(sys.argv) >= 3:
         machine = sys.argv[2]
-        days = int(sys.argv[3]) if len(sys.argv) > 3 else 365
-        plan = sys.argv[4] if len(sys.argv) > 4 else "enterprise"
-        force_issue(machine, days, plan)
+        rest = sys.argv[3:]
+        target, days = "ent_lifetime", 0
+        if rest and _is_target(rest[0]):
+            target = rest[0]
+            rest = rest[1:]
+        if rest and rest[0].isdigit():
+            days = int(rest[0])
+            rest = rest[1:]
+        force_issue(machine, target, days, rest[0] if rest else "")
     elif cmd == "blacklist" and len(sys.argv) >= 3:
         set_blacklist(sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else "", True)
     elif cmd == "unblacklist" and len(sys.argv) >= 3:

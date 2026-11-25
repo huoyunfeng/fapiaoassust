@@ -38,7 +38,7 @@ button,input,select,textarea{font-family:inherit;color:inherit;}
 .nav a:hover,.nav a.active{background:var(--primary-light);color:var(--primary);}
 .nav-plan{margin-left:12px;font-size:12px;padding:4px 10px;border-radius:999px;
   background:#f1f5f9;color:#64748b;white-space:nowrap;}
-.nav-plan.personal{background:#ecfdf5;color:#047857;}
+.nav-plan.basic{background:#ecfdf5;color:#047857;}
 .nav-plan.enterprise{background:#eff6ff;color:#1d4ed8;}
 .nav-user{margin-left:auto;display:flex;align-items:center;gap:10px;font-size:13px;color:var(--text-2);}
 .nav-user .who{max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
@@ -313,19 +313,19 @@ body.readonly-mode .nav-user button{opacity:.45;cursor:not-allowed;pointer-event
   {% if u.role != 'employee' %}
   <a href="/reimburses" data-nav-feature="reimburse" data-nav-name="报销单管理"
      class="{% if request.url.path.startswith('/reimburses') %}active{% endif %}{% if not ro and not lic.features.reimburse %} nav-locked{% endif %}"
-     {% if not ro and not lic.features.reimburse %}data-locked-feature="reimburse" data-locked-name="报销单管理" title="个人版及以上可用"{% endif %}>报销单{% if not ro and not lic.features.reimburse %}<span class="lock-tag">👑</span>{% endif %}</a>
+     {% if not ro and not lic.features.reimburse %}data-locked-feature="reimburse" data-locked-name="报销单管理" title="基础版及以上可用"{% endif %}>报销单{% if not ro and not lic.features.reimburse %}<span class="lock-tag">👑</span>{% endif %}</a>
   <a href="/matches" data-nav-feature="matching" data-nav-name="智能匹配中心"
      class="{% if request.url.path.startswith('/matches') %}active{% endif %}{% if not ro and not lic.features.matching %} nav-locked{% endif %}"
-     {% if not ro and not lic.features.matching %}data-locked-feature="matching" data-locked-name="智能匹配中心" title="个人版及以上可用"{% endif %}>匹配中心{% if not ro and not lic.features.matching %}<span class="lock-tag">👑</span>{% endif %}</a>
+     {% if not ro and not lic.features.matching %}data-locked-feature="matching" data-locked-name="智能匹配中心" title="基础版及以上可用"{% endif %}>匹配中心{% if not ro and not lic.features.matching %}<span class="lock-tag">👑</span>{% endif %}</a>
   <a href="/report" data-nav-feature="report" data-nav-name="差异报告"
      class="{% if request.url.path.startswith('/report') %}active{% endif %}{% if not ro and not lic.features.report %} nav-locked{% endif %}"
-     {% if not ro and not lic.features.report %}data-locked-feature="report" data-locked-name="差异报告" title="个人版及以上可用"{% endif %}>差异报告{% if not ro and not lic.features.report %}<span class="lock-tag">👑</span>{% endif %}</a>
+     {% if not ro and not lic.features.report %}data-locked-feature="report" data-locked-name="差异报告" title="基础版及以上可用"{% endif %}>差异报告{% if not ro and not lic.features.report %}<span class="lock-tag">👑</span>{% endif %}</a>
   {% endif %}
   <a href="/settings/rules" {% if request.url.path.startswith('/settings') %}class="active"{% endif %}>系统设置</a>
   <a href="/plans" {% if request.url.path.startswith('/plans') %}class="active"{% endif %}>升级 / 授权</a>
   <a href="/demo/play" target="_blank" {% if request.url.path.startswith('/demo') %}class="active"{% endif %} title="90 秒自动演示，看懂系统能拦下什么" style="margin-left:auto;">🎬 示例</a>
   <a href="/help" {% if request.url.path.startswith('/help') %}class="active"{% endif %} title="帮助与支持">❓ 帮助</a>
-  <span class="nav-plan {{ lic.plan }}" id="navPlan">{{ lic.plan_name }}{% if lic.exp_date %} · 至 {{ lic.exp_date }}{% endif %}</span>
+  <span class="nav-plan {{ lic.plan }}" id="navPlan">{{ lic.plan_name }}{% if lic.exp_date and not lic.lifetime %} · 至 {{ lic.exp_date }}{% endif %}</span>
   <div class="nav-user">
     <span class="who"><b>{{ u.display_name or u.username }}</b></span>
     <span class="role">{{ u.role_cn }}</span>
@@ -335,7 +335,7 @@ body.readonly-mode .nav-user button{opacity:.45;cursor:not-allowed;pointer-event
 </div>
 {% if lic.readonly %}
 <div class="readonly-banner" id="readonlyBanner">
-  <span>⚠️ 授权已到期。系统已进入只读模式，历史数据可查询与导出，写入操作已暂停。</span>
+  <span>⚠️ 授权已失效。系统已进入只读模式，历史数据可查询、可备份导出，写入操作已暂停。</span>
   <a href="/plans">前往升级 / 授权中心续费激活 →</a>
 </div>
 {% endif %}
@@ -470,12 +470,12 @@ const FilterCache = {
 const LICENSE = {{ lic|tojson }};
 // ===== 全局授权状态（唯一数据源，激活后无需刷新即可整体切换）=====
 const FEATURE_INFO = {
-  matching: {name:'智能匹配中心', required:'个人版及以上'},
-  reimburse:{name:'报销单管理', required:'个人版及以上'},
-  report:   {name:'差异报告', required:'个人版及以上'},
-  export:   {name:'数据导出', required:'个人版及以上'},
+  matching: {name:'智能匹配中心', required:'基础版及以上'},
+  reimburse:{name:'报销单管理', required:'基础版及以上'},
+  report:   {name:'差异报告', required:'基础版及以上'},
+  export:   {name:'数据导出', required:'基础版及以上'},
   team:     {name:'团队与权限', required:'企业版'},
-  quota:    {name:'解析额度', required:'个人版及以上'}
+  quota:    {name:'解析额度', required:'基础版及以上'}
 };
 const PLAN = {
   type: LICENSE.plan || 'free',
@@ -518,7 +518,7 @@ function _applyNavLocks(){
       if(!tag){ tag = document.createElement('span'); tag.className = 'lock-tag'; tag.textContent = '👑'; a.appendChild(tag); }
       a.setAttribute('data-locked-feature', f);
       a.setAttribute('data-locked-name', a.getAttribute('data-nav-name') || '');
-      a.setAttribute('title', '个人版及以上可用');
+      a.setAttribute('title', '基础版及以上可用');
     }
   });
 }
@@ -543,14 +543,13 @@ const App = {
   },
   // 免费解析额度耗尽：复用同一弹窗，换成额度说明（不直接甩报错）
   quotaExhausted(limit){
-    const n = limit || ((LICENSE.quota && LICENSE.quota.limit) || 20);
-    document.getElementById('upgradeTitle').textContent = '本月免费解析额度已用完';
+    const n = limit || ((LICENSE.quota && LICENSE.quota.limit) || 50);
+    document.getElementById('upgradeTitle').textContent = '免费体验额度已用完';
     document.getElementById('upgradeDesc').textContent =
-      '您本月的 ' + n + ' 张免费解析额度已耗尽。升级个人版，即可享受无限量解析，'
-      + '平均每天不到 3 毛钱（99元/年）。';
+      '您的免费体验额度（共 ' + (LICENSE.trial_total || 50) + ' 张）已用尽。升级基础版/企业版即可永久可用、不限额度。';
     document.getElementById('upgradeMeta').innerHTML =
-      '当前套餐：<b>免费版</b><br>所需套餐：<b>个人版及以上</b>'
-      + '<br>升级后<b>立即恢复</b>解析额度，已录入数据不受影响。';
+      '当前套餐：<b>免费体验版</b><br>所需套餐：<b>基础版及以上</b>'
+      + '<br>升级后<b>立即解除</b>额度限制，已录入数据不受影响。';
     document.getElementById('upgradeGo').href = '/plans?feature=quota';
     document.getElementById('upgradeBg').classList.add('on');
   },

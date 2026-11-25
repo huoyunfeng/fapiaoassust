@@ -256,9 +256,14 @@ class TestPortAutoFallback:
 
         blocker = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
-            blocker.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            blocker.bind((launcher.HOST, launcher.PREFERRED_PORT))
-            blocker.listen(1)
+            try:
+                blocker.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                blocker.bind((launcher.HOST, launcher.PREFERRED_PORT))
+                blocker.listen(1)
+            except OSError:
+                # 8000 已被本机其它进程独占（常见于开发者本地正在跑服务）。
+                # 此时既无法构造场景，也不该在真实数据目录上再起一个后端，直接跳过。
+                pytest.skip("本机 8000 已被占用，无法构造“端口被占用”场景")
 
             backend = launcher._start_backend()
             try:
@@ -380,71 +385,47 @@ class TestDatabaseLockedGracefulDegrade:
 
 
 # =====================================================================
-# 测试域七：跨年额度重置
+# 测试域七：体验额度一次性（跨年不重置）
 # =====================================================================
-class TestQuotaResetCrossYearBoundary:
-    def test_quota_resets_jan_first_00_00_01(self, env, monkeypatch):
-        """2026-12-31 用完免费额度，2027-01-01 00:00:01 新一月额度应为 20。"""
+class TestTrialQuotaIsOneTime:
+    def test_quota_does_not_reset_next_year(self, env, monkeypatch):
+        """免费体验额度是一次性 50 张：把时间推进到次年，额度也不会恢复。"""
         lic = env["lic"]
+        total = int(settings.trial_invoice_quota)
+        lic.consume_invoice_quota(total)
+        assert lic.quota_status()["remaining"] == 0
 
-        # 免费版是系统默认状态，直接能用（limit=20）
-        from app.infra import machine as machine_mod
-        monkeypatch.setattr(machine_mod, "machine_code", lambda: "1111-2222-3333-4444")
-
-        # 把 2026-12 的额度扣满
-        month_dec = "2026-12"
-        with env["db"].tx() as conn:
-            from app.repository.repos import kv_repo
-            kv_repo.set(conn, f"quota:{month_dec}", "20")
-        # guard 同步
-        guard = machine_mod.load_guard()
-        key = machine_mod.month_key(machine_mod.machine_code(), month_dec)
-        guard.setdefault("quota", {})[key] = 20
-        machine_mod.save_guard(guard)
-
-        # mock time.strftime 让它在一月返回 "2027-01"
-        real_strftime = time.strftime
-        def fake_strftime(fmt, t=None):
-            if fmt == "%Y-%m":
-                return "2027-01"
-            return real_strftime(fmt, t)
-        monkeypatch.setattr(time, "strftime", fake_strftime)
-
+        future = int(time.time()) + 400 * 86400
+        monkeypatch.setattr(lic.time, "time", lambda: future)
         status = lic.quota_status()
-        assert status["month"] == "2027-01", \
-            f"expected month reset to 2027-01, got {status['month']}"
-        assert status["used"] == 0, \
-            f"expected used reset to 0, got {status['used']}"
-        assert status["remaining"] == 20, \
-            f"expected remaining=20, got {status['remaining']}"
+        assert status["remaining"] == 0 and status["month"] == ""
+        with pytest.raises(lic.QuotaExceeded):
+            lic.consume_invoice_quota(1)
 
 
 # =====================================================================
 # 测试域八：时区漂移容错（不崩、不脏数据）
 # =====================================================================
 class TestTimezoneDriftResilience:
-    def test_month_key_is_localtime_aware_not_utc(self, env, monkeypatch):
-        """_month() 用 strftime（localtime 感知），不是硬编码 UTC，跨时区不崩。"""
-        from app.service.license_service import _month
-        m = _month()
-        assert len(m) == 7 and m[4] == "-", f"expected YYYY-MM, got {m}"
+    def test_trial_quota_has_no_month_key(self, env):
+        """体验额度已取消月份概念：quota_status 不再暴露月份，前端不会按月回血。"""
+        assert env["lic"].quota_status()["month"] == ""
 
-    def test_quota_consumption_under_timezone_shift_does_not_crash(self, env, monkeypatch):
-        """即使 time.strftime 返回的月份 key 与 DB 里已有 key 不同步，消费额度也不崩。"""
+    def test_trial_quota_unaffected_by_timezone_shift(self, env, monkeypatch):
+        """时区突变导致月份字符串变化时，已用张数不受影响（额度不按月重置）。"""
         lic = env["lic"]
-        from app.infra import machine as machine_mod
-        monkeypatch.setattr(machine_mod, "machine_code", lambda: "1111-2222-3333-4444")
 
-        # 模拟时区突变：strftime 换成了另一个时区的月份 key
+        # 模拟时区突变：strftime 换成另一个时区的月份字符串
         real_strftime = time.strftime
         def fake_strftime(fmt, t=None):
             if fmt == "%Y-%m":
-                return "2025-06"   # 模拟 user 改时区导致月份 key 突变
+                return "2025-06"
             return real_strftime(fmt, t)
         monkeypatch.setattr(time, "strftime", fake_strftime)
 
-        # consume_invoice_quota 不应抛任何异常（只是换了新的 key，新 key 计数从 0 开始）
         lic.consume_invoice_quota(1)
         status = lic.quota_status()
-        assert status["month"] == "2025-06"
+        assert status["month"] == ""
         assert status["used"] == 1
+        assert status["remaining"] == int(settings.trial_invoice_quota) - 1
+

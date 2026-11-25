@@ -186,7 +186,7 @@
       {% if lic.plan == 'free' %}
       <div class="free-banner">
         <span class="fb-ico">👑</span>
-        <div><b>当前为免费版</b>。升级个人版即可解锁智能风控拦截（税号白名单、拦截红冲、敏感词等）。</div>
+        <div><b>当前为免费版</b>。升级基础版即可解锁智能风控拦截（税号白名单、拦截红冲、敏感词等）。</div>
         <a class="btn btn-sm" href="/plans">立即升级</a>
       </div>
       {% endif %}
@@ -364,7 +364,7 @@
       {% if lic.plan == 'free' %}
       <div class="free-banner">
         <span class="fb-ico">👑</span>
-        <div><b>当前为免费版</b>。可使用系统内置基础字典，升级个人版即可自定义分类与模板。</div>
+        <div><b>当前为免费版</b>。可使用系统内置基础字典，升级基础版即可自定义分类与模板。</div>
         <a class="btn btn-sm" href="/plans">立即升级</a>
       </div>
       {% endif %}
@@ -443,7 +443,7 @@
           <div class="gate-card">
             <div class="gate-ico">👑</div>
             <h3>解锁企业级协同</h3>
-            <p>{% if lic.plan == 'personal' %}个人版仅限单人单机使用，如需多账号协同，请升级企业版。{% else %}支持多账号权限隔离与防内鬼追溯，请升级企业版。{% endif %}</p>
+            <p>{% if lic.plan == 'basic' %}基础版仅限单人单机使用，如需多账号协同，请升级企业版。{% else %}支持多账号权限隔离与防内鬼追溯，请升级企业版。{% endif %}</p>
             <a class="btn" href="/plans?feature=team">立即升级企业版</a>
           </div>
         </div>
@@ -743,7 +743,7 @@
           </table>
           <div class="pager" id="sgAuditPager" style="justify-content:center;"></div>
         </div>
-        {% elif lic.plan == 'personal' %}
+        {% elif lic.plan == 'basic' %}
         <div class="audit-gate">
           <div class="audit-blur">
             <div class="card">
@@ -789,7 +789,7 @@
             </div>
             <button class="btn btn-outline btn-sm" onclick="reverifyLicense()">重新验证授权</button>
           </div>
-          <p class="muted mb" style="font-size:12px;color:#909399;margin-top:6px;">授权码与本机机器码强绑定，一码一机。购买后凭订单号在本机激活；免费版每月限导入 20 张发票。</p>
+          <p class="muted mb" style="font-size:12px;color:#909399;margin-top:6px;">授权码与本机机器码强绑定，一码一机。购买后凭订单号在本机激活；免费体验版一次性限导入 50 张发票，跨月不恢复。</p>
 
           <div id="licenseInfo" style="display:flex;flex-direction:column;gap:12px;">
             <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:12px 16px;background:var(--primary-light);border-radius:8px;">
@@ -819,7 +819,7 @@
               <input id="licCodeInput" placeholder="请输入订单号，如 ORD-20261105-001"
                      style="width:320px;font-family:monospace;">
               <button class="btn" onclick="activateLicense()">激活授权</button>
-              <span class="muted" style="font-size:12px;color:#909399;">无订单号？联系商家购买（个人版 99 元/年 · 企业版 499 元/年）</span>
+              <span class="muted" style="font-size:12px;color:#909399;">无订单号？联系商家购买（基础版 199 元 · 企业版 499 元，均为永久买断）</span>
               {% else %}
               <span class="muted" style="font-size:12px;color:#909399;">授权激活与设备绑定由管理员操作</span>
               {% endif %}
@@ -841,7 +841,7 @@
               <div class="kv">
                 <span class="k">系统版本</span><span>v{{ app_version }}</span>
                 <span class="k">授权状态</span><span id="licPlanName">读取中…</span>
-                <span class="k">本月额度</span><span id="licQuota2">—</span>
+                <span class="k">体验额度</span><span id="licQuota2">—</span>
                 <span class="k">数据库</span><span>data/fapiao.db（SQLite）</span>
                 <span class="k">日志</span><span>data/logs/app.log</span>
                 <span class="k">匹配阈值</span><span>自动通过 ≥ 0.95 · 待人工 0.70~0.95 · 无候选 &lt; 0.70</span>
@@ -2693,12 +2693,12 @@ async function loadLicense(){
   const skipB = !document.getElementById('licPlanBadge');
   if(skipA && skipB) return;
   try{
-    const r = await fetch('/api/license').then(x=>x.json());
+    const r = await fetch('/api/license/status', {cache:'no-store'}).then(x=>x.json());
     const d = r.data || r;
-    if(!d.ok) return;
+    if(!d || !d.plan_name) return;
     const planTxt = d.plan_name + (d.exp_date ? `（有效期至 ${d.exp_date}）` : '');
-    const planShort = d.plan_name || '免费版';
-    const qTxt = (q => q.unlimited ? '' : `本月已导入 ${q.used}/${q.quota} 张`)(d.quota || {});
+    const planShort = d.plan_name || '免费体验版';
+    const qTxt = (q => q.unlimited ? '' : `体验额度已用 ${q.used}/${q.limit} 张`)(d.quota || {});
     // 授权状态：折叠面板中的 kv 行
     if(!skipA) document.getElementById('licPlanName').textContent = planTxt;
     // Tab3 顶部版本徽章（按套餐着色）
@@ -2707,9 +2707,9 @@ async function loadLicense(){
       badge.textContent = planShort;
       badge.className = 'badge '
         + (d.plan === 'enterprise' ? 'badge-purple'
-           : d.plan === 'personal' ? 'badge-green' : 'badge-gray');
+           : d.plan === 'basic' ? 'badge-green' : 'badge-gray');
     }
-    // 本月额度：两处都可能渲染，逐个做空检查
+    // 体验额度：两处都可能渲染，逐个做空检查
     const q1 = document.getElementById('licQuota'); if(q1) q1.textContent = qTxt || '不限张数';
     const q2 = document.getElementById('licQuota2'); if(q2) q2.textContent = qTxt || '不限张数';
     const mc = document.getElementById('licMachineCode'); if(mc) mc.textContent = d.machine_code || '—';
@@ -2733,8 +2733,9 @@ async function loadLicense(){
         const now = Math.floor(Date.now() / 1000);
         const remaining = d.exp - now;                   // 剩余秒数
         const remainingDays = Math.ceil(remaining / 86400);
-        // 套餐默认有效期：enterprise/personal 365 天（参考授权码签发），免费版永久
-        const defaultDuration = (d.plan === 'enterprise' || d.plan === 'personal') ? 365 * 86400 : null;
+        // 买断版永久有效，不再展示倒计时条；旧年费授权按 365 天估算
+        const defaultDuration = d.lifetime ? null
+          : ((d.plan === 'enterprise' || d.plan === 'basic') ? 365 * 86400 : null);
         if(defaultDuration){
           const percent = Math.max(0, Math.min(100, remaining / defaultDuration * 100));
           bar.style.width = percent + '%';
@@ -2788,7 +2789,7 @@ async function activateLicense(){
   }
   else toast((j && j.message) || '激活失败', false);
 }
-// 重新验证授权：重新拉取 /api/license，刷新版本/授权状态/额度
+// 重新验证授权：重新拉取 /api/license/status，刷新版本/授权状态/额度
 async function reverifyLicense(){
   await loadLicense();
   toast('授权状态已重新验证');

@@ -159,7 +159,9 @@ class TestDomain1License:
         out = env["lic"].payment_create("enterprise")
         assert out["amount"] == 49900
         assert "amount" not in captured["payload"]
-        assert set(captured["payload"]) == {"plan_type", "machine_code"}
+        # 只传套餐代码/机器码/核心指纹，金额与有效期由云端字典决定
+        assert set(captured["payload"]) == {"plan_type", "machine_code", "core_fp", "sku"}
+        assert captured["payload"]["sku"] == "ent_lifetime"
 
         for bad in ("free", "hacker", ""):
             with pytest.raises(env["lic"].CloudError):
@@ -182,7 +184,8 @@ class TestDomain1License:
         assert env["lic"].features()["matching"] is False
 
     def test_expired_license_is_readonly_not_free(self, env):
-        # 模拟「曾激活、现已到期」：直接把已过期但签名合法的授权写入本地
+        # 模拟「曾激活、现已到期」：先把付费历史写入登记簿，再写入过期但仍合法的年费码
+        env["lic"]._mark_paid({"plan": "enterprise", "lifetime": False})
         expired = sign_code(env["key"], machine_code="1111-2222-3333-4444",
                             plan="enterprise", role="master",
                             exp=int(time.time()) - 3600, duration_days=365,
@@ -197,7 +200,7 @@ class TestDomain1License:
         assert env["inv"].invoice_detail(inv) is not None
 
     def test_free_plan_quota_and_enterprise_unlimited(self, env):
-        assert env["lic"].quota_status()["limit"] == 20
+        assert env["lic"].quota_status()["limit"] == int(settings.trial_invoice_quota)
         activate(env)
         assert env["lic"].quota_status()["limit"] is None
 

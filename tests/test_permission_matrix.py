@@ -1,7 +1,7 @@
-"""三版本权限矩阵 + 商业化拦截逻辑测试。
+﻿"""三版本权限矩阵 + 商业化拦截逻辑测试。
 
 覆盖：
-- 套餐能力矩阵（free / personal / enterprise）
+- 套餐能力矩阵（free / basic / enterprise）
 - 中间件拦截：页面 302、接口 403（含错误码）
 - 免费额度耗尽 LIMIT_EXCEEDED
 - 设置页门控 UI（眼馋展示、模糊遮罩、大锁）
@@ -171,13 +171,14 @@ def _upload(client):
 class TestPlanMatrix:
     def test_free_matrix(self, env):
         f = env["lic"].PLANS["free"]
-        assert f["monthly_invoice_quota"] == 20
+        assert f["monthly_invoice_quota"] is None
+        assert f["trial_invoices"] == 50
         for key in ("matching", "reimburse", "report", "export", "team",
                     "rules", "audit", "handover", "custom_categories"):
             assert f[key] is False, key
 
-    def test_personal_matrix(self, env):
-        p = env["lic"].PLANS["personal"]
+    def test_basic_matrix(self, env):
+        p = env["lic"].PLANS["basic"]
         for key in ("matching", "reimburse", "report", "export",
                     "rules", "custom_categories"):
             assert p[key] is True, key
@@ -195,7 +196,7 @@ class TestPlanMatrix:
     def test_feature_allowed_follows_plan(self, env):
         lic = env["lic"]
         assert lic.feature_allowed("audit") is False
-        _activate(env, "personal")
+        _activate(env, "basic")
         assert lic.feature_allowed("matching") is True
         assert lic.feature_allowed("team") is False
         _activate(env, "enterprise")
@@ -251,16 +252,17 @@ class TestFreeBlocking:
         assert status != 403
 
     def test_quota_exhausted_returns_limit_exceeded(self, client, env):
-        from app.repository.repos import kv_repo
-        with env["db"].tx() as conn:
-            kv_repo.set(conn, f"quota:{env['lic']._month()}", "20")
+        # 体验额度已改为一次性 50 张（隐藏登记簿 + 注册表双写），直接把已用额度写满
+        guard = machine_mod.load_guard()
+        guard["trial_used"] = int(settings.trial_invoice_quota)
+        machine_mod.save_guard(guard)
 
         status, _h, text = _upload(client)
         body = json.loads(text)
         assert status == 403
         assert body["code"] == "LIMIT_EXCEEDED"
         assert body["msg"] == "额度用尽"
-        assert body["limit"] == 20
+        assert body["limit"] == int(settings.trial_invoice_quota)
 
     def test_team_page_reachable_for_free(self, client):
         # 允许进入页面（内部用遮罩引导升级），不再整页重定向
@@ -272,13 +274,13 @@ class TestFreeBlocking:
 # ---------------------------------------------------------------- 个人版拦截
 class TestPersonalBlocking:
     def test_business_pages_open(self, client, env):
-        _activate(env, "personal")
+        _activate(env, "basic")
         for path in ("/matches", "/reimburses", "/report"):
             status, _h, _ = client.request(path)
             assert status == 200, path
 
     def test_team_api_blocked(self, client, env):
-        _activate(env, "personal")
+        _activate(env, "basic")
         status, body = client.post_json("/api/team/users",
                                         {"username": "u1", "password": "Aa123456!"})
         assert status == 403
@@ -286,13 +288,13 @@ class TestPersonalBlocking:
         assert body["feature"] == "team"
 
     def test_audit_api_blocked(self, client, env):
-        _activate(env, "personal")
+        _activate(env, "basic")
         status, body = client.get_json("/api/audit?page=1")
         assert status == 403
         assert body["code"] == "UPGRADE_REQUIRED"
 
     def test_rules_allowed_for_personal(self, client, env):
-        _activate(env, "personal")
+        _activate(env, "basic")
         status, _h, html = client.request("/settings/rules")
         assert status == 200
         # 只看实际落在 pane 上的类名，避免命中 <style> 里的规则定义
@@ -325,7 +327,7 @@ class TestSettingsGatingUI:
     def test_free_rules_banner_and_disabled(self, client):
         status, _h, html = client.request("/settings/rules")
         assert status == 200
-        assert "当前为免费版" in html and "升级个人版即可解锁智能风控拦截" in html
+        assert "当前为免费版" in html and "升级基础版即可解锁智能风控拦截" in html
         assert "rule-locked" in html
         assert "当前为免费版，升级解锁风控规则" in html
 
@@ -344,14 +346,14 @@ class TestSettingsGatingUI:
         assert "cat-locked" in html
         assert "免费版仅支持基础字典，升级后可自定义" in html
 
-    def test_personal_team_overlay_copy(self, client, env):
-        _activate(env, "personal")
+    def test_basic_team_overlay_copy(self, client, env):
+        _activate(env, "basic")
         _s, _h, html = client.request("/settings/team")
-        assert "个人版仅限单人单机使用，如需多账号协同，请升级企业版" in html
+        assert "基础版仅限单人单机使用，如需多账号协同，请升级企业版" in html
         assert "👑 企业版" in html
 
-    def test_personal_audit_blur_gate(self, client, env):
-        _activate(env, "personal")
+    def test_basic_audit_blur_gate(self, client, env):
+        _activate(env, "basic")
         _s, _h, html = client.request("/settings/security")
         assert "audit-blur" in html
         assert "升级企业版，永久保留合规审计日志，防员工乱改账目" in html
@@ -366,8 +368,34 @@ class TestNavLocks:
             assert f'data-locked-feature="{feature}"' in html
         assert "👑" in html
 
-    def test_personal_nav_no_locks(self, client, env):
-        _activate(env, "personal")
+    def test_basic_nav_no_locks(self, client, env):
+        _activate(env, "basic")
         _s, _h, html = client.request("/")
         assert 'data-locked-feature="matching"' not in html
         assert 'data-locked-feature="reimburse"' not in html
+
+
+class TestSubDeviceReadonlyLock:
+    """子设备授权失效后整机锁定业务数据，但必须保留重新绑定/续费入口。"""
+
+    def _make_sub_expired(self, env):
+        lic = env["lic"]
+        lic._mark_paid({"plan": "enterprise", "lifetime": True})
+        lic._remember_device_role({"role": "sub"})
+        lic._READONLY_CACHE.update({"at": 0.0, "value": False})
+
+    def test_business_pages_and_apis_blocked(self, client, env):
+        self._make_sub_expired(env)
+        status, headers, _text = client.request("/invoices")
+        assert status in (302, 307)
+        assert "/plans" in headers.get("location", "")
+        status, data = client.get_json("/api/dashboard/expense-breakdown")
+        assert status == 401 and data.get("code") == "LICENSE_REVOKED"
+
+    def test_rebind_entry_kept(self, client, env):
+        self._make_sub_expired(env)
+        status, data = client.get_json("/api/license/status")
+        assert status == 200 and data.get("ok")
+        status, _h, _html = client.request("/plans")
+        assert status == 200
+

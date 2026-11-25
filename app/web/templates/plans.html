@@ -21,7 +21,7 @@
 .pl-name{font-size:17px;font-weight:700;}
 .pl-price{font-size:24px;font-weight:800;color:var(--primary);margin:10px 0 4px;}
 .pl-price small{font-size:12px;color:#94a3b8;font-weight:500;}
-/* 个人版折算说明：与额度弹窗文案保持一致，避免「8 元 vs 99 元」的价格认知冲突 */
+/* 基础版折算说明：与额度弹窗文案保持一致 */
 .pl-monthly{display:inline-block;margin:2px 0 6px;padding:3px 10px;border-radius:999px;
   background:#ecfdf5;border:1px solid #a7f3d0;color:#047857;font-size:12px;font-weight:600;}
 .pl-desc{font-size:12px;color:#94a3b8;margin-bottom:14px;min-height:34px;line-height:1.6;}
@@ -213,14 +213,18 @@
       </h1>
       <div class="sub">
         {% if license.activated %}
-          授权有效期至 <b>{{ license.exp_date }}</b>；{% if license.role == 'sub' %}子设备{% else %}主设备{% endif %}
+          {% if license.lifetime %}永久授权（买断）{% else %}授权有效期至 <b>{{ license.exp_date }}</b>{% endif %}；{% if license.role == 'sub' %}子设备{% else %}主设备{% endif %}
+          {% if license.maint_expired %}<span style="color:#dc2626;">· 维护期已到期（功能不受影响，仅停止新版发票识别升级）</span>
+          {% elif license.maint_date %}<span style="color:#10b981;">· 维护期至 {{ license.maint_date }}</span>{% endif %}
           {% if license.apply_reason %}<span style="color:#10b981;">· {{ license.apply_reason }}</span>{% endif %}
+        {% elif license.readonly %}
+          授权已失效，系统处于只读模式（数据可查看、可备份导出）
         {% elif license.expired %}
-          授权已于 {{ license.exp_date }} 过期，已降级为免费版
+          授权已于 {{ license.exp_date }} 过期，系统处于只读模式
         {% elif license.error %}
           本机授权异常：{{ license.error }}
         {% else %}
-          当前为免费版{% if license.quota.limit %}，本月额度 {{ license.quota.used }}/{{ license.quota.limit }} 张{% endif %}
+          当前为免费体验版{% if license.quota.limit %}，体验额度 {{ license.quota.used }}/{{ license.quota.limit }} 张{% endif %}
         {% endif %}
       </div>
     </div>
@@ -234,7 +238,7 @@
   <div class="pl-sec" style="border-left:4px solid #f59e0b;">
     <h2>该功能需要升级</h2>
     <div class="hint">
-      免费版仅支持基础台账（每月 {{ license.quota.limit or 20 }} 张发票）。
+      免费体验版仅支持基础台账（一次性 {{ license.quota.limit or license.trial_total }} 张发票额度）。
       {% if feature == 'matching' %}智能匹配{% elif feature == 'export' %}数据导出{% elif feature == 'team' %}多账号团队管理{% endif %}
       属于付费能力，升级后立即解锁，数据不受影响。
     </div>
@@ -258,28 +262,28 @@
       {% if p.key == 'enterprise' %}<span class="tag">推荐 · 3 人协作 / 3 台设备</span>{% endif %}
       <div class="pl-name">{{ p.name }}</div>
       <div class="pl-price">{{ p.price }}</div>
-      {% if p.key == 'personal' %}
-      <div class="pl-monthly">🔥 折合每天不到 3 毛钱！</div>
+      {% if p.key == 'basic' %}
+      <div class="pl-monthly">🔥 一次买断，永久可用</div>
       {% elif p.key == 'enterprise' %}
       <div class="pl-biz">💼 老板与财务的内控首选</div>
       {% endif %}
       <div class="pl-scene">
-        {% if p.key == 'free' %}适合刚接触软件的个人体验
-        {% elif p.key == 'personal' %}适合个人出纳、兼职代账、单干老板
+        {% if p.key == 'free' %}适合零成本体验核对流程
+        {% elif p.key == 'basic' %}适合个人出纳、兼职代账、单干老板
         {% else %}适合小团队，或需要多台电脑协作{% endif %}
       </div>
       <ul class="pl-feat">
         {% if p.key == 'free' %}
-        <li><span class="ok">✓</span> 每月 20 张发票智能解析</li>
+        <li><span class="ok">✓</span> 一次性 {{ license.trial_total }} 张发票智能解析</li>
         <li><span class="ok">✓</span> 基础台账管理</li>
         <li><span class="ok">✓</span> 基础数据防重</li>
-        {% elif p.key == 'personal' %}
-        <li><span class="ok">✓</span> <b>无限量</b>发票解析</li>
+        {% elif p.key == 'basic' %}
+        <li><span class="ok">✓</span> <b>永久可用</b>，无限量发票解析</li>
         <li><span class="ok">✓</span> 全自动智能匹配与差异报告</li>
         <li><span class="ok">✓</span> 支持自定义 Excel 报销模板</li>
         <li><span class="ok">✓</span> 数据备份与回收站防丢</li>
         {% else %}
-        <li><span class="ok">✓</span> 包含个人版所有功能</li>
+        <li><span class="ok">✓</span> 包含基础版所有功能</li>
         <li><span class="ok">✓</span> <b>3 人团队协作</b>（分角色、防数据串号）</li>
         <li>
           <span class="ok">✓</span> <b>3 台设备授权</b>（支持安全交接）
@@ -294,6 +298,29 @@
     </div>
     {% endfor %}
   </div>
+
+  {% if license.activated and license.lifetime and license.role != 'sub' %}
+  <div style="margin:18px 0;padding:16px 18px;border:1px solid #e2e8f0;border-radius:14px;background:#fff">
+    <div style="font-weight:700;margin-bottom:6px">维护与升级</div>
+    <div style="font-size:13px;color:#64748b;line-height:1.7;margin-bottom:12px">
+      永久买断：<b>所有已有功能永久可用</b>。维护期
+      {% if license.maint_date %}至 {{ license.maint_date }}{% endif %}
+      {% if license.maint_expired %}
+        <b style="color:#dc2626">已到期</b>，仅停止「新款发票识别/新版本」升级，不影响现有功能。
+      {% else %}
+        内可免费升级新版本与新款发票识别。
+      {% endif %}
+    </div>
+    <div style="display:flex;flex-wrap:wrap;gap:10px">
+      {% for s in license.skus %}
+      {% if (s.kind == 'maintenance' and s.plan == license.plan) or (s.kind == 'upgrade' and license.plan == 'basic') %}
+      <button class="pl-buy primary" type="button" onclick="openPay(this)"
+              data-sku="{{ s.key }}" data-name="{{ s.name }}">{{ s.name }} · {{ s.price }} 元</button>
+      {% endif %}
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
 
   <!-- 价值锚点 Banner -->
   <div class="pl-hero">
@@ -326,10 +353,10 @@
     <div class="body">
       <table>
         <thead>
-          <tr><th>能力项</th><th>免费版</th><th>个人版</th><th>企业版</th></tr>
+          <tr><th>能力项</th><th>免费体验版</th><th>基础版</th><th>企业版</th></tr>
         </thead>
         <tbody>
-          <tr><td>每月发票额度</td><td>20 张</td><td>不限</td><td>不限</td></tr>
+          <tr><td>发票额度</td><td>一次性 50 张</td><td>不限</td><td>不限</td></tr>
           <tr><td>智能匹配中心</td><td class="na">—</td><td class="yes">✓</td><td class="yes">✓</td></tr>
           <tr><td>报销单管理</td><td class="na">—</td><td class="yes">✓</td><td class="yes">✓</td></tr>
           <tr><td>差异报告</td><td class="na">—</td><td class="yes">✓</td><td class="yes">✓</td></tr>
@@ -449,7 +476,7 @@
     banner.style.display = 'flex';
   } else if(lic.expired){
     banner.className = 'pl-banner red';
-    banner.innerHTML = `<span class="icon">⚠️</span><div class="txt">授权已过期，已降级为免费版。<br>请重新购买或输入订单号激活。</div>
+    banner.innerHTML = `<span class="icon">⚠️</span><div class="txt">授权已失效，系统已进入只读模式（数据可查看、可备份导出）。<br>请重新购买或输入订单号激活。</div>
       <a class="cta" href="#activate">立即激活 →</a>`;
     banner.style.display = 'flex';
   } else if(lic.activated){
@@ -474,7 +501,7 @@
   const lic = {{ license|tojson }};
   const isAdmin = {% if request.state.user and request.state.user.role == 'admin' %}true{% else %}false{% endif %};
   const isSub = lic.role === 'sub';
-  const currentPlan = lic.plan;     // free / personal / enterprise
+  const currentPlan = lic.plan;     // free / basic / enterprise
 
   // 子设备：所有付费按钮都隐藏，只用灰色"子设备请联系主设备"
   if(isSub){
@@ -499,29 +526,25 @@
       btnBox.innerHTML = `<div class="pl-now">请联系管理员购买</div>`;
       return;
     }
-    // enterprise 当前时，free/personal 置灰不可购买
+    // 企业版当前：低版本置灰不可购买（不会降级）
     if(currentPlan === 'enterprise' && p.key !== 'enterprise'){
       btnBox.innerHTML = `<div class="pl-now">企业版覆盖更全，无需降级</div>`;
       return;
     }
-    // personal 当前时：personal → 续费；enterprise → 升级；free 置灰
-    if(currentPlan === 'personal'){
-      if(p.key === 'personal'){
-        btnBox.innerHTML = `<button class="pl-buy primary" type="button" onclick="openPay(this)" data-plan="${p.key}" data-name="${p.name}">续费个人版</button>`;
-        return;
-      }
+    // 基础版当前：升级企业版 / 续维护费（维护按钮在上方「维护与升级」区）
+    if(currentPlan === 'basic'){
       if(p.key === 'enterprise'){
-        btnBox.innerHTML = `<button class="pl-buy dark" type="button" onclick="openPay(this)" data-plan="${p.key}" data-name="${p.name}">升级企业版</button>`;
+        btnBox.innerHTML = `<button class="pl-buy dark" type="button" onclick="openPay(this)" data-sku="upgrade_basic_to_ent" data-name="基础版升级企业版">补差价升级企业版</button>`;
         return;
       }
-      btnBox.innerHTML = `<div class="pl-now">付费后无需降级</div>`;
+      btnBox.innerHTML = `<div class="pl-now">已在下方续维护</div>`;
       return;
     }
-    // free 当前或已过期：个人版深蓝实心，企业版深黑金实心
-    if(p.key === 'personal'){
-      btnBox.innerHTML = `<button class="pl-buy primary" type="button" onclick="openPay(this)" data-plan="${p.key}" data-name="${p.name}">升级个人版</button>`;
-    }else{
-      btnBox.innerHTML = `<button class="pl-buy dark" type="button" onclick="openPay(this)" data-plan="${p.key}" data-name="${p.name}">升级企业版</button>`;
+    // 免费体验：买断基础版 / 企业版
+    if(p.key === 'basic'){
+      btnBox.innerHTML = `<button class="pl-buy primary" type="button" onclick="openPay(this)" data-sku="basic_lifetime" data-name="基础版买断">立即购买基础版</button>`;
+    }else if(p.key === 'enterprise'){
+      btnBox.innerHTML = `<button class="pl-buy dark" type="button" onclick="openPay(this)" data-sku="ent_lifetime" data-name="企业版买断">立即购买企业版</button>`;
     }
   });
 })();
@@ -542,7 +565,7 @@ async function openPay(btn){
   try{
     const r = await fetch('/api/payment/create', {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({plan_type: btn.dataset.plan})
+      body: JSON.stringify({sku: btn.dataset.sku || '', plan_type: btn.dataset.plan || ''})
     });
     const d = await r.json();
     if(!r.ok || !d.ok){ toast(d.message || '下单失败，请稍后重试', false); return; }
@@ -596,10 +619,15 @@ async function pollPay(){
     if(d.status === 'paid'){
       _payClearTimers();
       document.getElementById('payMask').classList.remove('show');
+      // 刷新授权后重载页面：维护期/升级区块是服务端渲染的，重载可立即显示新状态
       if(window.App && App.refreshPlan){
-        App.refreshPlan().then(()=>toast('🎉 升级成功，已解锁全部高级功能！'));
+        App.refreshPlan().then(()=>{
+          toast('🎉 升级成功，已解锁全部高级功能！');
+          setTimeout(()=>location.reload(), 800);
+        });
       }else{
         toast('🎉 升级成功，已解锁全部高级功能！');
+        setTimeout(()=>location.reload(), 800);
       }
     }
   }catch(e){
@@ -621,10 +649,15 @@ async function manualRefresh(tid){
     if(d.status === 'paid'){
       _payClearTimers();
       document.getElementById('payMask').classList.remove('show');
+      // 刷新授权后重载页面：维护期/升级区块是服务端渲染的，重载可立即显示新状态
       if(window.App && App.refreshPlan){
-        App.refreshPlan().then(()=>toast('🎉 升级成功，已解锁全部高级功能！'));
+        App.refreshPlan().then(()=>{
+          toast('🎉 升级成功，已解锁全部高级功能！');
+          setTimeout(()=>location.reload(), 800);
+        });
       }else{
         toast('🎉 升级成功，已解锁全部高级功能！');
+        setTimeout(()=>location.reload(), 800);
       }
     }else{
       toast(d.message || '订单暂未支付，请完成支付后再试', false);
@@ -663,7 +696,7 @@ function closePay(){
 
 /* ============ 激活成功弹窗（显示新到期时间） ============ */
 function showActivateSuccess(info){
-  const planName = info.plan_name || ({free:'免费版',personal:'个人版',enterprise:'企业版'})[info.plan] || '授权';
+  const planName = info.plan_name || ({free:'免费体验版',basic:'基础版',enterprise:'企业版'})[info.plan] || '授权';
   const expDate = info.exp_date || info.exp ? (()=>{
     const ts = info.exp; if(!ts) return '';
     return new Date(ts*1000).toISOString().slice(0,10);
@@ -776,7 +809,7 @@ async function syncLicense(){
     if(!j.ok){ toast(j.message || '同步失败', false); return; }
     const d = j.data || {};
     if(d.blacklisted){
-      await sgAlert('⚠️ 授权异常：您的机器码已被云端拉黑，授权已强制降级为免费版。请联系客服！');
+      await sgAlert('⚠️ 授权异常：您的机器码已被云端拉黑，系统已进入只读模式。请联系客服！');
       location.reload();
       return;
     }

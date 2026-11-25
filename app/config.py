@@ -98,7 +98,11 @@ class Settings:
 MCowBQYDK2VwAyEAl4ssLkySALA4wsexQNFXF2ROMhU+yhrVvXbgaXx1jyY=
 -----END PUBLIC KEY-----"""
     initial_password: str = "123456"  # 超管解锁码重置后的初始密码（登录后强制改密）
-    free_monthly_invoice_quota: int = 20  # 免费版每月发票额度
+    # 免费体验额度：整个生命周期一次性 50 张（跨月不恢复、删除发票不退还）
+    trial_invoice_quota: int = 50
+    # 永久买断授权码的到期哨兵（2100-01-01 UTC）：买断码 exp 固定为该值，
+    # 真正决定“能否升级新版本”的是单独的 maint_exp（维护期），两者语义分离。
+    lifetime_exp: int = 4102444800
     # 收款二维码图片地址（留空则前端展示"联系客服获取收款码"占位说明）
     payment_qr_url: str = field(default_factory=lambda: os.getenv("FAPIAO_PAY_QR_URL", ""))
 
@@ -112,6 +116,26 @@ MCowBQYDK2VwAyEAl4ssLkySALA4wsexQNFXF2ROMhU+yhrVvXbgaXx1jyY=
 
 
 settings = Settings()
+
+# 商品字典（仅用于本地展示与下单传参；**金额与到期时间一律由云端决定**，绝不信任前端）
+# kind: lifetime=买断本体（永久可用）/ maintenance=维护期续费（只延长 maint_exp）/ upgrade=买断升级
+SKUS = {
+    "basic_lifetime": {"name": "基础版买断", "price": 199, "kind": "lifetime",
+                       "plan": "basic", "days": 365,
+                       "desc": "永久可用，含 1 年新版发票识别维护"},
+    "ent_lifetime": {"name": "企业版买断", "price": 499, "kind": "lifetime",
+                     "plan": "enterprise", "days": 365,
+                     "desc": "3 台设备，永久可用，含 1 年维护"},
+    "maintain_basic": {"name": "基础版维护续费", "price": 59, "kind": "maintenance",
+                       "plan": "basic", "days": 365,
+                       "desc": "仅续维护期（新版发票识别），原功能不受影响"},
+    "maintain_ent": {"name": "企业版维护续费", "price": 99, "kind": "maintenance",
+                     "plan": "enterprise", "days": 365,
+                     "desc": "仅续维护期（新版发票识别），原功能不受影响"},
+    "upgrade_basic_to_ent": {"name": "基础版升级企业版", "price": 300,
+                             "kind": "upgrade", "plan": "enterprise", "days": 0,
+                             "desc": "补差价升级为企业版买断，保留原维护期"},
+}
 
 # 启动时应用用户自定义附件路径（P2-4：附件存储路径自定义）
 _persisted = load_persisted_config()
