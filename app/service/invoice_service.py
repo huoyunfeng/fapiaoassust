@@ -17,7 +17,7 @@ from app.config import settings
 from app.domain import parsers as parsers_mod
 from app.domain.dedup import DedupEngine, Fingerprint
 from app.domain.dto import InvoiceDTO, Issue, ParseTask, RuleDTO
-from app.domain.normalize import NormalizeEngine, clean, to_decimal
+from app.domain.normalize import NormalizeEngine, clean, parse_date, to_decimal
 from app.domain.rules_engine import RuleEngine
 from app.domain.states import InvoiceStatus
 from app.domain.validator import InvoiceValidator
@@ -502,7 +502,7 @@ def fix_abnormal(invoice_id: int, fields: dict, operator: str = None,
             elif key in ("amount", "tax_amount", "total_amount"):
                 setattr(dto, key, to_decimal(val))
             elif key == "invoice_date":
-                dto.invoice_date = _normalize.parse_date(val)
+                dto.invoice_date = parse_date(val)
         dto = _normalize.normalize(dto)
 
         issues = _validator.validate(dto) + _rule_engine.validate(dto, _rules(conn))
